@@ -120,6 +120,7 @@ from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.membership import Position
+from epistrel.core.memory.story_partitions import claim, schedule_drop, story_partition
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
@@ -230,6 +231,7 @@ from epistrel.core.tables.states import (
 from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
+from epistrel.testing import pauses
 
 Database = AsyncEngine | AsyncConnection
 
@@ -719,7 +721,9 @@ class StoryView:
     (#527)."""
     pause: dict[str, Any] | None = None
     """While the story is paused (#118): ``{job_id, cause, progress {done, total}}``, the check
-    that paused it. Read by ``get_story`` only."""
+    (or backfill, whose ``progress`` carries its own members too, and ``backfill_id`` and
+    ``conflicts_open`` while it waits for its conflicts; #783) that paused it. Read by
+    ``get_story`` only."""
     scenario: ScenarioOrigin | None = None
     """The scenario version the story was created from (#119); ``None`` for a blank story.
     Read by ``get_story`` only."""
@@ -793,13 +797,22 @@ async def create_story_from(
 ) -> CreatedStory:
     """Create a story from ``spec`` atomically: the story row, its cast and its genesis
     operation (``story_created``) exist together or not at all. A cast larger than the
-    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12)."""
+    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12). The story's memories
+    partition is made first, in a short transaction of its own (#784, ADR-187)."""
     _check_unique_names(spec.characters)
     story_id = story_id or new_ulid()
+    async with story_partition(db, story_id):
+        return await _create_story_from(db, spec, principal=principal, story_id=story_id)
+
+
+async def _create_story_from(
+    db: Database, spec: StorySpec, *, principal: str, story_id: str
+) -> CreatedStory:
     cast = [(new_ulid(), character) for character in spec.characters]
     settings = _stored_settings(spec, cast)
     document, columns = split_settings(settings)
     async with _transaction(db) as conn:
+        await claim(conn, story_id)  # #875: the story's key, held to this commit
         # FR-MULTI-12 (#828): the cast against the deployment's limit in force now, after the
         # duplicate names and before the rating and the bindings.
         limit = await story_cast_limit(conn)
@@ -1084,19 +1097,32 @@ async def _active_cast_count(conn: AsyncConnection, story_id: str) -> int:
     return int(await conn.scalar(query) or 0)
 
 
-async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
+async def _cast_full(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    already_counted: bool = False,
+    reactivation: bool = False,
+) -> None:
     """422 ``validation_error`` (``cast_max``) when the story already holds as many full
     characters as the deployment's ``max_story_cast`` allows (FR-MULTI-12): one more would
     pass it. A story above a lowered limit is refused the same way. Benched characters do not
     count (FR-MULTI-13), but benched and unbenched full characters together never pass
-    ``STORY_CAST_LIMIT_MAX`` (``limit`` 200)."""
+    ``STORY_CAST_LIMIT_MAX`` (``limit`` 200). ``already_counted``: the request's character is
+    in the active count already (a reactivation of an unbenched ``major`` character, #845), so
+    ``actual`` is the count itself, not one more. ``reactivation``: the character is already
+    in the benched-plus-unbenched total, which a reactivation never changes, so the 200
+    ceiling is not checked (#886)."""
+    more = 0 if already_counted else 1
     limit = await story_cast_limit(conn)
     count = await _active_cast_count(conn, story_id)
     if count >= limit:
-        raise cast_max(limit, count + 1)
+        raise cast_max(limit, count + more)
+    if reactivation:
+        return
     total = await _major_count(conn, story_id)
     if total >= STORY_CAST_LIMIT_MAX:
-        raise cast_max(STORY_CAST_LIMIT_MAX, total + 1)
+        raise cast_max(STORY_CAST_LIMIT_MAX, total + more)
 
 
 async def _name_taken(conn: AsyncConnection, story_id: str, name: str) -> None:
@@ -1651,16 +1677,21 @@ def _not_benched(character_id: str) -> NotBenched:
     return NotBenched("the character is not benched", {"character_id": character_id})
 
 
-async def _reactivation_room(conn: AsyncConnection, story_id: str, character_id: str) -> None:
+async def _reactivation_room(
+    conn: AsyncConnection, story_id: str, character_id: str, *, benched: bool
+) -> None:
     """422 ``cast_max`` when reactivating a full (``major``) character would pass the story's
-    ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts."""
+    ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts. It runs before the 409
+    ``not_benched`` (#845): an unbenched ``major`` character in a full cast is 422 too, its
+    ``actual`` the count it is already part of. Only the active count is checked: the
+    character is in the 200 total already, benched or not (#886)."""
     weight = await conn.scalar(
         select(characters.c.weight).where(
             characters.c.story_id == story_id, characters.c.id == character_id
         )
     )
     if weight == CharacterWeight.MAJOR.value:
-        await _cast_full(conn, story_id)
+        await _cast_full(conn, story_id, already_counted=not benched, reactivation=True)
 
 
 async def _source_event(conn: AsyncConnection, operation_id: str, type_: str) -> str:
@@ -1838,10 +1869,11 @@ async def reactivate_character(
     await _bench_prechecks(db, story_id, character_id, expected_revision)
 
     async def check(conn: AsyncConnection) -> EventPayload:
+        # 422 before 409 (#845), here and in the re-check under the story lock.
         found = await benches.bench_of(conn, story_id, character_id)
+        await _reactivation_room(conn, story_id, character_id, benched=found is not None)
         if found is None:
             raise _not_benched(character_id)
-        await _reactivation_room(conn, story_id, character_id)
         return CharacterReactivated(
             character_id=character_id,
             mode=found.mode,
@@ -2085,6 +2117,9 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     audit event names the story and the acting principal, and by a ``story_deleted``
     ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached). The
     story's relations are removed and a ``deleted`` ownership event names its owner (#104).
+    The story's ``memories`` partition is dropped after the commit, by the
+    ``memory_partition_drop`` job enqueued in the same transaction (#865; the hourly sweep
+    catches any the job misses).
     """
     async with db.connect() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
@@ -2112,6 +2147,10 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
             principal=principal,
             details={"story_id": story_id, "operation_id": op.operation_id},
         )
+        # #865: the story's memories partition is dropped by a job that runs after this commits
+        # (a detach here would hold ACCESS EXCLUSIVE on ``memories`` until the commit).
+        await schedule_drop(conn, story_id)
+        await pauses.pause(pauses.STORY_DELETE_BEFORE_COMMIT)
 
     op = Operation(
         db,
@@ -2284,6 +2323,11 @@ def _modeled_at(row: Any) -> Position:
     )
 
 
+PAUSE_KEYS = ("job_id", "cause", "progress", "backfill_id", "conflicts_open")
+"""The members of ``pause.details`` a story read shows (#783: the last two only when a backfill
+waits for its conflicts)."""
+
+
 async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False) -> StoryView:
     """The story with its cast in order and its engine profile at the version it runs on. True
     ages only when ``omniscient`` (FR-CAT-12)."""
@@ -2300,7 +2344,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
         paused = None
         if pause.is_paused(row.status):
             found = await pause.details(conn, story_id)
-            paused = {k: found[k] for k in ("job_id", "cause", "progress")}
+            paused = {k: found[k] for k in PAUSE_KEYS if k in found}
         cast = (
             await conn.execute(
                 select(

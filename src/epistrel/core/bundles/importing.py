@@ -59,6 +59,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import JSON, TIMESTAMP, Date, LargeBinary, Table, insert, null, select
+from sqlalchemy.dialects.postgresql import INT8RANGE, Range
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.bundles import FORMAT_VERSION, NEVER, REBUILD
@@ -437,6 +438,14 @@ def remap(value: Any, ids: Mapping[str, str]) -> Any:
     return value
 
 
+def range_of(value: Mapping[str, Any]) -> Range[int]:
+    """#877: a bundle's range object (``bundles.RANGE_FIELDS``, validated by the bundle
+    schema) as the range it was."""
+    if value["empty"]:
+        return Range(empty=True)
+    return Range(value["lower"], value["upper"], bounds=value["bounds"])
+
+
 def _typed(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:
     """A bundle row as ``table`` takes it: its known columns, times and bytes decoded."""
     found: dict[str, Any] = {}
@@ -452,6 +461,8 @@ def _typed(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:
             value = date.fromisoformat(value)
         elif value is not None and isinstance(column.type, LargeBinary):
             value = base64.b64decode(value)
+        elif value is not None and isinstance(column.type, INT8RANGE):
+            value = range_of(value)
         found[column.name] = value
     return found
 
@@ -645,6 +656,10 @@ async def insert_bundle(
             await conn.execute(insert(table).values(rows[start : start + BATCH]))
         counts[table.name] = len(rows)
         crash.hit("bundles.import.mid_records")
+    if "facts" in counts:
+        from epistrel.core.canon.facts import rebuild_closers
+
+        await rebuild_closers(conn, story_id)  # #471: ``closed_by`` does not travel
     operation_id = await _import_operation(
         conn,
         story_id,

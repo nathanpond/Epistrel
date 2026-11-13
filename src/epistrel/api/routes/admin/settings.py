@@ -8,15 +8,35 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response
 from pydantic import ConfigDict
 
-from epistrel.api.config_changes import ConfigChangesBody, DeploymentSettingFilter, IsoDateTime
+from epistrel.api.config_changes import ConfigChangesBody, DeploymentSettingFilter
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
+from epistrel.api.iso import IsoDateTime
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.config_changes import ConfigScope
-from epistrel.core.deployment import DeploymentState, SettingsPatch
+from epistrel.core.deployment import NULL_MEANS, DeploymentState, SettingsPatch
 from epistrel.core.settings_schema import ConfigClass, DeploymentSettings
 
 router = APIRouter()
+
+
+def _nullable_sentence() -> str:
+    """The description's account of ``null``, built from ``NULL_MEANS`` so it names every
+    setting ``SettingsPatch`` lets unset (#780)."""
+    names = [f"`{name}` ({meaning})" for name, meaning in NULL_MEANS.items()]
+    listed = ", ".join(names[:-1]) + f" and {names[-1]}"
+    return (
+        f"{listed} accept `null`, which unsets them; no other top-level key does. A nested "
+        "`null` clears one member: a `profile_defaults` member (below), or one model tier, "
+        '`model_tiers.<tier>` (`{"model_tiers": {"strongest": null}}`), while `model_tiers: '
+        "null` itself is 422 `validation_error` at `body.model_tiers`. `model_tiers.strongest` "
+        'is the model the engine profiles\' `"@strongest"` purposes run on: a model '
+        "`/admin/model-config` lists (422 otherwise), or `null` to clear it (each such purpose "
+        "back to its own model)."
+    )
+
+
+_NULLABLE_SENTENCE = _nullable_sentence()
 
 
 class SettingsBody(DeploymentMutationResponse, DeploymentSettings):
@@ -49,9 +69,9 @@ async def read_settings(ctx: ContextDep, engine: EngineDep) -> SettingsBody:
     description=(
         "Change any of the deployment settings; omitted keys keep their values. Every change is "
         "recorded as a configuration change and moves `config_revision`; a write that changes "
-        "nothing writes nothing. `media_moderation_webhook_url`, `public_base_url` and "
-        "`max_characters_at_start_ceiling` accept `null` (unset: no hook, no base URL, no "
-        "ceiling); no other key does. A list replaces the stored one. `profile_defaults` holds "
+        "nothing writes nothing. "
+        + _NULLABLE_SENTENCE
+        + " A list replaces the stored one. `profile_defaults` holds "
         "the engine profiles' defaults (FR-PROF-5): the bottom layer of every story's "
         "configuration, under its profile's version and its own overrides, seeded from the Lite "
         "preset. A write is laid over them (an object merges into an object; any other value "

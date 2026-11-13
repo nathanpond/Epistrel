@@ -82,8 +82,11 @@ async def _consolidated(engine: AsyncEngine, story_id: str, text_: str, source: 
     return memory_id
 
 
-async def _memory(engine: AsyncEngine, memory_id: str) -> Any:
-    (row,) = await rows(engine, "SELECT * FROM memories WHERE id = :m", m=memory_id)
+async def _memory(engine: AsyncEngine, story_id: str, memory_id: str) -> Any:
+    # #784: the story names its partition of ``memories``.
+    (row,) = await rows(
+        engine, "SELECT * FROM memories WHERE story_id = :s AND id = :m", s=story_id, m=memory_id
+    )
     return row
 
 
@@ -165,9 +168,9 @@ async def test_an_author_fact_supersedes_and_its_lock_moves_the_configuration(
         first = await commit("kitchen")
         second = await commit("garden")
         assert second["superseded"] == [first["fact"]["id"]]
-        old_memory = await _memory(engine, first["memory_id"])
+        old_memory = await _memory(engine, story, first["memory_id"])
         assert str(old_memory.membership) == "superseded"
-        new_memory = await _memory(engine, second["memory_id"])
+        new_memory = await _memory(engine, story, second["memory_id"])
         assert str(new_memory.membership) == "active"
 
         async def locks() -> Any:
@@ -232,7 +235,7 @@ async def test_a_sanitized_consolidation_output_is_never_replayed(
             headers=WRITE,
         )
         assert answer.status_code == 200, answer.text
-    row = await _memory(engine, derived)
+    row = await _memory(engine, w.story_id, derived)
     assert (row.text, row.inputs_hash, row.embedding_model_version) == (
         "Bobby says the key is a colour.",
         None,
@@ -245,7 +248,7 @@ async def test_a_sanitized_consolidation_output_is_never_replayed(
         s=w.story_id,
     )
     assert int(queued) >= 1
-    assert (await _memory(engine, said.id)).inputs_hash is None
+    assert (await _memory(engine, w.story_id, said.id)).inputs_hash is None
 
 
 async def test_a_truncation_takes_its_implications_back(
@@ -268,17 +271,17 @@ async def test_a_truncation_takes_its_implications_back(
     await mutation.implicate(
         engine, story, ref, turn_operation_id=later.operation_id, attempt=0, threshold=3
     )
-    assert (await _memory(engine, planted.id)).implication_count == 2
+    assert (await _memory(engine, story, planted.id)).implication_count == 2
     await truncate(engine, story, TruncateRequest(to_turn=1), principal="p-author")
-    assert (await _memory(engine, planted.id)).implication_count == 1
+    assert (await _memory(engine, story, planted.id)).implication_count == 1
     await untruncate(engine, story, principal="p-author")
-    assert (await _memory(engine, planted.id)).implication_count == 2
+    assert (await _memory(engine, story, planted.id)).implication_count == 2
     done = await mutation.implicate(
         engine, story, ref, turn_operation_id=later.operation_id, attempt=1, threshold=3
     )
     assert done.quarantined == (planted.id,)
     await truncate(engine, story, TruncateRequest(to_turn=1), principal="p-author")
-    row = await _memory(engine, planted.id)
+    row = await _memory(engine, story, planted.id)
     assert (row.implication_count, row.quarantine_reason) == (1, "repeated_implication")
 
 
@@ -311,7 +314,7 @@ async def test_erasure_reaches_a_quarantine_reason_and_a_fork_keeps_the_quaranti
         await erase(client, "character", w.characters["Ann"], story, confirm_all=True)
     left = await residue(engine, story, ["Ann"])
     assert {table: n for table, n in left.items() if n} == {}
-    row = await _memory(engine, said.id)
+    row = await _memory(engine, story, said.id)
     assert row.quarantined_at is not None
     assert "Ann" not in row.quarantine_reason
 

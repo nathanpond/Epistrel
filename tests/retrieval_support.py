@@ -24,6 +24,7 @@ the module.
 from __future__ import annotations
 
 import random
+import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import embeddings
 from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.membership import insert_derived
+from epistrel.core.memory import story_partitions
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
@@ -208,7 +210,11 @@ async def memory(
         if tier is not RetrievalTier.HOT:
             values["retrieval_tier"] = tier.value
         if values:
-            await conn.execute(update(memories).where(memories.c.id == row["id"]).values(values))
+            await conn.execute(
+                update(memories)
+                .where(memories.c.story_id == row["story_id"], memories.c.id == row["id"])
+                .values(values)
+            )
     story.ids[name] = str(row["id"])
     return str(row["id"])
 
@@ -322,6 +328,62 @@ async def plan_of(db: AsyncEngine, sql: str, params: Any) -> str:
     return "\n".join(str(r[0]) for r in rows)
 
 
+async def index_names(db: AsyncEngine, index: str) -> frozenset[str]:
+    """``index`` (a partitioned ``memories`` index) and every partition's index attached to it,
+    through ``pg_partition_tree`` (#784): a plan over a story's partition names the
+    partition's index, never the parent's."""
+    async with db.connect() as conn:
+        found = await conn.scalars(
+            text(
+                "SELECT c.relname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                "JOIN pg_class c ON c.oid = t.relid"
+            ),
+            {"i": index},
+        )
+        return frozenset(str(n) for n in found)
+
+
+async def uses_index(db: AsyncEngine, plan: str, index: str) -> bool:
+    """Whether ``plan`` reads ``index`` or one of its partitions' indexes (``index_names``);
+    whole names only, so a partition's ``…_idx`` never matches its ``…_idx1``."""
+    return any(re.search(rf"\b{re.escape(name)}\b", plan) for name in await index_names(db, index))
+
+
+async def own_index(db: AsyncEngine, index: str, story_id: str) -> str:
+    """The index of ``story_id``'s partition attached to ``index`` (#867)."""
+    async with db.connect() as conn:
+        found = await conn.scalar(
+            text(
+                "SELECT c.relname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                "JOIN pg_index x ON x.indexrelid = t.relid "
+                "JOIN pg_class c ON c.oid = t.relid "
+                "JOIN pg_class p ON p.oid = x.indrelid "
+                "WHERE t.isleaf AND p.relname = :p"
+            ),
+            {"i": index, "p": story_partitions.partition_name(story_id)},
+        )
+    assert found is not None, (index, story_id)
+    return str(found)
+
+
+async def other_stories_in(db: AsyncEngine, plan: str, story_id: str) -> list[str]:
+    """The ``memories`` partitions other than ``story_id``'s, and their indexes, that ``plan``
+    names (whole names: a partition's own index names may share another's prefix; #867)."""
+    async with db.connect() as conn:
+        names = await conn.scalars(
+            text(
+                "SELECT c.relname FROM pg_partition_tree('memories'::regclass) t "
+                "JOIN pg_class c ON c.oid = t.relid WHERE t.isleaf AND c.relname <> :own "
+                "UNION ALL SELECT i.relname FROM pg_partition_tree('memories'::regclass) t "
+                "JOIN pg_class c ON c.oid = t.relid JOIN pg_index x ON x.indrelid = t.relid "
+                "JOIN pg_class i ON i.oid = x.indexrelid WHERE t.isleaf AND c.relname <> :own"
+            ),
+            {"own": story_partitions.partition_name(story_id)},
+        )
+        others = [str(n) for n in names]
+    return [n for n in others if re.search(rf"\b{re.escape(n)}\b", plan)]
+
+
 __all__ = [
     "DIMENSION",
     "MONTH_AGO",
@@ -331,10 +393,14 @@ __all__ = [
     "Story",
     "access_and_tiers",
     "build_story",
+    "index_names",
     "memory",
     "operation_count",
+    "other_stories_in",
+    "own_index",
     "pin",
     "plan_of",
     "set_vectors",
     "statements",
+    "uses_index",
 ]

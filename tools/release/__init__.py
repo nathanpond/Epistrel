@@ -1,1 +1,1 @@
-"""Release-tag validation used by .github/workflows/release.yml (#35)."""
+"""Release-tag validation (#35) and re-promotion tag selection (#96) for release/rollback.yml."""

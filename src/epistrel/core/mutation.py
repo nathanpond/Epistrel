@@ -486,7 +486,8 @@ async def _set_quarantine(
                 memories.c.character_id,
                 memories.c.quarantine_reason,
             )
-            .where(memories.c.id == memory_id)
+            # #784: the story names its partition (by id alone it plans over every story's).
+            .where(memories.c.story_id == story_id, memories.c.id == memory_id)
         )
     ).one()
     # The reason is text: it is indexed with the memory (and erased with it, #124).
@@ -650,7 +651,7 @@ async def sanitize(
                         memories.c.holder_character_id,
                         memories.c.character_id,
                         memories.c.quarantine_reason,
-                    ).where(memories.c.id == memory_id)
+                    ).where(memories.c.story_id == story_id, memories.c.id == memory_id)
                 )
             ).one()
             await index_records(conn, [memory_record(row)])

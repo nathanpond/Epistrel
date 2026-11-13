@@ -9,7 +9,14 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api.errors import connection_lost, database_error_handler
-from epistrel.core.db import CONNECT_TIMEOUT_SECONDS, make_engine, make_sync_engine, normalize_url
+from epistrel.core.db import (
+    CONNECT_TIMEOUT_SECONDS,
+    SESSION_OPTIONS,
+    make_engine,
+    make_sync_engine,
+    normalize_url,
+    session_options,
+)
 from tests.auth_support import auth_settings
 
 
@@ -38,6 +45,16 @@ def test_make_sync_engine_uses_the_same_dialect(dummy_dsn: str) -> None:
         assert engine.url.drivername == "postgresql+psycopg"
     finally:
         engine.dispose()
+
+
+def test_every_connection_plans_custom_after_the_dsn_s_own_options() -> None:
+    """#784 (ADR-188): every connection runs with ``plan_cache_mode = force_custom_plan``,
+    appended to any ``options`` the DSN already carries rather than replacing them."""
+    assert SESSION_OPTIONS == "-c plan_cache_mode=force_custom_plan"
+    assert session_options("postgresql+psycopg://u:p@h/d") == SESSION_OPTIONS
+    assert session_options("postgresql+psycopg://u:p@h/d?options=-csearch_path%3Dx") == (
+        f"-csearch_path=x {SESSION_OPTIONS}"
+    )
 
 
 def test_connect_timeout_is_short() -> None:

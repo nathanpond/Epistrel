@@ -18,9 +18,11 @@ from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.epistemic.roles import DEFAULT_ROLE
 from epistrel.core.errors import StoryArchived, StoryBusy
 from epistrel.core.events import Operation
+from epistrel.core.memory.story_partitions import has_partition, partition_name
 from epistrel.core.stories import STORY_TABLES, StorySpec
 from tests.conftest import REPO_ROOT
 from tests.event_support import STORY_SETUP_KIND, play_turn, rows
+from tests.memory_support import derived_memory, partitions_of
 from tests.story_support import READ, WRITE, character, count, create, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
@@ -640,8 +642,141 @@ async def test_i_10__m7_import_round_trip(
         assert await _rows_left(engine, story) == before
         await play_turn(engine, imported, "One more.", principal="p-import")
         assert await _rows_left(engine, story) == before
+        # #784: the import made its story's memories partition before the story row.
+        await derived_memory(engine, imported, "Imported, then remembered.", [])
+        assert await partitions_of(engine, imported) == {partition_name(imported)}
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
+_CANON_SHAPE = """
+SELECT f.id, f.lineage_id, f.valid_span, f.valid_from, f.valid_to, f.valid_from_inner,
+       f.valid_to_inner, f.tx_from, f.tx_to, f.provenance::text AS provenance,
+       f.authority::text AS authority, f.commit_state::text AS commit_state, f.step,
+       f.supersedes, f.superseded_by, f.closed_by,
+       s.canonical_name AS subject, o.canonical_name AS object,
+       p.valid_span AS p_span, p.polarity, p.valid_from_inner AS p_from,
+       p.valid_to_inner AS p_to, p.from_exact, p.to_exact
+FROM facts f
+JOIN entities s ON s.id = f.subject_id
+JOIN propositions p ON p.id = f.proposition_id
+LEFT JOIN entities o ON o.id = p.object_id
+WHERE f.story_id = :s
+"""
+_IDS = ("id", "lineage_id", "supersedes", "superseded_by", "closed_by")
+
+
+async def _canon_shape(
+    engine: AsyncEngine, story_id: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """#877: a story's fact versions with their propositions, every story-scoped id replaced
+    by its version's key (subject, object, span, recording time) so a source and its import
+    compare; and the id-to-key map, to read canon answers the same way."""
+    found = await rows(engine, _CANON_SHAPE, s=story_id)
+    key = {str(r.id): (r.subject, r.object, str(r.valid_span), r.tx_from) for r in found}
+    assert len(set(key.values())) == len(found), "the keys must tell the versions apart"
+    lineages: dict[str, list[Any]] = {}
+    for r in found:
+        lineages.setdefault(str(r.lineage_id), []).append(key[str(r.id)])
+
+    def keyed(ids: Any) -> list[Any]:
+        return [key.get(str(i), ("unknown", str(i))) for i in ids or []]
+
+    shape = [
+        {
+            **{c: getattr(r, c) for c in r._fields if c not in _IDS},
+            "key": key[str(r.id)],
+            "lineage": sorted(lineages[str(r.lineage_id)]),
+            "supersedes": keyed(r.supersedes),
+            "superseded_by": keyed([r.superseded_by] if r.superseded_by else []),
+            "closed_by": keyed(r.closed_by),
+        }
+        for r in found
+    ]
+    return sorted(shape, key=lambda d: d["key"]), key
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-4")
+async def test_i_10__m7_import_round_trip_canon(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#877: a story with canon facts exports and imports. Its fact versions (one superseded,
+    so the import rebuilds its ``closed_by``, #471) and their propositions, with bounded,
+    half-open and unbounded ``valid_span``s, match the source, and so does canon at several
+    story-times. Every ``int8range`` shape (empty, unbounded on either side, each inclusivity),
+    as psycopg or SQLAlchemy reads it, is written as the bundle schema's range object and reads
+    back as the same Postgres range."""
+    from sqlalchemy import bindparam, text
+    from sqlalchemy.dialects.postgresql import INT8RANGE
+
+    from epistrel.core import bundles
+    from epistrel.core.bundles import format as bundle_format
+    from epistrel.core.bundles import importing
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.tables import facts
+    from tests import canon_support as cs
+
+    async with rest(settings, engine) as client:
+        w = await cs.world(engine)
+        story = w.story_id
+        bobby, ann, cal = (w.people[n] for n in ("Bobby", "Ann", "Cal"))
+        place = w.places
+        control = OperationKind.CONTROL  # no turn text, so the import calls no guardrail model
+        first = await cs.commit(engine, story, cs.at(bobby, place["kitchen"], 1, 5), kind=control)
+        await cs.commit(engine, story, cs.at(ann, place["garden"], None, None), kind=control)
+        await cs.commit(engine, story, cs.at(cal, place["kitchen"], None, 3), kind=control)
+        await cs.commit(engine, story, cs.at(cal, place["school"], 3, None), kind=control)
+        await cs.supersede(
+            engine, story, first.id, cs.at(bobby, place["garden"], 1, 5), kind=control
+        )
+        source, source_key = await _canon_shape(engine, story)
+        written = await rows(
+            engine, "SELECT DISTINCT valid_span::text AS s FROM facts WHERE story_id = :s", s=story
+        )
+        assert {r.s for r in written} == {"[1,5)", "(,)", "(,3)", "[3,)"}
+        assert sum(1 for row in source if row["closed_by"]) == 1, "one version is closed"
+
+        data = await _exported(client, engine, story, tmp_path)
+        members = dict(bundles_read(data))
+        lines = [json.loads(x) for x in members["records/facts.jsonl"].splitlines()]
+        assert {"lower": None, "upper": None, "bounds": "()", "empty": False} in [
+            line["valid_span"] for line in lines
+        ]
+        assert all("closed_by" not in line for line in lines)
+        assert members["records/propositions.jsonl"].count(b'"valid_span":{') == len(
+            members["records/propositions.jsonl"].splitlines()
+        )
+
+        done = await _import(client, engine, data)
+        assert done.ready, json.dumps(done.status)
+        imported = done.story_id
+        target, target_key = await _canon_shape(engine, imported)
+        assert target == source
+        for story_time in (0, 2, 4, 7, 100):
+            async with engine.connect() as conn:
+                was = await canon.canon_at(conn, story, story_time=story_time)
+                now = await canon.canon_at(conn, imported, story_time=story_time)
+            assert sorted(source_key[f.id] for f in was) == sorted(target_key[f.id] for f in now), (
+                story_time
+            )
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+    schema = bundle_format.record_schema(facts)["properties"]["valid_span"]
+    same = text("SELECT :r = CAST(:l AS int8range)").bindparams(bindparam("r", type_=INT8RANGE))
+    literals = ["empty", "[1,5)", "[3,)", "(,9)", "(,)", "[2,2]", "(1,4]", "(0,3)"]
+    async with engine.connect() as conn:
+        for literal in literals:
+            raw = await conn.scalar(text("SELECT CAST(:l AS int8range)"), {"l": literal})
+            typed = await conn.scalar(
+                text("SELECT CAST(:l AS int8range) AS r").columns(r=INT8RANGE), {"l": literal}
+            )
+            for value in (raw, typed):
+                line = json.loads(bundles.canonical(value))
+                bundle_format._check(schema, line, literal)
+                back = importing._typed(facts, {"valid_span": line})["valid_span"]
+                assert await conn.scalar(same, {"r": back, "l": literal}), (literal, line)
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
@@ -747,6 +882,54 @@ async def test_i_10__m7_import_bad_bundles(
             )
             assert restored.status_code == 200, restored.text
         await _nothing_left(engine, stories_before)
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_upload_cap(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#786: the upload itself is cut at ``bundle_max_uncompressed_bytes``, before anything is
+    read or created. At its 1 MiB floor, an upload of one byte more (sent as it is, nothing
+    compressed on the wire) is 413 ``bundle_too_large`` naming the limit and the cap; a clean
+    bundle under it is accepted (202)."""
+    from sqlalchemy import text
+
+    from epistrel.core.bundles import importing
+
+    cap = 1024 * 1024
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-cap")
+        clean = await _exported(client, engine, story, tmp_path)
+        assert len(clean) < cap
+        operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+        lowered = await client.put(
+            "/admin/settings", json={"bundle_max_uncompressed_bytes": cap}, headers=operator
+        )
+        assert lowered.status_code == 200, lowered.text
+        try:
+            stories_before = await count(engine, "SELECT count(*) FROM stories")
+            refused = await _import(client, engine, b"\0" * (cap + 1))
+            assert refused.started.status_code == 413, refused.started.text
+            assert refused.error["code"] == "bundle_too_large", refused.error
+            assert refused.error["details"] == {
+                "limit": "bundle_max_uncompressed_bytes",
+                "value": cap,
+            }
+            await _nothing_left(engine, stories_before)
+            accepted = await _import(client, engine, clean)
+            assert accepted.started.status_code == 202, accepted.started.text
+            assert accepted.ready, accepted.status
+        finally:
+            restored = await client.put(
+                "/admin/settings",
+                json={"bundle_max_uncompressed_bytes": importing.MAX_TOTAL_BYTES},
+                headers=operator,
+            )
+            assert restored.status_code == 200, restored.text
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
 
@@ -1592,6 +1775,9 @@ async def test_i_10__m7_crash_resume(pg_url: str, tmp_path: Any) -> None:
                         imported,
                         2,
                     ), done
+                    # #784: the reclaimed attempt's reset kept the story's partition.
+                    async with db.connect() as conn:
+                        assert await has_partition(conn, imported)
                     assert (
                         await count(db, "SELECT count(*) FROM stories WHERE id = :s", s=imported)
                         == 1

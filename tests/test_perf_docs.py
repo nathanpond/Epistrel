@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from epistrel.tools import capacity, perf_docs
 
 HOST = {
@@ -108,6 +110,123 @@ def test_the_pages_carry_the_host_and_the_verdicts(tmp_path: Path) -> None:
     assert "| 100,000 |" in capacity_md
     assert "no (reported)" in capacity_md
     assert "`maintenance_work_mem` 1GB" in capacity_md
+
+
+def test_p_01_runner_target_is_a_note_row_under_the_budget(tmp_path: Path) -> None:
+    """#868: P-01's result carries the owner's runner target (``runner_target_p95_ms``), and the
+    budgets table shows it as a note row right under NFR-PERF-1's 150 ms row, measured by the
+    run's last attempt (``attempt_p95_ms[-1]``), not its first.
+
+    Complement asserted: a last attempt over the target reads **over target**, the 150 ms
+    budget row is unchanged beside it, and a result without the key (from before #868) has no
+    note row."""
+    results = _results(tmp_path, p01=180.0)
+    p01 = json.loads((results / "p_01.json").read_text())
+    for attempts, verdict in (([260.0, 180.0], "within target"), ([180.0, 230.5], None)):
+        docs = tmp_path / f"docs-{attempts[-1]}"
+        docs.mkdir()
+        (results / "p_01.json").write_text(
+            json.dumps({**p01, "runner_target_p95_ms": 200.0, "attempt_p95_ms": attempts})
+        )
+        perf_docs.render(results, docs)
+        lines = (docs / "perf.md").read_text().splitlines()
+        budget = lines.index(
+            "| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 180.0 ms | **over budget** "
+            "| github-runner (not the reference host) |"
+        )
+        shown = verdict or "**over target**"
+        assert lines[budget + 1] == (
+            "| P-01 retrieval, runner target (note, #868) | not a requirement | "
+            f"p95 ≤ 200 ms on github-runner | {attempts[-1]:.1f} ms | {shown} "
+            "| github-runner (not the reference host) |"
+        )
+    (results / "p_01.json").write_text(json.dumps(p01))
+    docs = tmp_path / "docs-before"
+    docs.mkdir()
+    perf_docs.render(results, docs)
+    assert "runner target" not in (docs / "perf.md").read_text()
+
+
+def _rows(page: str) -> dict[str, str]:
+    """capacity.md's rows by their memories cell, as ``Gated | Within`` cells."""
+    rows = [
+        line.split(" | ") for line in page.splitlines() if line[:1] == "|" and line[2:3].isdigit()
+    ]
+    return {r[0].lstrip("| "): " | ".join(r[-2:]).rstrip(" |") for r in rows}
+
+
+def test_capacity_gated_column_follows_the_host_class(tmp_path: Path) -> None:
+    """#793 (ADR-190): capacity.md reads a step as gated only when the run's host class is
+    ``reference``. On another host, or in a result from before #793 with no host class, every
+    step reads "no (reported)", and the page says the runner's figures are reported, not gated.
+
+    Complement asserted: on the reference host the steps up to 50k read "yes" and the 100k step
+    "no (reported)", and a miss still reads **no** in the "Within 150 ms" column on either."""
+    results = _results(tmp_path)
+    body = json.loads((results / "p_06.json").read_text())
+    body["points"][0]["within_budget"] = False
+    pages: dict[str, str] = {}
+    for cls in ("reference", "other", None):
+        body["host"] = {**HOST, "host_class": cls} if cls else HOST
+        (results / "p_06.json").write_text(json.dumps(body))
+        pages[str(cls)] = perf_docs.capacity_page(perf_docs.load(results))
+    assert _rows(pages["reference"]) == {
+        "1,000": "yes | **no**",
+        "10,000": "yes | yes",
+        "50,000": "yes | yes",
+        "100,000": "no (reported) | yes",
+    }
+    reported = {
+        "1,000": "no (reported) | **no**",
+        "10,000": "no (reported) | yes",
+        "50,000": "no (reported) | yes",
+        "100,000": "no (reported) | yes",
+    }
+    assert _rows(pages["other"]) == reported
+    assert _rows(pages["None"]) == reported
+    intro = pages["other"].split("**Host:")[0]
+    assert "gated only on the reference host (ADR-190)" in intro
+    assert "reported, not gated" in intro
+    assert "gated up to ~50k" not in intro
+
+
+def test_misses_lists_each_budget_the_run_missed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#793: ``--misses`` prints one ``MISS <result> <metric> p95=<x> budget=<y>`` line per
+    budget a result records as missed, P-06's points each on their own, for perf.yml's weekly
+    summary, and writes no page.
+
+    Complement asserted: results within their budgets print nothing, and a missing result
+    prints ``NOT MEASURED`` rather than nothing."""
+    results = _results(tmp_path, p01=290.3)
+    p01 = json.loads((results / "p_01.json").read_text())
+    (results / "p_01.json").write_text(
+        json.dumps({**p01, "budget_p95_ms": 150.0, "within_budget": False})
+    )
+    p02 = json.loads((results / "p_02.json").read_text())
+    (results / "p_02.json").write_text(
+        json.dumps({**p02, "budget_p95_ms": 50.0, "within_budget": True})
+    )
+    p06 = json.loads((results / "p_06.json").read_text())
+    p06["points"][-1]["within_budget"] = False
+    (results / "p_06.json").write_text(json.dumps({**p06, "budget_p95_ms": 150.0}))
+    known = {"budget_p95_ms": 50.0, "within_budget": True, "check_ms": _q(20.0)}
+    (results / "p_02_could_have_known.json").write_text(json.dumps(known))
+
+    assert perf_docs.main(["--misses", "--results", str(results)]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "MISS p_01 total_ms p95=290.3 budget=150.0",
+        "MISS p_06 retrieval_ms@100000 p95=140.0 budget=150.0",
+    ]
+    assert not (tmp_path / "docs").exists()
+
+    (results / "p_01.json").write_text(json.dumps({**p01, "within_budget": True}))
+    p06["points"][-1]["within_budget"] = True
+    (results / "p_06.json").write_text(json.dumps(p06))
+    assert perf_docs.misses(perf_docs.load(results)) == []
+    (results / "p_02.json").unlink()
+    assert perf_docs.misses(perf_docs.load(results)) == ["NOT MEASURED p_02"]
 
 
 def test_history_keeps_every_run(tmp_path: Path) -> None:

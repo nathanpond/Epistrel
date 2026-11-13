@@ -18,6 +18,7 @@ No response on the Lite story is ``module_off``.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,6 +38,7 @@ NOW = json.dumps({"classification": "durable", "temporal_scope": "now", "changes
 PAST = json.dumps({"classification": "durable", "temporal_scope": "past", "changes": []})
 RAIN = "It starts raining."
 NUDGE = "Make Ada sound tired."
+OPENAPI = Path(__file__).resolve().parents[2] / "docs" / "openapi.json"
 
 
 @pytest.fixture
@@ -275,4 +277,24 @@ async def test_s_lite_directive__regeneration(stub_settings: Settings, engine: A
         )
         assert warned.status_code == 200, warned.text
         assert [w["kind"] for w in warned.json()["warnings"]] == ["lite_no_reconciliation"]
+        # #778: ``preview`` alone names the same warning.
+        previewed = await client.post(
+            f"/stories/{story}/regenerate",
+            json={"directive": {"text": NUDGE}, "preview": "preview_first"},
+            headers=WRITE,
+        )
+        assert previewed.status_code == 200, previewed.text
+        assert [w["kind"] for w in previewed.json()["warnings"]] == ["lite_no_reconciliation"]
+        assert not [c for c in stub.calls if c.purpose == "directive_parse"]
         assert await rs.count(engine, "rewrite_sessions", story) == 0
+
+
+@pytest.mark.part("M7", "FR-LITE-8; FR-DIRECT-1,2")
+def test_s_lite_directive__regeneration_described() -> None:
+    """#778: the published description of regenerate says what a Lite directive does (a nudge,
+    200) and claims no 409 for it."""
+    doc = json.loads(OPENAPI.read_text(encoding="utf-8"))
+    text = doc["paths"]["/stories/{story_id}/regenerate"]["post"]["description"]
+    assert "nudge" in text
+    assert "`lite_no_reconciliation`" in text
+    assert "module_off" not in text

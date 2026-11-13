@@ -58,6 +58,10 @@ deployment-level table that carries a ``story_id`` (``core.stories.STORY_ID_EXCE
 ``audit_log``, ``certification_runs`` (#773) and the image accounting). A ``1.0.0`` bundle
 imports through ``format.FORMAT_MIGRATIONS``' step: its media lines get the new fields' empty
 values, and it imports with no story images.
+
+#877: a range column (``int8range``) is written as an object of ``lower``, ``upper``,
+``bounds`` and ``empty`` (``RANGE_FIELDS``). The format stays ``1.1.0``: before #877 no export
+of a story with a range value could finish, so no bundle holds one in any other shape.
 """
 
 from __future__ import annotations
@@ -76,8 +80,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
+from psycopg.types.range import Range as PgRange
 from pydantic import BaseModel
 from sqlalchemy import Table, select, text, update
+from sqlalchemy.dialects.postgresql import Range as SaRange
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
@@ -184,8 +190,11 @@ def catalog_tables() -> list[Table]:
 
 COLUMNS_NOT_EXPORTED: dict[str, frozenset[str]] = {
     "memories": frozenset({"embedding", "embedding_model_version", "search"}),
+    "facts": frozenset({"closed_by"}),
 }
-"""#704: vectors and generated columns never travel (an import re-embeds and regenerates)."""
+"""#704: vectors and generated columns never travel (an import re-embeds and regenerates).
+#471: a fact's ``closed_by`` is the inverse of ``supersedes``, rebuilt by the import
+(``canon.facts.rebuild_closers``, ADR-189)."""
 
 
 def _exportable(table: Table, row: Any) -> dict[str, Any]:
@@ -230,7 +239,37 @@ class Bundle:
 # -- encoding -------------------------------------------------------------------------------------
 
 
+RANGE_FIELDS = ("lower", "upper", "bounds", "empty")
+"""#877: how a range column (``int8range``: ``facts``', ``propositions``' and ``beliefs``'
+``valid_span``) travels: an object of ``lower`` and ``upper`` (``null``: unbounded), ``bounds``
+(``"[)"``, ``"[]"``, ``"(]"`` or ``"()"``, as Postgres reports them) and ``empty`` (an empty
+range has no bounds: ``null``, ``null``, ``"[)"``). ``format`` declares it and the import reads
+it back (``importing.range_of``)."""
+
+
+def range_json(value: Any) -> dict[str, Any] | None:
+    """A range as a bundle writes it (``RANGE_FIELDS``), SQLAlchemy's ``Range`` or psycopg's
+    (a raw ``text()`` read); ``None`` for anything else."""
+    if isinstance(value, SaRange):
+        empty = bool(value.empty)
+    elif isinstance(value, PgRange):
+        empty = bool(value.isempty)
+    else:
+        return None
+    if empty:
+        return {"lower": None, "upper": None, "bounds": "[)", "empty": True}
+    return {
+        "lower": _plain(value.lower),
+        "upper": _plain(value.upper),
+        "bounds": value.bounds,
+        "empty": False,
+    }
+
+
 def _plain(value: Any) -> Any:
+    found = range_json(value)
+    if found is not None:
+        return found
     if isinstance(value, datetime | date):
         return value.isoformat()
     if isinstance(value, Decimal):

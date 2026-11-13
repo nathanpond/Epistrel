@@ -292,15 +292,22 @@ async def _erasure_step(engine: AsyncEngine, story: str) -> list[str]:
     return failed
 
 
-async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
-    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def _second_drainer(
+    settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, *, force: bool
+) -> tuple[str, list[Any], int]:
     """#436: drainer P1 runs queued turn A; the erasure fails the turns still waiting (B) and
     frees the slot, but A keeps its lease. Drainer P2 (another process) reads A as its head,
     finds the slot held by A and waits: it neither runs A nor records it ``turn_interrupted``.
     A then ends with its own outcome (``abandoned``, ``timeline_changed``) and both drainers
-    finish with the queue empty and the slot free."""
-    story = await _story(stub_settings, engine)
+    finish with the queue empty and the slot free.
+
+    Returns A, every ``acquire`` outcome P2's drainer saw (``Held`` or ``NotQueued``), and how
+    many of them came before ``finish`` let P1's drainer record A's error (``fail_item``).
+
+    ``force`` scripts the window #816 hit in CI: P2 has read A as its head and is parked in
+    ``acquire`` until P1's ``fail_item`` committed (A's queue row and the slot gone), so its
+    ``acquire`` for A is ``NotQueued``. Unforced, P2 may or may not land in that window."""
+    story = await _story(settings, engine)
     running = await _enqueue(engine, story)
     waiting = await _enqueue(engine, story)
     entered, go = asyncio.Event(), asyncio.Event()
@@ -341,10 +348,16 @@ async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
     assert await _erasure_step(engine, story) == [waiting]
     assert await _slot(engine, story) == running  # the running queued turn keeps its lease
 
-    real_acquire = turn_gate.acquire
+    real_acquire, real_fail_item = turn_gate.acquire, turn_gate.fail_item
     seen: list[Any] = []
+    park = asyncio.Event()  # set: P2's next ``acquire`` parks before it reads the slot
+    parked, failed = asyncio.Event(), asyncio.Event()
 
     async def watched_acquire(db: AsyncEngine, story_id: str, operation_id: str, **kw: Any) -> Any:
+        if park.is_set():
+            park.clear()
+            parked.set()
+            await failed.wait()  # P2 read A as its head; P1's ``fail_item`` commits meanwhile
         try:
             held = await real_acquire(db, story_id, operation_id, **kw)
         except turn_gate.NotQueued as exc:
@@ -353,7 +366,16 @@ async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
         seen.append(held)
         return held
 
+    async def watched_fail_item(
+        db: AsyncEngine, story_id: str, operation_id: str, error: BaseException
+    ) -> None:
+        try:
+            await real_fail_item(db, story_id, operation_id, error)
+        finally:
+            failed.set()
+
     monkeypatch.setattr(turn_gate, "acquire", watched_acquire)
+    monkeypatch.setattr(turn_gate, "fail_item", watched_fail_item)
     p2 = QueueDrainer(lambda: engine, {turn_gate.RESPOND: second})
     p2.kick(story)
     await until(lambda: bool(seen), "P2's drainer tried to start its head")
@@ -373,11 +395,14 @@ async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
     record = await _operation(engine, running)
     assert (record.status, record.error_code) == ("abandoned", None)
 
+    if force:
+        park.set()
+        await parked.wait()  # P2 read A as its head before ``fail_item`` ran
+    before = len(seen)
     finish.set()
     await p1.idle()
     await p2.idle()
-    assert others == []
-    assert all(isinstance(s, turn_gate.Held) for s in seen), seen
+    assert others == []  # P2 never ran a turn: not A, and nothing ahead of the erasure
     record = await _operation(engine, running)
     assert (record.status, record.error_code) == ("abandoned", "timeline_changed")
     assert record.error["details"]["control_operation_id"] == CONTROL
@@ -385,6 +410,41 @@ async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
     assert (record.status, record.error_code) == ("failed", "timeline_changed")
     assert await _slot(engine, story) is None
     assert await _queue(engine, story) == []
+    return running, seen, before
+
+
+def _held_then_not_queued(running: str, seen: list[Any], before: int) -> None:
+    """Until ``finish``, P2 only ever finds A holding the slot. After it, P2 finds A holding
+    the slot until P1's ``fail_item`` commits; an ``acquire`` for A after that commit is
+    ``NotQueued`` naming A, which the drainer answers by reading its head again (#329:
+    ``acquire``'s docstring and ``NotQueued``'s, core/turn_gate.py; queue_drainer.py's
+    ``except turn_gate.NotQueued``). docs/02:160 and FR-CONC-5 ask only that each queued turn
+    starts after the previous one ended, which ``others == []`` checks."""
+    assert all(isinstance(s, turn_gate.Held) for s in seen[:before]), seen
+    assert all(isinstance(s, turn_gate.Held | turn_gate.NotQueued) for s in seen[before:]), seen
+    assert all(s.operation_id == running for s in seen), seen
+
+
+async def test_a_second_drainer_waits_for_a_running_head_the_erasure_reached(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#436, with P2 free to retry A at any point (#816: after ``finish``, a retry that lands
+    after P1's ``fail_item`` is ``NotQueued``, not ``Held``)."""
+    running, seen, before = await _second_drainer(stub_settings, engine, monkeypatch, force=False)
+    _held_then_not_queued(running, seen, before)
+
+
+async def test_a_second_drainer_retries_a_running_head_after_it_failed(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#816: the same run with P2's retry forced into the window after P1's ``fail_item``
+    committed. P2's ``acquire`` for A is ``NotQueued`` naming A (the slot is left free and A is
+    not run), and P2 then finds the queue empty."""
+    running, seen, before = await _second_drainer(stub_settings, engine, monkeypatch, force=True)
+    _held_then_not_queued(running, seen, before)
+    late = [s for s in seen[before:] if isinstance(s, turn_gate.NotQueued)]
+    assert late, seen  # the window was exercised
+    assert all(exc.operation_id == running for exc in late)
 
 
 async def test_the_erasure_frees_the_slot_of_a_turn_outside_the_queue(

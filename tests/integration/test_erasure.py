@@ -1137,7 +1137,10 @@ async def test_i_09__beliefs(erasure_settings: Settings, engine: AsyncEngine) ->
         == 0
     )
     (shared,) = await rows(
-        engine, "SELECT visibility FROM memories WHERE id = :m", m=k.shared_memory
+        engine,
+        "SELECT visibility FROM memories WHERE story_id = :s AND id = :m",
+        s=k.story_id,
+        m=k.shared_memory,
     )
     assert shared.visibility == {"scope": "characters", "characters": [k.ann]}
     kept = {

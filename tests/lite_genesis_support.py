@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.memory.story_partitions import not_a_partition
 from tests import scenario_support as scenarios
 
 PUBLIC_PHRASE = "a will nobody has read beside the orchard"
@@ -183,8 +184,9 @@ async def story_table_counts(engine: AsyncEngine) -> dict[str, int]:
             set(
                 await conn.scalars(
                     text(
-                        "SELECT table_name FROM information_schema.columns "
-                        "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                        "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                        "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                        f"AND {not_a_partition()}"
                     )
                 )
             )

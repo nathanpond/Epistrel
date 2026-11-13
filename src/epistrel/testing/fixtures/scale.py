@@ -11,10 +11,19 @@ filler memories through the same row builder and bulk writer (``memory_row``,
   subjects. Those are the cast's own entities plus named people who are not characters. The
   story also has 40 places and 60 items.
 - **Events**: the turns are real ``turn`` operations committed ``TURN_BATCH`` to a transaction
-  (``OperationBatch``). Each turn has its input beat and its reply beat. Its commit step writes
-  the turn's share of canon through ``canon.commit_fact``, and each fact appends its
-  ``fact_committed`` event. With ``events = 2·turns + facts``, the default 100k events are
-  25,000 turns of 2 beats plus 50,000 facts. The projections (#137) are maintained as in play.
+  (``OperationBatch``), so their rows, positions, revisions and beat events are the engine's
+  own. Each turn has its input beat and its reply beat, then a ``fact_committed`` event for
+  each fact of its share of canon. With ``events = 2·turns + facts``, the default 100k events
+  are 25,000 turns of 2 beats plus 50,000 facts.
+- **Canon in bulk** (#490): each turn's share is planned in Python as ``canon.commit_fact``
+  would write it (``_BulkCanon``: the same versions, supersede chains with their remainders,
+  ``tx_to``, ``superseded_by`` and #471's ``closed_by``, events and change-index rows). The
+  turn's commit step appends its events; the batch writes its propositions, facts and
+  change-index rows once. The projections are then refolded once
+  (``projections.fold.replace_with_fold``, under the story lock with no ``maintenance``
+  operation). ``build_scale_fixture(..., by_commit=True)`` builds the same story the slow way,
+  a ``commit_fact`` per fact with the projections maintained as in play: the bulk builder's
+  oracle, which ``tests/integration/test_scale_fixture.py`` compares it with.
 - **Canon** (``canon_plan``): ``facts`` facts over the 200 subjects, mixing a functional fluent
   (``located_at``, in disjoint windows), a ``multi`` fluent (``knows``) and a ``multi``
   possession (``owns``). P-02's claims are drawn from the same plan (``claims``).
@@ -28,9 +37,12 @@ filler memories through the same row builder and bulk writer (``memory_row``,
   memories just before it (``covered_by``, as consolidation would). Each character pins
   ``PINS_PER_CHARACTER`` of its held memories. The counters (``hot_counts``) are recounted by
   #147's own ``reconcile``. Nothing is retired, so no retrieval rehydrates.
+- **Subject references**: the erasure index of every record of the story, the memories
+  included, is computed once (``erasure.index.rebuild``), after the memories, as the live engine
+  indexes them; then the active turns' chain is checked once (``chain_violation``).
 - **Index**: the HNSW index is dropped before the bulk load and rebuilt after it by
   ``embeddings.retype``, the DDL a pin runs. P-06 reads that build's time and the index's size
-  from ``ScaleFixture.index``.
+  (its partitions' indexes', #784) from ``ScaleFixture.index``.
 
 ``fixture_version()`` hashes this module's source, and ``cache_key`` combines it with the
 alembic head and the spec. ``cached_database`` restores a matching dump from ``cache_dir``, or
@@ -41,8 +53,8 @@ PATH, or with the pgvector image's binaries through ``docker run`` when PATH has
 one index build after them all (P-04's structured variant: ten stories of 10,000 memories).
 
 The builder writes rows straight into ``memories`` (``core.membership.insert_derived``), so they
-are not indexed for erasure and they enqueue no job. The database is a scratch one, dropped with
-the suite.
+enqueue no job (they are indexed for erasure by the one pass above; ``grow``'s and
+``build_scale_stories``' are not). The database is a scratch one, dropped with the suite.
 """
 
 from __future__ import annotations
@@ -60,34 +72,51 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import bindparam, select, text, update
+from sqlalchemy import bindparam, cast, delete, func, insert, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import embeddings
+from epistrel.core import embeddings, projections, readset
+from epistrel.core.backfill import coverage
 from epistrel.core.canon import facts as canon
 from epistrel.core.enums import (
+    FactCommitState,
     MemoryKind,
     MemoryTrustTier,
     OperationKind,
     RecordProvenance,
 )
+from epistrel.core.erasure import index as erasure_index
+from epistrel.core.errors import ChainBroken
 from epistrel.core.events import Operation, OperationBatch
+from epistrel.core.events.operation import CommitStep, chain_violation
+from epistrel.core.events.registry import validate
+from epistrel.core.events.types import FactCommitted
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import insert_derived
 from epistrel.core.memory import retirement
+from epistrel.core.projections.fold import replace_with_fold
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
+from epistrel.core.propositions.codec import proposition_row
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.registry import Registry, canonical
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID, STRUCTURED_M4_VERSION
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
-from epistrel.core.tables import operations, stories
+from epistrel.core.tables import capability_coverage, operations, stories
+from epistrel.core.tables import events as events_table
+from epistrel.core.tables import propositions as propositions_table
+from epistrel.core.tables.facts import facts as facts_table
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.readset import proposition_changes
 from epistrel.core.turns import stage_turn
+from epistrel.core.visibility import OBJECTIVE
 from epistrel.orchestrator.embeddings.adapter import stub_vector
 from epistrel.testing import perf
 
@@ -696,6 +725,12 @@ async def _create(
                 engine_profile_version_pin=STRUCTURED_M4_VERSION,
             )
         )
+        # #888: the story is structured from turn 1, so its coverage is too (the coverage
+        # creation seeded is Lite's; left as it was, every turn read as a gap).
+        await conn.execute(
+            delete(capability_coverage).where(capability_coverage.c.story_id == story_id)
+        )
+        await coverage.seed_story(conn, story_id)
         for person in person_names(SUBJECTS):
             people[person] = await store.add_entity(
                 conn, story_id, "person", person, character_id=characters.get(person)
@@ -716,8 +751,11 @@ async def _turns(
     spec: ScaleSpec,
     story: ScaleStory,
     log: Callable[[str], None] | None,
+    *,
+    bulk: bool = False,
 ) -> None:
-    """Commit ``spec.turns`` turns, each writing its share of canon in its commit step."""
+    """Commit ``spec.turns`` turns, each writing its share of canon in its commit step
+    (through ``commit_fact``, or with ``bulk`` planned by ``_BulkCanon``)."""
     plan = canon_plan(spec)
     turns = spec.turns
     registry = await predicate_registry.load(db, story.story_id)
@@ -727,7 +765,14 @@ async def _turns(
         return [proposition(story, p) for p in plan[start:end]]
 
     written = await _commit_turns(
-        db, story, turns, seed=f"turns:{spec.seed}", share=share, registry=registry, log=log
+        db,
+        story,
+        turns,
+        seed=f"turns:{spec.seed}",
+        share=share,
+        registry=registry,
+        log=log,
+        bulk=_BulkCanon(story.story_id, registry) if bulk else None,
     )
     story.facts = written
 
@@ -755,10 +800,12 @@ async def _commit_turns(
     share: Callable[[int], list[Proposition]],
     registry: Any,
     log: Callable[[str], None] | None = None,
+    bulk: _BulkCanon | None = None,
 ) -> int:
     """Commit ``turns`` turns, ``TURN_BATCH`` to a transaction (``OperationBatch``); turn
-    ``i`` writes ``share(i)`` through ``commit_fact`` in its commit step. Answers the facts
-    written; moves the story's head and event count."""
+    ``i`` writes ``share(i)`` through ``commit_fact`` in its commit step, or, with ``bulk``,
+    through ``bulk``'s steps (its events in the turn's step, its rows once per batch). Answers
+    the facts written; moves the story's head and event count."""
     rng = random.Random(seed)  # noqa: S311 - filler text
     cast = list(story.characters.values())
     done = 0
@@ -771,7 +818,10 @@ async def _commit_turns(
                 for _ in range(size)
             ]
             group = OperationBatch(db, story.story_id, ops)
-            await group.begin()
+            if bulk is None:
+                await group.begin()
+            else:
+                await _begin_together(group)
             for n, op in enumerate(ops):
                 index = done + n
                 facts = share(index)
@@ -787,16 +837,43 @@ async def _commit_turns(
                     prompt_hash=hashlib.sha256(say.encode()).hexdigest(),
                     finish_reason="stop",
                 )
-                if facts:
+                if facts and bulk is not None:
+                    op.add_commit_step(bulk.step(op, facts))
+                elif facts:
                     op.add_commit_step(_facts_step(story.story_id, op, facts, registry))
                 written += len(facts)
-            await group.commit()
+            if bulk is None:
+                await group.commit()
+            else:
+                await group.commit(before=[bulk.before], after=[bulk.after])
             done += size
             if log is not None and done % (TURN_BATCH * 20) == 0:
                 log(f"turns: {done}/{turns}")
     story.head += turns
     story.events += 2 * turns + written
     return written
+
+
+BEGINNERS = 4
+"""How many of a batch's operations the bulk builder begins at once (each its own read
+transaction; within ``make_engine``'s default pool of 5)."""
+
+
+async def _begin_together(group: OperationBatch) -> None:
+    """``group.begin()`` with ``BEGINNERS`` operations beginning at once: nothing commits to
+    the story meanwhile, so each captures the same base, as one after the other would. If one
+    fails, the begun ones are settled with its error."""
+    gate = asyncio.Semaphore(BEGINNERS)
+
+    async def one(op: Operation) -> None:
+        async with gate:
+            await op.begin()
+
+    results = await asyncio.gather(*(one(op) for op in group.operations), return_exceptions=True)
+    failed = next((r for r in results if isinstance(r, BaseException)), None)
+    if failed is not None:
+        await group.abandon(failed)
+        raise failed
 
 
 def _facts_step(
@@ -814,6 +891,288 @@ def _facts_step(
             )
 
     return step
+
+
+@dataclass(slots=True)
+class _Version:
+    """A current canon version the bulk builder may close: what ``canon._write`` reads of it."""
+
+    id: str
+    lineage_id: str
+    proposition_id: str
+    proposition: Proposition
+    key: tuple[Any, ...]
+    bounds: Any
+    tx_from: datetime
+
+
+@dataclass
+class _BulkCanon:
+    """The bulk builder's canon (#490): each turn's share planned in Python as
+    ``canon._write`` would write it (the same rows, events and change-index rows; supersede
+    chains with their remainders, ``tx_to``, ``superseded_by`` and ``closed_by``), from the
+    versions current so far. A turn's step appends its ``fact_committed`` events after its beats;
+    the batch's ``after`` step writes the batch's propositions, facts, closures and change-index
+    rows in bulk. No content guard, fact hook or erasure index runs per fact: the fixture's
+    canon names no erased subject, the projections are refolded and the subject references
+    rebuilt once the story is built."""
+
+    story_id: str
+    registry: Registry
+    current: dict[tuple[str, str], list[_Version]] = field(default_factory=dict)
+    now: datetime | None = None
+    propositions: list[dict[str, Any]] = field(default_factory=list)
+    facts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    closures: list[dict[str, Any]] = field(default_factory=list)
+    changes: list[tuple[Operation, list[readset.Change]]] = field(default_factory=list)
+
+    async def before(self, conn: AsyncConnection) -> None:
+        """The batch's transaction time, every version's ``tx_from`` (as ``_write`` reads it)."""
+        self.now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
+
+    def step(self, op: Operation, share: Sequence[Proposition]) -> CommitStep:
+        async def run(conn: AsyncConnection) -> None:
+            if not op.seqs:
+                raise AssertionError("a turn's facts follow its beat events")
+            seq = op.seqs[-1]
+            rows: list[dict[str, Any]] = []
+            for p in share:
+                event = self._write(op, p, seq + 1)
+                if event is None:
+                    continue
+                seq += 1
+                rows.append(event)
+            if rows:
+                await conn.execute(insert(events_table), rows)
+
+        return run
+
+    def _write(self, op: Operation, proposition: Proposition, seq: int) -> dict[str, Any] | None:
+        """``canon._write`` for a fresh write (no ``replaces``), in memory: answers its
+        event's row, or ``None`` when a current version already says it."""
+        if self.now is None:
+            raise AssertionError("before() reads the transaction time first")
+        predicate = self.registry.get(proposition.predicate_id)
+        if predicate is None:
+            raise AssertionError(proposition.predicate_id)
+        stored = canonical(proposition, self.registry)
+        key = stored.normalized_key()
+        bounds = canon._Bounds.of(stored.valid_time)
+        span = (stored.subject_id, stored.predicate_id)
+        overlapping = sorted(
+            (c for c in self.current.get(span, []) if _overlaps(c.bounds, bounds)),
+            key=lambda c: (c.bounds.lo is not None, c.bounds.lo or 0, c.id),
+        )
+        for c in overlapping:
+            if (
+                c.key == key
+                and c.proposition.polarity is stored.polarity
+                and predicate.max_cardinality != 1
+                and c.bounds.covers(bounds)
+            ):
+                return None
+        closing = [c for c in overlapping if canon._clashes(predicate, stored, c.proposition)]
+        w = canon._Write(
+            story_id=self.story_id,
+            proposition=proposition,
+            provenance=RecordProvenance.RENDER,
+            authority=canon.default_authority(RecordProvenance.RENDER),
+            visibility=OBJECTIVE,
+            operation=op,
+            anchored_to=None,
+            valid_time=None,
+            source_event_ids=(),
+            beat=None,
+            slot_k=None,
+        )
+        proposition_id = new_ulid()
+        self.propositions.append(
+            {"id": proposition_id, "story_id": self.story_id, **proposition_row(stored)}
+        )
+        at = max([self.now, *(c.tx_from + canon.TICK for c in closing)])
+        fact_id = new_ulid()
+        position = canon._position(w)
+        rows: list[dict[str, Any]] = []
+        remainders: list[str] = []
+        kept: list[_Version] = []
+        for c in closing:
+            first = True
+            for part in canon._remainders(c.bounds, bounds):
+                if part is None:
+                    continue
+                part_id = new_ulid()
+                remainders.append(part_id)
+                lineage = c.lineage_id if first else part_id
+                rows.append(
+                    self._row(
+                        part_id,
+                        lineage,
+                        c.proposition_id,
+                        c.proposition,
+                        part,
+                        at,
+                        w,
+                        (c.id,),
+                        position,
+                    )
+                )
+                kept.append(
+                    _Version(part_id, lineage, c.proposition_id, c.proposition, c.key, part, at)
+                )
+                first = False
+        rows.append(
+            self._row(
+                fact_id,
+                fact_id,
+                proposition_id,
+                stored,
+                bounds,
+                at,
+                w,
+                tuple(c.id for c in closing),
+                position,
+            )
+        )
+        payload = FactCommitted(
+            fact_id=fact_id,
+            lineage_id=fact_id,
+            proposition_id=proposition_id,
+            supersedes=tuple(c.id for c in closing),
+            remainders=tuple(remainders),
+        )
+        event_id = new_ulid()
+        body = validate(canon.FACT_COMMITTED, payload).model_dump(mode="json")
+        for row in rows:
+            row["source_event_ids"] = [event_id]
+        closers = canon._closers(rows)
+        for c in closing:
+            self._close(c.id, at, fact_id, closers.get(c.id, []))
+        gone = {c.id for c in closing}
+        open_ = [v for v in self.current.get(span, []) if v.id not in gone]
+        open_ += kept
+        open_.append(_Version(fact_id, fact_id, proposition_id, stored, key, bounds, at))
+        self.current[span] = open_
+        for row in rows:
+            self.facts[str(row["id"])] = row
+        new = rows[-1]
+        changes = [_change(new, stored, "supersede" if closing else "add")]
+        changes += [_change(self._closed_row(c), c.proposition, "close") for c in closing]
+        changes += [
+            _change(r, p, "add")
+            for r, p in zip(rows[:-1], [v.proposition for v in kept], strict=True)
+        ]
+        self.changes.append((op, changes))
+        return canon._event_row(w, event_id, seq, canon.FACT_COMMITTED, body)
+
+    def _row(
+        self,
+        fact_id: str,
+        lineage_id: str,
+        proposition_id: str,
+        proposition: Proposition,
+        bounds: Any,
+        at: datetime,
+        w: Any,
+        supersedes: Sequence[str],
+        position: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        row = canon._row(
+            fact_id,
+            self.story_id,
+            lineage_id,
+            proposition_id,
+            proposition,
+            bounds,
+            at,
+            w.provenance,
+            w.authority,
+            False,
+            w.visibility,
+            w,
+            [],
+            supersedes,
+            None,
+            FactCommitState.COMMITTED,
+            position,
+        )
+        row.update(tx_to=None, superseded_by=None, closed_by=[])
+        return row
+
+    def _close(self, closed: str, at: datetime, by: str, closers: Sequence[str]) -> None:
+        """What ``_write``'s update does to a version it closes: the row itself while it waits
+        in this batch, else an update the batch's ``after`` step runs."""
+        row = self.facts.get(closed)
+        if row is not None:
+            row["tx_to"] = row["tx_to"] or at
+            row["superseded_by"] = row["superseded_by"] or by
+            row["closed_by"] = [*row["closed_by"], *closers]
+            return
+        self.closures.append({"closed": closed, "at": at, "by": by, "closers": list(closers)})
+
+    def _closed_row(self, version: _Version) -> dict[str, Any]:
+        return {
+            "valid_from": version.bounds.lo,
+            "valid_to": version.bounds.hi,
+            "proposition_id": version.proposition_id,
+        }
+
+    async def after(self, conn: AsyncConnection) -> None:
+        """Write the batch's rows: propositions, facts, closures of earlier batches' versions
+        and the change index (each turn's rows stamped with the revision it left)."""
+        if self.propositions:
+            await conn.execute(insert(propositions_table), self.propositions)
+        if self.facts:
+            await insert_derived(conn, facts_table, list(self.facts.values()))
+        if self.closures:
+            f = facts_table.c
+            await conn.execute(
+                update(facts_table)
+                .where(f.story_id == self.story_id, f.id == bindparam("closed"))
+                .values(
+                    tx_to=func.coalesce(f.tx_to, bindparam("at")),
+                    superseded_by=func.coalesce(f.superseded_by, bindparam("by")),
+                    closed_by=f.closed_by.concat(cast(bindparam("closers"), ARRAY(f.id.type))),
+                ),
+                self.closures,
+            )
+        rows: list[dict[str, Any]] = []
+        for op, changes in self.changes:
+            if op.timeline_revision is None:
+                raise AssertionError("the batch's operations are written")
+            rows += readset.change_rows(
+                self.story_id, op.timeline_revision, op.operation_id, changes
+            )
+        if rows:
+            await conn.execute(insert(proposition_changes), rows)
+        self.facts = {}
+        self.propositions, self.closures, self.changes = [], [], []
+        self.now = None
+
+
+def _overlaps(a: Any, b: Any) -> bool:
+    """The ``&&`` of two ``[lo, hi)`` valid spans (``None`` unbounded; an empty span overlaps
+    nothing)."""
+    if (a.lo is not None and a.hi is not None and a.lo >= a.hi) or (
+        b.lo is not None and b.hi is not None and b.lo >= b.hi
+    ):
+        return False
+    return (a.lo is None or b.hi is None or a.lo < b.hi) and (
+        b.lo is None or a.hi is None or b.lo < a.hi
+    )
+
+
+def _change(
+    row: Mapping[str, Any], proposition: Proposition, kind: readset.ChangeKind
+) -> readset.Change:
+    """``readset.record_fact_change``'s row for one version (the fixture's canon is
+    objective)."""
+    return readset.Change(
+        proposition=proposition,
+        proposition_id=str(row["proposition_id"]),
+        change=kind,
+        valid_window=(row["valid_from"], row["valid_to"]),
+        visibility=OBJECTIVE.document(),
+    )
 
 
 async def turn_operations(db: AsyncEngine, story_id: str) -> dict[int, str]:
@@ -857,8 +1216,13 @@ async def rebuild_index(
         await embeddings.retype(conn, dimension)
     build_s = time.perf_counter() - started
     async with db.connect() as conn:
+        # #784: the index is partitioned by story; its size is its partitions' indexes'.
         size = await conn.scalar(
-            text("SELECT pg_relation_size(CAST(:i AS regclass))"), {"i": embeddings.HNSW_INDEX}
+            text(
+                "SELECT coalesce(sum(pg_relation_size(relid)), 0) "
+                "FROM pg_partition_tree(CAST(:i AS regclass))"
+            ),
+            {"i": embeddings.HNSW_INDEX},
         )
         vectors = await conn.scalar(
             text("SELECT count(*) FROM memories WHERE embedding IS NOT NULL")
@@ -874,11 +1238,17 @@ async def build_scale_fixture(
     *,
     name: str = "Scale fixture",
     log: Callable[[str], None] | None = None,
+    by_commit: bool = False,
 ) -> ScaleFixture:
     """Build ``spec`` (the default: 50k memories, 100k events, 12 characters, 50k facts) in
     ``db``, a migrated scratch database: pins the deployment at the stub's ``spec.dimension``
     (unless pinned), then the steps of the module docstring. Answers the fixture with each
-    step's seconds."""
+    step's seconds.
+
+    The turns' canon is written in bulk (``_BulkCanon``) and the projections refolded once
+    (#490). ``by_commit`` builds it through ``canon.commit_fact`` instead, a fact at a time with
+    the projections maintained as in play: the bulk builder's oracle, which the equivalence
+    test compares it with."""
     spec = spec or ScaleSpec()
     version = version_of(spec.dimension)
     timings: dict[str, float] = {}
@@ -887,8 +1257,13 @@ async def build_scale_fixture(
     await drop_index(db)
     with _timed(timings, "story", log):
         story = await _create(db, spec, name)
-    with _timed(timings, "turns_and_canon", log):
-        await _turns(db, spec, story, log)
+    if by_commit:
+        await _build_by_commit(db, spec, story, timings, log)
+    else:
+        with _timed(timings, "turns_and_canon", log):
+            await _turns(db, spec, story, log, bulk=True)
+        with _timed(timings, "projections", log):
+            await _refold(db, story.story_id)
     turn_ops = await turn_operations(db, story.story_id)
     with _timed(timings, "memories", log):
         rows = memory_plan(spec, story, turn_ops)
@@ -902,12 +1277,59 @@ async def build_scale_fixture(
                 .values(embedding_model_version=version)
             )
             await retirement.reconcile(conn, story.story_id)
+    with _timed(timings, "subject_references", log):
+        await _index_subjects(db, story.story_id)
+    await _check_chain(db, story.story_id)
     with _timed(timings, "index", log):
         index = await rebuild_index(db, spec.dimension)
     with _timed(timings, "analyze", log):
         async with db.begin() as conn:
             await conn.execute(text("ANALYZE"))
     return ScaleFixture(spec, story, version, timings, index)
+
+
+async def _build_by_commit(
+    db: AsyncEngine,
+    spec: ScaleSpec,
+    story: ScaleStory,
+    timings: dict[str, float],
+    log: Callable[[str], None] | None,
+) -> None:
+    """The oracle's turns: each fact through ``canon.commit_fact`` in its turn's commit step,
+    its events indexed and the projections maintained as each commit runs."""
+    with _timed(timings, "turns_and_canon", log):
+        await _turns(db, spec, story, log)
+
+
+CANON_PROJECTIONS = (projections.RELATIONSHIPS, projections.PLACEMENT, projections.SCENE_STATE)
+"""The projections over canon (#137), which the bulk builder's canon bypasses: the turns'
+commits maintained every projection of the log, and no projection of the log reads a
+``fact_committed`` event."""
+
+
+async def _refold(db: AsyncEngine, story_id: str) -> None:
+    """Replace the story's projections over canon with their fold, under the story lock, as
+    ``fold.rebuild``'s step does, but with no ``maintenance`` operation."""
+    async with db.begin() as conn:
+        await conn.execute(select(stories.c.id).where(stories.c.id == story_id).with_for_update())
+        await replace_with_fold(conn, story_id, CANON_PROJECTIONS)
+
+
+async def _index_subjects(db: AsyncEngine, story_id: str) -> None:
+    """The erasure index's subject references of every record of the story, the memories
+    included (as the live engine indexes them), in one pass (``erasure.index.rebuild``)."""
+    async with db.begin() as conn:
+        await conn.execute(select(stories.c.id).where(stories.c.id == story_id).with_for_update())
+        await erasure_index.rebuild(conn, story_id, write=True)
+
+
+async def _check_chain(db: AsyncEngine, story_id: str) -> None:
+    """The full FR-STORE-28 check of the story's active turns (``chain_violation``), once; the
+    ``chain_unchecked`` flag is left as the commits left it."""
+    async with db.connect() as conn:
+        violation = await chain_violation(conn, story_id)
+    if violation is not None:
+        raise ChainBroken("the scale fixture's turns are not one chain", violation)
 
 
 async def build_scale_stories(

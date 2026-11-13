@@ -11,17 +11,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from sqlalchemy import text
 
 from epistrel.core import clock, stories
 from epistrel.core.bundles import NEVER
+from epistrel.core.errors import InvalidRange
 from epistrel.core.images import costs, limits
 from epistrel.core.stories import STORY_ID_EXCEPTIONS
 from epistrel.core.tables.images import CostStatus, ImageJobKind
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images.port import Cost
 from epistrel.testing.images import ScriptedChecks, installed_checks, registered_target
-from tests import catalog_support
+from tests import catalog_support, scenario_support
 from tests.auth_support import bearer
 from tests.event_support import new_story
 from tests.image_job_support import prepared
@@ -134,6 +137,76 @@ async def test_usage_ranges(pg_url: str, tmp_path: Path) -> None:
         assert kept["retained_from"] == (today - timedelta(days=3)).isoformat()
         assert kept["days"][0]["date"] == kept["retained_from"]
         assert len(kept["days"]) == 4
+
+
+async def test_usage_range_edges(pg_url: str, tmp_path: Path) -> None:
+    """A ``to`` before 0001-01-30 without ``from`` is 422 ``invalid_range`` naming ``to`` on
+    each of the four usage routes, never a 500 (the default 30-day start would underflow;
+    #836); the deployment report reaching ``date.max`` answers 200 (its day loop stops at
+    the range's end).
+
+    Complement asserted: ``to=0001-01-30`` without ``from`` is accepted."""
+    async with space(pg_url, tmp_path, "usage_edges") as sp:
+        await sp.set(deployment_time_zone="UTC")
+        story = await new_story(sp.db)
+        character = await catalog_support.create(sp.client)
+        scenario = await scenario_support.create(sp.client)
+        for path in (
+            "/admin/image-usage",
+            f"/stories/{story}/image-usage",
+            f"/catalog/characters/{character['id']}/image-usage",
+            f"/catalog/scenarios/{scenario['id']}/image-usage",
+        ):
+            refused = await _usage(sp, path, to="0001-01-01")
+            assert refused.status_code == 422, (path, refused.text)
+            error = refused.json()["error"]
+            assert error["code"] == "invalid_range", (path, error)
+            assert error["details"] == {"to": "0001-01-01", "field": "to"}, (path, error)
+            assert "would start before 0001-01-01" in error["message"], (path, error)
+        first = await _usage(sp, "/admin/image-usage", to="0001-01-30")
+        assert first.status_code == 200, first.text
+        assert (first.json()["from"], first.json()["to"]) == ("0001-01-01", "0001-01-30")
+        for params in ({"to": "9999-12-31"}, {"from": "9999-12-31"}):
+            last = await _usage(sp, "/admin/image-usage", **params)
+            assert last.status_code == 200, (params, last.text)
+            assert last.json()["to"] == "9999-12-31"
+            assert last.json()["days"][-1]["date"] == "9999-12-31"
+
+
+_DAY = st.one_of(st.none(), st.dates())
+
+
+@given(today=st.dates(), from_date=_DAY, to_date=_DAY)
+@example(today=date(2026, 11, 12), from_date=None, to_date=date.min)
+@example(today=date.min, from_date=None, to_date=None)
+@example(today=date.max, from_date=None, to_date=None)
+@example(today=date(2026, 11, 12), from_date=date.max, to_date=None)
+def test_default_range_never_overflows(
+    today: date, from_date: date | None, to_date: date | None
+) -> None:
+    """``costs.default_range`` over any ``from``/``to`` in ``[date.min, date.max]`` or omitted,
+    and any today, returns an inclusive range of at most 366 days that keeps what was sent, or
+    raises ``InvalidRange``; never ``OverflowError`` (#836)."""
+    try:
+        start, end = costs.default_range(today, from_date, to_date)
+    except InvalidRange:
+        return
+    assert start <= end
+    assert (end - start).days + 1 <= costs.RANGE_MAX_DAYS
+    assert from_date in (None, start)
+    assert to_date in (None, end)
+
+
+@given(start=st.dates(), span=st.integers(min_value=-3, max_value=400))
+@example(start=date.max, span=0)
+@example(start=date.max - timedelta(days=5), span=5)
+def test_range_days_stops_at_end(start: date, span: int) -> None:
+    """``costs.range_days`` lists every day from ``start`` through ``end`` ascending, none when
+    ``start`` is after ``end``, and never steps past ``end``, so a range ending at
+    ``date.max`` does not overflow (#836)."""
+    end = date.fromordinal(min(max(start.toordinal() + span, 1), date.max.toordinal()))
+    expected = [date.fromordinal(o) for o in range(start.toordinal(), end.toordinal() + 1)]
+    assert list(costs.range_days(start, end)) == expected
 
 
 async def test_cost_retention(pg_url: str, tmp_path: Path) -> None:

@@ -505,10 +505,11 @@ async def test_a_story_erasure_keeps_the_public_card_in_the_creation_report(
 ) -> None:
     """docs/04 C-15 as amended for #376 (the owner's option 2): a story-scope erasure of a cast
     catalog character deletes her genesis snapshot, and the creation report keeps her public
-    catalog card (id, labels, public description) with her name redacted, because the card is
-    public catalog data until a catalog-scope erasure. #390, #393: nothing else of the card stays
-    (her primary and gallery images and her content rating are emptied); #400: the card keeps
-    exactly its structural fields beside those. #381: the report's deferred items that belong only
+    catalog card, as ``boundary.KEPT_CARD`` states: its labels and public description stay, with
+    exactly its structural fields (its kind, ids, source, version and status values, #400), while
+    her name is redacted and nothing else stays (her primary and gallery images and her content
+    rating are emptied, #390, #393), because the card is public catalog data until a
+    catalog-scope erasure. #381: the report's deferred items that belong only
     to her (her secret memory, her stats, her relationships) go with her ``genesis_deferred``
     rows, and ``counts.deferred`` is recounted.
 

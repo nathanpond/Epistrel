@@ -42,6 +42,10 @@ EXPRESSION_INDEXES = frozenset({"ix_stories_prune_policy"})
 """Expression indexes declared in the metadata and created by their migration (#703's
 ``stories ((settings -> 'prune_policy'))``): Alembic cannot compare an expression index with
 its reflection, so autogenerate leaves them out; ``test_s_prune__policy`` asserts it exists."""
+PARTITION_PREFIXES = ("memories_p_",)
+"""Tables the engine creates at run time as partitions of a declared parent: one ``memories``
+partition per story (#784, ``core.memory.story_partitions``). Autogenerate ignores them and
+their indexes; the parent is compared as declared."""
 RUNTIME_TYPED_COLUMNS = frozenset({("memories", "embedding")})
 """Columns whose type the engine sets at run time: ``memories.embedding`` is the untyped
 ``vector`` until the first embedding retypes it to ``vector(d)`` (#138)."""
@@ -55,9 +59,12 @@ def include_object(
     compare_to: Any,
 ) -> bool:
     """Alembic ``include_object`` hook: ignore Alembic's own bookkeeping table, the indexes
-    the engine creates at run time (``RUNTIME_INDEXES``) and the expression indexes
-    (``EXPRESSION_INDEXES``)."""
+    the engine creates at run time (``RUNTIME_INDEXES``), the expression indexes
+    (``EXPRESSION_INDEXES``) and the run-time partitions with their indexes
+    (``PARTITION_PREFIXES``)."""
     if type_ == "index" and (name in RUNTIME_INDEXES or name in EXPRESSION_INDEXES):
+        return False
+    if name is not None and name.startswith(PARTITION_PREFIXES) and type_ in ("table", "index"):
         return False
     return not (type_ == "table" and name == ALEMBIC_VERSION_TABLE)
 

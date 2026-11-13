@@ -9,6 +9,8 @@ of the operations they name, so no row is re-read from the log. A regenerated tu
 > 1, #47) makes the rows of every other active variant at its index ``dormant``, as its commit
 does to their operations, and every turn makes the still-``discarded`` rows at or after its index
 ``dormant`` (a rewound tail becomes a dormant continuation under the first new turn, #66).
+These look the rows up by turn, membership or operation (``Rows.keys_where``), so a fold of a
+long story does not scan every row per event (#887).
 
 ``role`` comes from (provenance, character): ``player`` for a ``player_input`` (respond's or an
 ingested one, #58), ``narration`` for a consumer or system beat with no character (an ingested
@@ -180,9 +182,10 @@ class TranscriptProjection(Projection):
 
 
 def _retire(rows: Rows, turn: int, variant: int | None) -> None:
-    for row in rows:
+    for key in rows.keys_where("narrative_turn", turn):
+        row = rows.get(key)
         if (
-            row["narrative_turn"] == turn
+            row is not None
             and row["turn_variant"] != variant
             and row["membership"] == Membership.ACTIVE.value
         ):
@@ -190,17 +193,15 @@ def _retire(rows: Rows, turn: int, variant: int | None) -> None:
 
 
 def _shelve(rows: Rows, turn: int) -> None:
-    for row in rows:
-        if (
-            row["narrative_turn"] is not None
-            and row["narrative_turn"] >= turn
-            and row["membership"] == Membership.DISCARDED.value
-        ):
+    for key in rows.keys_where("membership", Membership.DISCARDED.value):
+        row = rows.get(key)
+        if row is not None and row["narrative_turn"] is not None and row["narrative_turn"] >= turn:
             rows.put({**row, "membership": Membership.DORMANT.value})
 
 
 def _flip(rows: Rows, operation_ids: Iterable[str], membership: Membership) -> None:
-    targets = set(operation_ids)
-    for row in rows:
-        if row["operation_id"] in targets and row["membership"] != membership.value:
-            rows.put({**row, "membership": membership.value})
+    for operation_id in set(operation_ids):
+        for key in rows.keys_where("operation_id", operation_id):
+            row = rows.get(key)
+            if row is not None and row["membership"] != membership.value:
+                rows.put({**row, "membership": membership.value})

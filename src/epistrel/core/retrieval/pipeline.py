@@ -210,14 +210,17 @@ BELIEFS_MAX = 20
 PARTITIONS_MODULE = "partitions"
 HNSW_MAX_SCAN_TUPLES = 100_000
 """``SET LOCAL hnsw.max_scan_tuples`` of the vector arm (#706): how many index tuples the HNSW
-iterative scan may visit before it ends. The index is global, so a story's ``story_id``
-filter discards every other story's nearer vectors. With pgvector's default of 20,000, a
-story with few vectors in a deployment of more than 20,000 nearer ones got none back. 100,000
-covers a story's whole hot-vector bound (``hot_vector_budget_per_story`` 50,000 plus
-``max_pinned_per_story`` 2,000) nearly twice over beside it. A story with fewer than
-``retrieval_vector_k`` vectors still reads to the cap on every retrieval, so the cap is also
-that read's cost bound. It bounds the miss and does not remove it: a tiny story among more
-than 100,000 nearer vectors can still lose some (docs/02 §6, the retrieval pipeline)."""
+iterative scan may visit before it ends. The scan reads the story's own partition and HNSW
+graph (ADR-187, #784, #867), so the bound that matters is one story's: its hot vectors are held
+to ``hot_vector_budget_per_story`` (50,000) plus ``max_pinned_per_story`` (2,000), docs/02
+§4.2. 100,000 covers that whole graph nearly twice over, where pgvector's default of 20,000
+would stop partway through a large story whose nearer vectors the filter discards (another
+version's, quarantined, positioned later, outside the viewpoint). A story with fewer than
+``retrieval_vector_k`` eligible vectors reads to the end of its graph, or to the cap, on every
+retrieval, so the cap is also that read's cost bound. No other story's vectors are scanned.
+What remains is a story's own graph: thousands of word-for-word identical memories in one
+story can degrade it so that the scan misses that story's other vectors (docs/02 §6, the
+retrieval pipeline); the keyword arm still finds an exact-text match."""
 
 ARM_VECTOR = "vector"
 ARM_LEXICAL = "lexical"
@@ -1367,6 +1370,18 @@ async def retrieve(
         len(profiles),
         len(canon),
     )
+    # The gap marks answer the retrieval, so they count in its timings' total (#888).
+    gaps = tuple(
+        await coverage_marks.gaps(
+            conn,
+            story_id,
+            settings,
+            window=(
+                (turns[0] if turns else None) or 1,
+                (turns[1] if turns else None) or position[0],
+            ),
+        )
+    )
     return RetrievalResult(
         episodes=episodes,
         assessments=assessments,
@@ -1384,17 +1399,7 @@ async def retrieve(
         model_calls=model_calls,
         embedding_model_version=version,
         position=position,
-        coverage_gaps=tuple(
-            await coverage_marks.gaps(
-                conn,
-                story_id,
-                settings,
-                window=(
-                    (turns[0] if turns else None) or 1,
-                    (turns[1] if turns else None) or position[0],
-                ),
-            )
-        ),
+        coverage_gaps=gaps,
     )
 
 

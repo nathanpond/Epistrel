@@ -116,6 +116,7 @@ from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.memory.story_partitions import count_rows, not_a_partition
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds import profiles as seeded_profiles
@@ -545,21 +546,15 @@ async def story_rows(db: AsyncEngine) -> dict[str, int]:
             str(row[0])
             for row in await conn.execute(
                 text(
-                    "SELECT table_name FROM information_schema.columns "
+                    "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
                     "WHERE table_schema = 'public' AND column_name = 'story_id' "
-                    "ORDER BY table_name"
+                    f"AND {not_a_partition()} ORDER BY table_name"
                 )
             )
         ]
-        counts: dict[str, int] = {}
-        for table in tables:
-            counts[table] = int(
-                (
-                    await conn.execute(
-                        text(f'SELECT count(*) FROM "{table}" WHERE story_id IS NOT NULL')  # noqa: S608 - names from information_schema
-                    )
-                ).scalar_one()
-            )
+    # #784: ``memories`` is counted partition by partition (``count_rows``).
+    counts = {table: await count_rows(db, table, "story_id IS NOT NULL") for table in tables}
+    async with db.connect() as conn:
         counts["stories"] = int(
             (await conn.execute(text("SELECT count(*) FROM stories"))).scalar_one()
         )

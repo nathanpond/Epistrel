@@ -38,7 +38,13 @@ from epistrel.evals import cli
 from epistrel.evals import presets as preset_constants
 from epistrel.evals.certify import floors_of
 from epistrel.evals.certify_cli import UsageError, parse_presets
-from epistrel.evals.index import REFERENCE_MODEL_ID
+from epistrel.evals.index import (
+    EM_DASH,
+    PRESETS_HEADER,
+    REFERENCE_MODEL_ID,
+    Committed,
+    preset_rows,
+)
 from epistrel.evals.report import (
     INDEX_NAME,
     SUMMARY_RE,
@@ -252,6 +258,47 @@ async def test_certify_presets__stub(
     )
     write_index(out / "reports", out / "records")
     assert cli.index_check(out / "reports", out / "records") == 0
+
+
+def test_a_stale_row_keeps_its_model() -> None:
+    """#782: a stale row (records exist, none at the current fingerprint) names the newest
+    record's ``generation`` model, backticked as a certified row does, so two models' stale rows
+    for one preset stay apart; every other cell after the status stays ``—``.
+
+    Complements: a stale record that names no ``generation`` model, and a preset with no record,
+    keep ``—`` in Model."""
+    (path,) = [p for p in committed_records() if p.name.startswith("standard-")]
+    document = json.loads(path.read_text("utf-8"))
+    document["fingerprint"] = "sha256:" + "0" * 64  # no preset ever hashes to this
+
+    def cells(found: list[Committed]) -> list[str]:
+        (row,) = preset_rows("standard", found, path.parent)
+        return [cell.strip() for cell in row.strip("|").split("|")]
+
+    stale = []
+    for model in ("model-a", "model-b"):
+        stale.append(
+            Committed(
+                path,
+                parse_record(
+                    {**document, "models": {"generation": {"id": model, "reported_version": None}}}
+                ),
+            )
+        )
+    rows = [cells([one]) for one in stale]
+    header = list(PRESETS_HEADER)
+    for row, model in zip(rows, ("model-a", "model-b"), strict=True):
+        assert row[2].startswith("uncertified (preset changed since certification")
+        assert row[header.index("Model")] == f"`{model}`"
+        assert [c for i, c in enumerate(row[3:], 3) if header[i] != "Model"] == [EM_DASH] * 8
+
+    nameless = {k: v for k, v in document["models"].items() if k != "generation"}
+    row = cells([Committed(path, parse_record({**document, "models": nameless}))])
+    assert row[2].startswith("uncertified (preset changed since certification")
+    assert row[header.index("Model")] == EM_DASH
+    row = cells([])
+    assert row[2] == "uncertified"
+    assert row[header.index("Model")] == EM_DASH
 
 
 @pytest.mark.xfail(not committed_records(), reason="awaiting owner run (#235's Demo)", strict=False)

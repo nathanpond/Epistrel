@@ -18,6 +18,7 @@ traceability gate takes one file per test ID and milestone).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -31,8 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import (
+    GuardrailViolation,
+    IdempotencyConflict,
     InvalidRequest,
     ModuleOff,
+    OutputPolicyViolation,
     PurposeArchived,
     PurposeNotFound,
     PurposeVersionNotFound,
@@ -42,7 +46,13 @@ from epistrel.core.errors import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.purposes.output import output_model, output_of
 from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
-from epistrel.core.purposes.validation import ATTRIBUTE_POSITIONS, PURPOSE_LIMIT, PurposeRefused
+from epistrel.core.purposes.validation import (
+    ATTRIBUTE_POSITIONS,
+    PURPOSE_LIMIT,
+    PurposeRefused,
+    check_template,
+    environment,
+)
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, validate_purpose
@@ -60,7 +70,7 @@ from tests.policy_support import rated_policy_rating, words
 from tests.profile_support import nest
 from tests.respond_support import body as turn_body
 from tests.respond_support import new_story, respond, respond_client
-from tests.story_support import WRITE, character, create, override
+from tests.story_support import READ, WRITE, character, create, override
 
 OPERATOR = {**bearer(), "X-Epistrel-Principal": "p-operator"}
 LIBRARY = RequestContext(principal="p-operator")
@@ -607,6 +617,232 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    # #857: a call of a mutating name reached through a `{% set %}`/`{% with %}` alias, or
+    # through a filter's attribute name.
+    (
+        "map_pop_called",
+        {"template": "{{ ([inputs]|map(attribute='pop')|first)('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_append_called",
+        {"template": "{{ ([inputs.list]|map(attribute='append')|first)(1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_append_called",
+        {"template": "{% set p = inputs.list.append %}{{ p(1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_key_pop_called",
+        {"template": "{% set p = inputs['pop'] %}{{ p('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "with_setdefault_called",
+        {"template": "{% with p = inputs['setdefault'] %}{{ p('a', 1) }}{% endwith %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_setdefault_called",
+        {"template": "{{ ([inputs]|map(attribute='setdefault')|first)('a', 1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_extend_called",
+        {"template": "{% set p = inputs.list.extend %}{{ p([1]) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "sum_extend_called",
+        {"template": "{{ ([inputs.list]|sum(attribute='extend'))([1]) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "with_key_clear_called",
+        {"template": "{% with c = inputs['clear'] %}{{ c() }}{% endwith %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_dotted_clear_called",
+        {"template": "{{ ([inputs]|map(attribute='list.clear')|list)[0]() }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "groupby_positional_clear_called",
+        {"template": "{{ (inputs.list|groupby('clear')|first)[0]() }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_map_pop_called",
+        {"template": "{% set p = [inputs]|map(attribute='pop')|first %}{{ p('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    # #858: what fails on every render: a `{% set x.y %}`, a slice step of 0, a filter or
+    # test missing its arguments, directly or through `map('<filter>', …)`.
+    (
+        "set_namespace_attribute",
+        {"template": "{% set inputs.x = 1 %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_namespace_private",
+        {"template": "{% set inputs._y = 1 %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_block_namespace",
+        {"template": "{% set inputs.x %}y{% endset %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_zero",
+        {"template": "{{ inputs.list[::0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_negative_zero",
+        {"template": "{{ inputs.list[1:2:-0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_positive_zero",
+        {"template": "{{ inputs.list[::+0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_no_filter",
+        {"template": "{{ inputs.list|map|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_keyword_no_filter",
+        {"template": "{{ inputs.list|map(default=1)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "selectattr_no_args",
+        {"template": "{{ inputs.list|selectattr|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "rejectattr_no_args",
+        {"template": "{{ inputs.list|rejectattr|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_no_args",
+        {"template": "{{ 'a'|replace }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_one_arg",
+        {"template": "{{ inputs.voter|replace('a') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_one_keyword",
+        {"template": "{{ inputs.voter|replace(new='b') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_zero",
+        {"template": "{{ inputs.list|slice(0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_keyword_zero",
+        {"template": "{{ inputs.list|slice(slices=0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_replace_one_arg",
+        {"template": "{{ inputs.list|map('replace', 'a')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_slice_zero",
+        {"template": "{{ inputs.list|map('slice', 0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_selectattr_no_args",
+        {"template": "{{ inputs.list|map('selectattr')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "select_test_no_args",
+        {"template": "{{ inputs.list|select('divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "reject_test_no_args",
+        {"template": "{{ inputs.list|reject('sameas')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "selectattr_test_no_args",
+        {"template": "{{ inputs.list|selectattr('votes', 'divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "rejectattr_test_no_args",
+        {"template": "{{ inputs.list|rejectattr('votes', 'eq')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_select_test_no_args",
+        {"template": "{{ inputs.list|map('select', 'divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "is_test_no_args",
+        {"template": "{% if inputs.voter is divisibleby %}x{% endif %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "is_comparison_no_args",
+        {"template": "{% if inputs.voter is gt %}x{% endif %}"},
+        "template_invalid",
+        "body.template",
+    ),
     (
         "pop_taken",
         {"template": "{{ inputs.pop }}"},
@@ -755,8 +991,16 @@ REPLACE_REFUSALS: list[str] = [
     "{{ '{0[_y]}'['format'](inputs) }}",
     "{{ inputs['get']('_y') }}",
     "{{ ([inputs]|map(attribute='get')|first)('_y') }}",
+    "{{ ([inputs]|map(attribute='pop')|first)('voter') }}",
+    "{{ ([inputs.list]|map(attribute='append')|first)(1) }}",
+    "{% set p = inputs.list.append %}{{ p(1) }}",
+    "{% set p = inputs['pop'] %}{{ p('voter') }}",
+    "{% set inputs.x = 1 %}x",
+    "{{ inputs.list[::0] }}",
+    "{{ inputs.list|map|list }}",
+    "{{ inputs.list|select('divisibleby')|list }}",
 ]
-"""#852's routes, refused on ``PUT`` as on ``POST``."""
+"""#852's, #857's and #858's routes, refused on ``PUT`` as on ``POST``."""
 
 
 @pytest.mark.integration
@@ -764,9 +1008,10 @@ REPLACE_REFUSALS: list[str] = [
 async def test_i_29__m9_replace_refusals(
     served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
 ) -> None:
-    """A replacement is checked like a registration: each of #852's templates is refused on
-    ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose stays at
-    version 1.
+    """A replacement is checked like a registration: each of #852's, #857's and #858's
+    templates is
+    refused on ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose
+    stays at version 1.
 
     Complement asserted: a valid replacement then writes version 2."""
     client, _ = served
@@ -788,6 +1033,152 @@ async def test_i_29__m9_replace_refusals(
         headers=OPERATOR,
     )
     assert (replaced.status_code, replaced.json()["version"]) == (200, 2), replaced.text
+
+
+MUTATING_CALLS: list[tuple[str, str]] = [
+    ("{{ ([inputs]|map(attribute='pop')|first)('voter') }}", "pop"),
+    ("{{ ([inputs.list]|map(attribute='append')|first)(1) }}", "append"),
+    ("{% set p = inputs.list.append %}{{ p(1) }}", "append"),
+    ("{% set p = inputs['pop'] %}{{ p('voter') }}", "pop"),
+    ("{% with p = inputs['setdefault'] %}{{ p('a', 1) }}{% endwith %}", "setdefault"),
+    ("{{ ([inputs]|map(attribute='setdefault')|first)('a', 1) }}", "setdefault"),
+    ("{% set p = inputs.list.extend %}{{ p([1]) }}", "extend"),
+    ("{{ ([inputs.list]|sum(attribute='extend'))([1]) }}", "extend"),
+    ("{{ ([inputs]|map('sum', attribute='extend')|first)([1]) }}", "extend"),
+    ("{% with c = inputs['clear'] %}{{ c() }}{% endwith %}", "clear"),
+    ("{{ ([inputs]|map(attribute='list.clear')|list)[0]() }}", "clear"),
+    ("{{ (inputs.list|groupby('clear')|first)[0]() }}", "clear"),
+    ("{% set p = [inputs]|map(attribute='pop')|first %}{{ p('voter') }}", "pop"),
+]
+"""#857: calls of a mutating name reached through an alias or a filter's attribute name."""
+
+READ_NOT_CALLED: list[tuple[str, str]] = [
+    ("{% set p = inputs['pop'] %}{{ p }}", "P"),
+    ("{{ ([inputs]|map(attribute='pop')|first) }}", "P"),
+    ("{{ inputs['sort'] }}", "S"),
+    ("{{ inputs.add }}", "A"),
+    ("{% set x = inputs.append_text %}{{ x }}", "T"),
+    # A rebinding clears the alias; a reading method of a mapped list is still callable.
+    ("{% set p = inputs['pop'] %}{% set p = inputs.list.count %}{{ p(1) }}", "1"),
+    ("{{ (inputs.rows|map(attribute='pop')|list).count(1) }}", "1"),
+]
+"""#857's complement: a mutating name bound or mapped and not called reads the key."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_mutating_calls() -> None:
+    """#857: ``check_template`` refuses a call of a mutating method reached through a
+    ``{% set %}``/``{% with %}`` alias or a filter's attribute name, naming the method, as it
+    refuses the direct call (#853). Each would fail at render: the sandbox refuses the method,
+    and a JSON value is not callable.
+
+    Complement asserted: the same names bound or mapped without a call are accepted and render
+    the key's value."""
+    inputs = {
+        "voter": "Ash",
+        "list": [1, 2, 3],
+        "pop": "P",
+        "sort": "S",
+        "add": "A",
+        "append_text": "T",
+        "rows": [{"pop": 1}],
+    }
+    for template, method in MUTATING_CALLS:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        details = refused.value.details
+        assert (details["reason"], details["field"], details["message"]) == (
+            "template_invalid",
+            "body.template",
+            f"the template uses {method!r}, a method that changes its value",
+        ), template
+    for template, rendered in READ_NOT_CALLED:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered
+
+
+ALWAYS_FAILING: list[tuple[str, str]] = [
+    ("{% set inputs.x = 1 %}x", "the template sets inputs.x, and 'inputs' is not a namespace"),
+    ("{% set inputs._y = 1 %}x", "the template sets inputs._y, and 'inputs' is not a namespace"),
+    ("{{ inputs.list[::0] }}", "the template uses a slice step of 0"),
+    ("{{ inputs.list[::-0] }}", "the template uses a slice step of 0"),
+    ("{{ inputs.list|map|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|map(default=1)|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|selectattr|list }}", "'selectattr' needs 1 argument(s)"),
+    ("{{ inputs.list|rejectattr|list }}", "'rejectattr' needs 1 argument(s)"),
+    ("{{ inputs.voter|replace }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.voter|replace('a') }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.voter|replace(old='a') }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.list|slice(0)|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|slice(slices=0)|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|map('replace', 'a')|list }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.list|map('slice', 0)|map('list')|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|map('map')|map('list')|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|select('divisibleby')|list }}", "'divisibleby' needs 1 argument(s)"),
+    ("{{ inputs.list|reject('in')|list }}", "'in' needs 1 argument(s)"),
+    ("{{ inputs.rows|selectattr('a', 'divisibleby')|list }}", "'divisibleby' needs 1 argument(s)"),
+    ("{{ inputs.rows|rejectattr('a', 'eq')|list }}", "'eq' needs 1 argument(s)"),
+    ("{{ inputs.list|select('eq', b=1)|list }}", "'eq' needs 1 argument(s)"),
+    ("{{ inputs.voter is sameas }}", "'sameas' needs 1 argument(s)"),
+    (
+        "{{ inputs.list|map('select', 'divisibleby')|map('list')|list }}",
+        "'divisibleby' needs 1 argument(s)",
+    ),
+]
+"""#858: templates that fail on every render, each with the message that names its construct."""
+
+STILL_SAVED: list[tuple[str, str]] = [
+    ("{{ inputs.list|select|list }}", "[1, 2, 3]"),
+    ("{{ inputs.list|reject|list }}", "[]"),
+    ("{{ inputs.list[::2] }}", "[1, 3]"),
+    ("{{ inputs.list[::-1] }}", "[3, 2, 1]"),
+    ("{{ inputs.names|map('upper')|join }}", "ABCD"),
+    ("{{ inputs.rows|selectattr('a')|list }}", "[{'a': 1}]"),
+    ("{{ inputs.voter|replace('A', 'E') }}", "Esh"),
+    ("{{ inputs.voter|replace(old='A', new='E') }}", "Esh"),
+    ("{{ inputs.list|select('divisibleby', 3)|list }}", "[3]"),
+    ("{{ inputs.list|select('divisibleby', num=3)|list }}", "[3]"),
+    ("{{ inputs.list[2] is divisibleby(3) }}", "True"),
+    ("{{ inputs.list|slice(2)|list }}", "[[1, 2], [3]]"),
+    ("{{ inputs.rows|map(attribute='a', default=0)|list }}", "[1, 0]"),
+    ("{{ inputs.names|map('replace', old='a', new='A')|join }}", "Abcd"),
+    ("{{ inputs.rows|selectattr('a', 'eq', 1)|list }}", "[{'a': 1}]"),
+]
+"""#858's complement: the accepted neighbours of ``ALWAYS_FAILING``, with what they render."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_always_failing() -> None:
+    """#858: ``check_template`` refuses a template the scan can see fails on every render,
+    naming the construct: a ``{% set x.y %}`` target (no namespace exists), a constant zero
+    slice step, ``slice(0)``, ``map`` with no filter, ``selectattr``/``rejectattr`` with no
+    arguments, and a filter or test given fewer arguments than it needs, directly, through
+    ``select``/``reject``/``selectattr``/``rejectattr`` or through ``map('<filter>', …)``.
+    Each does fail when rendered without the scan (a generator ``map`` yields fails once it
+    is read, so those rows read it).
+
+    Complement asserted: the neighbours in ``STILL_SAVED`` are accepted and render."""
+    inputs = {
+        "voter": "Ash",
+        "list": [1, 2, 3],
+        "names": ["ab", "cd"],
+        "rows": [{"a": 1}, {"a": 0}],
+    }
+    env = environment()
+    for template, message in ALWAYS_FAILING:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        details = refused.value.details
+        assert (details["reason"], details["field"], details["message"]) == (
+            "template_invalid",
+            "body.template",
+            message,
+        ), template
+        with pytest.raises(Exception):  # noqa: B017, PT011 - any render error
+            env.from_string(template).render(inputs=inputs)
+    for template, rendered in STILL_SAVED:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered
 
 
 @pytest.mark.integration
@@ -841,6 +1232,17 @@ async def test_i_29__m9_valid_edges(
             "{{ inputs.names | select('string') | join }}|"
             "{{ inputs.list | selectattr('votes', 'odd') | map(attribute='name') | join }}|"
             "{% if inputs.voter is string %}s{% endif %}|{{ inputs['sort'] }}|"
+            # #857: a mutating name that is bound or mapped and not called reads the key.
+            "{% set p = inputs['pop'] %}{{ p }}|{{ ([inputs]|map(attribute='pop')|first) }}|"
+            "{{ inputs.add }}|{% set x = inputs.append_text %}{{ x }}|"
+            # #858: truthiness select/reject, nonzero steps and filters/tests given their
+            # arguments.
+            "{{ inputs.names | select | join }}|{{ inputs.names | reject | list }}|"
+            "{{ inputs.names[::-1] | join }}|{{ inputs.voter | replace('A', 'E') }}|"
+            "{{ inputs.voter | replace(old='s', new='S') }}|"
+            "{{ inputs.list | selectattr('name') | map(attribute='name') | join }}|"
+            "{{ inputs.list | map(attribute='votes') | select('divisibleby', 2) | join }}|"
+            "{% if inputs.list[1].votes is divisibleby(2) %}even{% endif %}|"
             "{% if viewpoint %}{{ viewpoint.name }}{% endif %}"
             "{% if story %}{{ story.title | default('') }}{% endif %}"
         ),
@@ -855,12 +1257,15 @@ async def test_i_29__m9_valid_edges(
         "names": ["ab", "cd", "ef"],
         "list": [{"name": "x", "votes": 1}, {"name": "y", "votes": 2}],
         "sort": "kept",
+        "pop": "P",
+        "add": "A",
+        "append_text": "T",
     }
     called = await call(client, name, {"inputs": inputs})
     assert called.status_code == 200, called.text
     assert lib.models.stub.calls[-1].messages[1].content == (
         "ABCDEF|Ash|x|y|x,y|y|y|cd|abef|3|xy|x, y|ABCDEF|Ash|-|Ash|Ash and %(_y)s|101|Ash|"
-        "abcdef|x|s|kept|"
+        "abcdef|x|s|kept|P|P|A|T|abcdef|[]|efcdab|Esh|ASh|xy|2|even|"
     )
     keywords = _schema(
         kind={"type": "string", "const": "vote", "title": "Kind"},
@@ -1471,6 +1876,157 @@ async def test_i_29__m9_call_library(
     assert mistyped.value.details["field"] == "query.deadline_ms"
 
 
+def keyed(key: str) -> RequestContext:
+    """A fresh library context under ``Idempotency-Key`` ``key`` (#842)."""
+    return dataclasses.replace(LIBRARY, idempotency_key=key)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library_idempotent(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """``Engine.call_purpose`` under an ``Idempotency-Key`` answers a repeat with the stored
+    result and no second call to the purpose's model; a different body under the same key is
+    refused with ``IdempotencyConflict``, as REST answers 409 ``idempotency_conflict`` (#842)."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_keyed")
+    assert (await register(purpose_body(name))).status_code == 201
+    ctx = keyed(unique("k-842-lib"))
+
+    lib.models.stub.script(name, [answer("Stored.")])
+    first = await lib.call_purpose(ctx, name, CALL["inputs"])
+    assert first.output["reason"] == "Stored."
+    assert own_calls(lib, name) == 1
+    lib.models.stub.script(name, [answer("Second.")])
+    again = await lib.call_purpose(ctx, name, CALL["inputs"])
+    assert (first.replayed, again.replayed) == (False, True)
+    assert dataclasses.replace(again, replayed=False) == first
+    assert own_calls(lib, name) == 1
+    with pytest.raises(IdempotencyConflict):
+        await lib.call_purpose(ctx, name, {"voter": "Briar", "target": "Ash"})
+    assert own_calls(lib, name) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library_gates(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+) -> None:
+    """``Engine.call_purpose`` runs the input gate (``GuardrailViolation`` naming its locator,
+    no call to the purpose's model) and the output gate (one retry, then
+    ``OutputPolicyViolation`` with no output), including a depicted minor on each side, as
+    ``test_i_29__m9_call_input_gate`` and ``_output_gate`` assert over REST (#842). Audit rows
+    are asserted over REST only."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_gated")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}
+
+    with pytest.raises(GuardrailViolation) as refused_in:
+        await lib.call_purpose(
+            keyed(unique("k-842-in")), name, banned, content_rating=banned_rating
+        )
+    assert refused_in.value.details["violations"][0]["locator"] == "inputs.notes.said[1]"
+    assert own_calls(lib, name) == 0
+
+    lib.models.stub.script(name, [answer(f"said {BANNED}"), answer(f"also {BANNED}")])
+    with pytest.raises(OutputPolicyViolation) as refused_out:
+        await lib.call_purpose(
+            keyed(unique("k-842-out")), name, CALL["inputs"], content_rating=banned_rating
+        )
+    assert refused_out.value.details["attempts"] == 2
+    assert BANNED not in json.dumps(refused_out.value.details)
+    assert own_calls(lib, name) == 2
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    minor = [{"label": "Kit", "true_age": 15}]
+    with pytest.raises(GuardrailViolation) as minor_in:
+        await lib.call_purpose(
+            keyed(unique("k-842-minor-in")),
+            name,
+            {"voter": f"Ash in {UNSAFE_PHRASE}", "target": "Kit"},
+            depicted=minor,
+        )
+    assert "a minor is involved or present" in minor_in.value.message
+    assert own_calls(lib, name) == 2
+    unsafe = answer(f"Kit at {UNSAFE_PHRASE}")
+    lib.models.stub.script(name, [unsafe, unsafe])
+    with pytest.raises(OutputPolicyViolation):
+        await lib.call_purpose(
+            keyed(unique("k-842-minor-out")), name, CALL["inputs"], depicted=minor
+        )
+    assert own_calls(lib, name) == 4
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_refusal_not_stored(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+) -> None:
+    """A refusal is never stored under its ``Idempotency-Key`` (FR-MODEL-15; #842): over REST
+    and through the library, after a ``guardrail_violation`` or an ``output_policy_violation``
+    under a key, the same key with a valid different body is answered 200 (not 409
+    ``idempotency_conflict``) from a fresh call to the purpose's model. REST and the library
+    use separate keys."""
+    client, lib = served
+    register, _ = registered
+    name = unique("unstored")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}
+    bad = answer(f"said {BANNED}")
+
+    rest_in = {"Idempotency-Key": unique("k-842-rest-in")}
+    refused = await call(
+        client, name, {"inputs": banned, "content_rating": banned_rating}, **rest_in
+    )
+    assert reason_of(refused)[:2] == (422, "guardrail_violation")
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("After input.")])
+    retried = await call(client, name, CALL, **rest_in)
+    assert retried.status_code != 409, retried.text
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "After input."
+    assert own_calls(lib, name) == before + 1
+
+    rest_out = {"Idempotency-Key": unique("k-842-rest-out")}
+    lib.models.stub.script(name, [bad, bad])
+    refused = await call(client, name, {**CALL, "content_rating": banned_rating}, **rest_out)
+    assert reason_of(refused)[:2] == (422, "output_policy_violation")
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("After output.")])
+    retried = await call(client, name, CALL, **rest_out)
+    assert retried.status_code != 409, retried.text
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "After output."
+    assert own_calls(lib, name) == before + 1
+
+    lib_in = keyed(unique("k-842-lib-in"))
+    with pytest.raises(GuardrailViolation):
+        await lib.call_purpose(lib_in, name, banned, content_rating=banned_rating)
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("Library after input.")])
+    result = await lib.call_purpose(lib_in, name, CALL["inputs"])
+    assert result.output["reason"] == "Library after input."
+    assert own_calls(lib, name) == before + 1
+
+    lib_out = keyed(unique("k-842-lib-out"))
+    lib.models.stub.script(name, [bad, bad])
+    with pytest.raises(OutputPolicyViolation):
+        await lib.call_purpose(lib_out, name, CALL["inputs"], content_rating=banned_rating)
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("Library after output.")])
+    result = await lib.call_purpose(lib_out, name, CALL["inputs"])
+    assert result.output["reason"] == "Library after output."
+    assert own_calls(lib, name) == before + 1
+
+
 # -- a consumer purpose called inside a story (FR-MODEL-16; #826) -----------------------------
 
 VIEWPOINT_TEMPLATE = (
@@ -1623,10 +2179,18 @@ async def test_i_29__m9_story_refusals(
     shared, shared_ids = await new_story(client, "Ash", "Briar")
     assigned = await client.put(
         f"/stories/{shared}/engine-profile",
-        json={"profile_id": structured_m4(), "ignore_warnings": True},
+        json={"profile_id": structured_m4(), "version": 1, "ignore_warnings": True},
         headers=WRITE,
     )
     assert assigned.status_code == 200, assigned.text
+    config = (await client.get(f"/stories/{shared}/effective-config", headers=READ)).json()
+    assert config["profile"] == {
+        "id": structured_m4(),
+        "version": 1,
+        "pinned": True,
+        "deleted": False,
+    }
+    assert config["effective"]["character_knowledge"]["partitions"] is False
     lib.models.stub.script(needs, [answer()])
     accepted = await story_call(client, shared, needs, ask(shared_ids["Briar"]))
     assert accepted.status_code == 200, accepted.text

@@ -39,6 +39,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.erasure.redact import Redactor
+from epistrel.core.memory.story_partitions import not_a_partition
 
 TEXT_TYPES = ("text", "character varying", "jsonb", "json", "ARRAY")
 """The column types a scan reads (cast to text)."""
@@ -76,10 +77,11 @@ async def _columns(conn: AsyncConnection, schema: str, *, story: bool) -> dict[s
     column, with ``story``)."""
     found = await conn.execute(
         text(
-            "SELECT c.table_name, c.column_name FROM information_schema.columns c "
+            "SELECT c.table_name, c.column_name FROM information_schema.columns c "  # noqa: S608 - a fixed catalog predicate
             "JOIN information_schema.tables t "
             "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
             "WHERE t.table_type = 'BASE TABLE' AND c.table_schema = :schema "
+            f"AND {not_a_partition('c.table_name', 'c.table_schema')} "
             "AND c.data_type = ANY(CAST(:types AS text[])) "
             "AND (NOT :story OR EXISTS (SELECT 1 FROM information_schema.columns s "
             "WHERE s.table_schema = c.table_schema AND s.table_name = c.table_name "

@@ -16,12 +16,18 @@ fixture's embedding dimension. The database is dropped afterwards.
 
 Timing is asserted only by the ``perf_weekly`` tests (``gate``): a timing bound in a test
 that PR CI runs fails under host load (#430, #432), so the ``perf_smoke`` tests check the
-plumbing only.
+plumbing only. Even there a budget is gated only on the reference host (ADR-190, #793):
+``EPISTREL_TEST_PERF_HOST_CLASS`` is ``reference`` or ``other`` (the default), and
+``budget_verdict`` fails a miss only under ``reference``. Elsewhere, the GitHub-hosted runner
+included, a miss is recorded as ``within_budget: false`` and reported, not gated, as NFR-PERF-4
+reports its results on other hosts. An error, an empty or degraded result and a missing
+measurement fail under either class.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import secrets
@@ -50,6 +56,11 @@ from tests.model_support import config_key
 CACHE_VAR = "EPISTREL_TEST_PERF_CACHE_DIR"
 HOST_VAR = "EPISTREL_TEST_PERF_HOST"
 """The host label every result carries (``perf.yml`` sets ``github-runner``)."""
+HOST_CLASS_VAR = "EPISTREL_TEST_PERF_HOST_CLASS"
+"""Whether this host gates the budgets (ADR-190): ``reference`` gates, ``other`` reports."""
+REFERENCE = "reference"
+OTHER = "other"
+HOST_CLASSES = (REFERENCE, OTHER)
 RESULT_DIR = Path("build/perf")
 VIEWPOINT = "omniscient"
 KNOWLEDGE = knowledge.KnowledgeSpec(private_share=0.0)
@@ -70,6 +81,8 @@ class ScaleRun:
     restored: bool
     prepare_s: float
     ctx: RequestContext = field(default_factory=lambda: RequestContext(principal=scale.PRINCIPAL))
+    others: tuple[scale.ScaleFixture, ...] = ()
+    """The other stories of a several-story database (``scale_database(stories=…)``)."""
 
 
 def cache_dir() -> Path | None:
@@ -79,9 +92,11 @@ def cache_dir() -> Path | None:
 
 @asynccontextmanager
 async def scale_database(
-    pg_url: str, spec: scale.ScaleSpec, *, log: Any = None
+    pg_url: str, spec: scale.ScaleSpec, *, stories: int = 1, log: Any = None
 ) -> AsyncIterator[ScaleRun]:
-    """The fixture for ``spec`` in a fresh database (see the module docstring)."""
+    """The fixture for ``spec`` in a fresh database (see the module docstring). With
+    ``stories`` above one, that many stories of ``spec`` (``scale.build_scale_stories``, never
+    cached): the first is the run's fixture and the rest its ``others``."""
     name = f"epistrel_scale_{secrets.token_hex(4)}"
     admin = make_sync_engine(pg_url, isolation_level="AUTOCOMMIT")
     drop = text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -95,8 +110,9 @@ async def scale_database(
             conn.execute(text(f'CREATE DATABASE "{name}"'))
         forget_ledger(url)
         started = time.perf_counter()
-        directory = cache_dir()
+        directory = cache_dir() if stories == 1 else None
         cached = scale.read_cached(directory, spec)
+        others: tuple[scale.ScaleFixture, ...] = ()
         settings = auth_settings(
             url,
             model_adapter="stub",
@@ -110,7 +126,11 @@ async def scale_database(
             command.upgrade(alembic_config(url), "head")
             builder = make_engine(settings)
             try:
-                fixture = await scale.build_scale_fixture(builder, spec, log=log)
+                if stories == 1:
+                    fixture = await scale.build_scale_fixture(builder, spec, log=log)
+                else:
+                    first, *rest = await scale.build_scale_stories(builder, spec, stories, log=log)
+                    fixture, others = first, tuple(rest)
             finally:
                 await builder.dispose()
             if directory is not None:
@@ -118,7 +138,9 @@ async def scale_database(
         prepare_s = time.perf_counter() - started
         db = make_engine(settings)
         lib = Engine(settings, db=db)
-        yield ScaleRun(url, settings, db, lib, fixture, cached is not None, prepare_s)
+        yield ScaleRun(
+            url, settings, db, lib, fixture, cached is not None, prepare_s, others=others
+        )
     finally:
         reembed_job.bind(before)
         if lib is not None:
@@ -194,6 +216,7 @@ def host_info(server: Mapping[str, Any] | None = None) -> dict[str, Any]:
         memory = 0
     return {
         "host": os.environ.get(HOST_VAR, "local"),
+        "host_class": host_class(),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "vcpus": os.cpu_count() or 0,
@@ -245,14 +268,51 @@ def gate(measured_ms: float, budget_ms: float) -> list[str]:
     return [f"p95 {measured_ms:.1f} ms is over the {budget_ms:.0f} ms budget"]
 
 
+def host_class() -> str:
+    """``EPISTREL_TEST_PERF_HOST_CLASS``: ``other`` when unset; any value but ``reference`` or
+    ``other`` is a configuration error, not a silent ``other``."""
+    named = os.environ.get(HOST_CLASS_VAR) or OTHER
+    if named not in HOST_CLASSES:
+        raise ValueError(f"{HOST_CLASS_VAR}={named!r}: expected one of {HOST_CLASSES}")
+    return named
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A measured p95 against its budget: ``within`` it or not, and whether the run ``fail``s
+    on it."""
+
+    within: bool
+    fail: bool
+
+
+def budget_verdict(measured_ms: float | None, budget_ms: float, host_class: str) -> Verdict:
+    """The p95 ``measured_ms`` against ``budget_ms`` on a host of ``host_class`` (ADR-190). A
+    miss fails only on the reference host and is recorded elsewhere. A missing measurement
+    (``None`` or NaN) is never within the budget and fails on either class."""
+    if host_class not in HOST_CLASSES:
+        raise ValueError(f"host class {host_class!r}: expected one of {HOST_CLASSES}")
+    if measured_ms is None or math.isnan(measured_ms):
+        return Verdict(within=False, fail=True)
+    within = not gate(measured_ms, budget_ms)
+    return Verdict(within=within, fail=not within and host_class == REFERENCE)
+
+
 __all__ = [
     "CACHE_VAR",
+    "HOST_CLASSES",
+    "HOST_CLASS_VAR",
     "HOST_VAR",
     "KNOWLEDGE",
+    "OTHER",
+    "REFERENCE",
     "RESULT_DIR",
     "Retrievals",
     "ScaleRun",
+    "Verdict",
+    "budget_verdict",
     "gate",
+    "host_class",
     "host_info",
     "measure_retrieval",
     "percentiles",

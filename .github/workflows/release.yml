@@ -1,7 +1,9 @@
 # Pushing vX.Y.Z (or vX.Y.Z-rc.N) runs the gate, publishes semver image tags and creates the GitHub
 # release. `latest`, `X.Y` and `X` move only when the new version is the highest in their line; a
 # pre-release gets only its own tag. Nothing is published unless the tagged commit's image passes
-# the deployment smoke (C-10, #77). See RELEASING.md → Cutting a release.
+# the deployment smoke (C-10, #77). A re-run for a tag that is already released (#96) builds and
+# moves nothing: the `rerun` job re-reads the digest and re-asserts the release's flags, and never
+# undoes a rollback. See RELEASING.md → Cutting a release.
 name: Release
 
 on:
@@ -11,8 +13,11 @@ on:
 permissions:
   contents: read
 
+# One group with rollback.yml: a release and a rollback never run at the same time, and neither is
+# cancelled mid-flight. GitHub keeps one *pending* run per group; a third run cancels the pending
+# one, so tags are pushed one at a time (RELEASING.md → Cutting a release).
 concurrency:
-  group: release-${{ github.ref }}
+  group: publish-release
   cancel-in-progress: false
 
 env:
@@ -50,9 +55,10 @@ jobs:
       - name: Released tags so far
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release list --limit 1000 --json tagName,isDraft --jq '.[] | select(.isDraft == false) | .tagName' > released.txt
+        # isPrerelease marks a stable release a rollback demoted; it never counts as higher (#96).
+        run: gh release list --limit 1000 --json tagName,isDraft,isPrerelease > released.json
       - id: validate
-        run: uv run python -m tools.release validate --tag "$GITHUB_REF_NAME" --released-file released.txt | tee -a "$GITHUB_OUTPUT"
+        run: uv run python -m tools.release validate --tag "$GITHUB_REF_NAME" --released-file released.json | tee -a "$GITHUB_OUTPUT"
 
   ci:
     needs: validate
@@ -111,6 +117,8 @@ jobs:
 
   publish:
     needs: [validate, ci, smoke]
+    # A re-run of a released tag goes to `rerun` instead: no rebuild, so the recorded digest stays.
+    if: needs.validate.outputs.already_released != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -134,6 +142,9 @@ jobs:
           password: ${{ github.token }}
       - id: meta
         uses: docker/metadata-action@v6
+        env:
+          # Index level too: the default (`manifest`) leaves the pushed index's annotations empty (#100).
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ env.IMAGE }}
           # {{version}} always; X.Y and X only when highest in their line; latest only for the highest
@@ -198,3 +209,69 @@ jobs:
             printf '%s\n' "## Released ${{ github.ref_name }}" "" "digest: \`$DIGEST\`" ""
             printf '%s\n' "$TAGS" | sed 's/^/- `/; s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  rerun:
+    # #96: a re-run for an existing release (ci and smoke still ran) builds, pushes and re-tags
+    # nothing. The notes' Image line is rewritten with the digest the X.Y.Z tag already resolves to,
+    # an rc re-asserts --prerelease, and the highest stable re-asserts --latest. A stable release a
+    # rollback demoted (now a prerelease) keeps its flags: re-promotion (rollback.yml) is the way back.
+    needs: [validate, ci, smoke]
+    if: needs.validate.outputs.already_released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Lower-case image name for shell steps
+        run: echo "IMAGE_LC=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Read back the released digest
+        id: digest
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -eu
+          digest=$(docker buildx imagetools inspect "$IMAGE_LC:$VERSION" --format '{{.Manifest.Digest}}' 2>/dev/null) \
+            || { echo "::error::image tag $IMAGE_LC:$VERSION not found; nothing changed"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Re-assert the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          HIGHEST: ${{ needs.validate.outputs.highest }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -eu
+          line="Image: \`$IMAGE_LC:$VERSION@$DIGEST\`"
+          body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if printf '%s' "$body" | grep -qF "$IMAGE_LC:$VERSION@"; then
+            body=$(printf '%s' "$body" | sed "s|^Image: .*$IMAGE_LC:$VERSION@.*|$line|")
+          else
+            body=$(printf '%s\n\n%s\n' "$body" "$line")
+          fi
+          demoted=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then
+            flags="--prerelease"
+            what="pre-release re-asserted"
+          elif [ "$demoted" = "true" ]; then
+            what="demoted by a rollback; flags left alone (re-promote with rollback.yml)"
+          elif [ "$HIGHEST" = "true" ]; then
+            flags="--latest"
+            what="marked latest"
+          else
+            what="not the highest; Latest left alone"
+          fi
+          # shellcheck disable=SC2086
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" $flags --notes "$body"
+          {
+            printf '%s\n' "## Re-ran $TAG (already released; nothing rebuilt or re-tagged)" ""
+            printf '%s\n' "- digest: \`$DIGEST\`" "- $TAG: $what"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

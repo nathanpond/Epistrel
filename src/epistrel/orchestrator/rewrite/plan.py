@@ -216,7 +216,7 @@ async def _settle(
 
 
 async def _records(
-    conn: AsyncConnection, keys: set[tuple[str, str]]
+    conn: AsyncConnection, story_id: str, keys: set[tuple[str, str]]
 ) -> dict[tuple[str, str], _Record]:
     """The text and authorship of the dependents that need them (events, memories, parts)."""
     found: dict[tuple[str, str], _Record] = {}
@@ -239,8 +239,9 @@ async def _records(
     if ids.get("memories"):
         m = memories.c
         for row in await conn.execute(
+            # #784: the story names its partition of ``memories``.
             select(m.id, m.text, m.provenance, m.holder_character_id).where(
-                m.id.in_(ids["memories"])
+                m.story_id == story_id, m.id.in_(ids["memories"])
             )
         ):
             found[("memories", str(row.id))] = _Record(
@@ -355,7 +356,7 @@ class StructuredPlanner:
                     for d in found.items
                 )
             if change.kind == "record":
-                await self._derived_rows(conn, change, built)
+                await self._derived_rows(conn, story.story_id, change, built)
             if change.kind == "state":
                 await self._later_changes(conn, story, change, players, built)
         built.into(plan)
@@ -445,7 +446,7 @@ class StructuredPlanner:
         built: _Builder,
     ) -> None:
         ctx = PlanContext(change.summary)
-        records = await _records(conn, {d.dependent for d in dependents})
+        records = await _records(conn, story.story_id, {d.dependent for d in dependents})
         old_forms = await _surface_forms(conn, change.superseded_object)
         changed = await _changed_facts(conn, story.story_id, change)
         for dependent in dependents:
@@ -533,7 +534,7 @@ class StructuredPlanner:
         return "low"
 
     async def _derived_rows(
-        self, conn: AsyncConnection, change: Normalized, built: _Builder
+        self, conn: AsyncConnection, story_id: str, change: Normalized, built: _Builder
     ) -> None:
         """The rows derived from a corrected event (per-perceiver memories, utterances,
         exposures), each a ``fix``."""
@@ -543,8 +544,11 @@ class StructuredPlanner:
         found += [
             ("memories", str(x))
             for x in await conn.scalars(
+                # #784: the story names its partition of ``memories``.
                 select(m.id).where(
-                    literal(event_id) == any_(m.source_event_ids), active_only(memories)
+                    m.story_id == story_id,
+                    literal(event_id) == any_(m.source_event_ids),
+                    active_only(memories),
                 )
             )
         ]

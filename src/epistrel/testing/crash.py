@@ -47,6 +47,12 @@ An image job (#256; ``orchestrator.images.jobs``), each hit by the worker runnin
   keys and the promote transaction has written its rows, not committed (the blobs are then
   orphans the media sweep removes after its hour).
 
+**Counting hits** (#834): a process started with ``EPISTREL_TEST_FAULTS=1`` and
+``EPISTREL_TEST_CRASH_COUNT_HITS=<file>`` (``count_env``; an ``EPISTREL_TEST_`` name, so the
+Engine's settings ignore it) appends one line ``<point> <kind or ->`` to the file for every hit of
+every point, crash plan or not, so a harness can measure which points a workload reaches and how
+often (``read_hits``) before it draws a crash plan.
+
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 ``epistrel.testing.faults`` (the child-process harness) re-exports ``crash_at`` and ``hit``.
 """
@@ -85,8 +91,13 @@ IMAGE_POINTS = (
 )
 """An image job (#256; #268 adds the two send points)."""
 POINTS = (*COMMIT_POINTS, *STAGED_POINTS, *IMPORT_POINTS, *IMAGE_POINTS)
+STAGED_PURCHASE_POINTS = (*COMMIT_POINTS, *STAGED_POINTS)
+"""The points a staged turn (a purchase on a synchronous provider) can reach (#834): its stages'
+commits and boundaries. An import or image job's points are never on its path."""
 ENABLE_VAR = "EPISTREL_TEST_FAULTS"
 CRASH_VAR = "EPISTREL_TEST_CRASH_AT"
+COUNT_VAR = "EPISTREL_TEST_CRASH_COUNT_HITS"
+"""The file every hit is appended to (#834; see the module docstring)."""
 EXIT_STATUS = 137
 """What a shell reports for a process killed by ``SIGKILL`` (128 + 9)."""
 CRASH_MARKER = "EPISTREL-FAULT crash"
@@ -122,8 +133,24 @@ def parse(spec: str) -> CrashPlan:
     return crash_at(parts[0], int(parts[1]), parts[2] if len(parts) == 3 else None)
 
 
+def count_env(path: str) -> dict[str, str]:
+    """The environment that makes a process count its hits into ``path`` (#834)."""
+    return {ENABLE_VAR: "1", COUNT_VAR: path}
+
+
+def read_hits(path: str) -> Counter[str]:
+    """How often each point was hit, from a ``count_env`` file (over every kind); an absent file
+    is no hits."""
+    try:
+        with open(path, encoding="utf-8") as found:
+            return Counter(line.split(" ", 1)[0] for line in found if line.strip())
+    except FileNotFoundError:
+        return Counter()
+
+
 _UNREAD = object()
 _plan: object = _UNREAD
+_count_path: object = _UNREAD
 _hits: Counter[tuple[str, str | None]] = Counter()
 
 
@@ -136,15 +163,30 @@ def armed() -> CrashPlan | None:
     return _plan if isinstance(_plan, CrashPlan) else None
 
 
+def counting() -> str | None:
+    """The file hits are counted into, read from the environment once; ``None`` unless enabled."""
+    global _count_path
+    if _count_path is _UNREAD:
+        path = os.environ.get(COUNT_VAR)
+        _count_path = path if os.environ.get(ENABLE_VAR) == "1" and path else None
+    return _count_path if isinstance(_count_path, str) else None
+
+
 def reset() -> None:
     """Forget the configuration and the counts (tests that change the environment)."""
-    global _plan
+    global _plan, _count_path
     _plan = _UNREAD
+    _count_path = _UNREAD
     _hits.clear()
 
 
 def hit(point: str, kind: str | None = None) -> None:
-    """A crash point; see the module docstring. A no-op unless a crash is configured."""
+    """A crash point; see the module docstring. A no-op unless a crash or counting is
+    configured."""
+    path = counting()
+    if path is not None:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(f"{point} {kind or '-'}\n")
     plan = armed()
     if plan is None or plan.point != point:
         return
@@ -159,6 +201,7 @@ def hit(point: str, kind: str | None = None) -> None:
 
 __all__ = [
     "COMMIT_POINTS",
+    "COUNT_VAR",
     "CRASH_MARKER",
     "CRASH_VAR",
     "ENABLE_VAR",
@@ -167,10 +210,14 @@ __all__ = [
     "IMPORT_POINTS",
     "POINTS",
     "STAGED_POINTS",
+    "STAGED_PURCHASE_POINTS",
     "CrashPlan",
     "armed",
+    "count_env",
+    "counting",
     "crash_at",
     "hit",
     "parse",
+    "read_hits",
     "reset",
 ]

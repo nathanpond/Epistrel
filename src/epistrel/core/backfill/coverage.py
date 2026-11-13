@@ -9,13 +9,18 @@ level (``prompt_only`` or ``on``).
 ``gaps`` is the single source of what a backfill must cover: the story's active turns (genesis,
 turn 0, excluded) outside the capability's intervals, as maximal ``(from, to)`` runs. Adjacent
 intervals are coalesced on write (``add``).
+
+Every retrieval marks its gaps (``core.retrieval.coverage_marks``), so ``gaps`` reads only the
+turns the intervals leave uncovered (``uncovered``), and nothing of ``operations`` when they
+leave none, the common case. Its runs are folded in the database (#888: reading every active turn
+cost about 1.8 ms per 1,000 turns per capability).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
@@ -193,8 +198,54 @@ def runs(turns: Sequence[int]) -> list[tuple[int, int]]:
     return found
 
 
-def _covered(turn: int, spans: Sequence[Span]) -> bool:
-    return any(low <= turn and (high is None or turn <= high) for low, high in spans)
+def uncovered(spans: Iterable[Span]) -> list[Span]:
+    """The turns from 1 on that none of ``spans`` covers, as maximal ``(from, to)`` ranges
+    (``to`` ``None``: open-ended); none when the spans cover every turn from 1 on."""
+    holes: list[Span] = []
+    first = 1
+    for low, high in sorted(spans, key=lambda span: span[0]):
+        if low > first:
+            holes.append((first, low - 1))
+        if high is None:
+            return holes
+        first = max(first, high + 1)
+    holes.append((first, None))
+    return holes
+
+
+async def active_runs(
+    conn: AsyncConnection, story_id: str, within: Sequence[Span]
+) -> list[tuple[int, int]]:
+    """``runs`` of the story's active turns (genesis excluded) inside the ``within`` ranges,
+    folded in the database: one row a run, and only the turns in ``within`` read."""
+    if not within:
+        return []
+    o = operations.c
+    turn = o.narrative_turn
+    active = (
+        select(turn.label("turn"))
+        .where(
+            o.story_id == story_id,
+            o.kind == OperationKind.TURN.value,
+            o.membership == Membership.ACTIVE.value,
+            o.status == OperationStatus.COMMITTED.value,
+            turn >= 1,
+            or_(
+                *(turn >= low if high is None else turn.between(low, high) for low, high in within)
+            ),
+        )
+        .distinct()
+        .subquery()
+    )
+    grouped = select(
+        active.c.turn,
+        (active.c.turn - func.row_number().over(order_by=active.c.turn)).label("run"),
+    ).subquery()
+    first = func.min(grouped.c.turn)
+    found = await conn.execute(
+        select(first, func.max(grouped.c.turn)).group_by(grouped.c.run).order_by(first)
+    )
+    return [(int(low), int(high)) for low, high in found]
 
 
 async def gaps(
@@ -208,8 +259,7 @@ async def gaps(
         spans = await intervals(conn, story_id, capability, levels=(level,))
     else:
         spans = await intervals(conn, story_id, capability)
-    turns = await active_turns(conn, story_id)
-    return runs([t for t in turns if not _covered(t, spans)])
+    return await active_runs(conn, story_id, uncovered(spans))
 
 
 async def gaps_of(
@@ -228,6 +278,7 @@ __all__ = [
     "BACKFILL",
     "LEVELLED",
     "LIVE",
+    "active_runs",
     "active_turns",
     "add",
     "capabilities_of",
@@ -239,4 +290,5 @@ __all__ = [
     "runs",
     "seed_live",
     "seed_story",
+    "uncovered",
 ]

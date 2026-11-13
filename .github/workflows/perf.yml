@@ -136,6 +136,10 @@ jobs:
       issues: write
     env:
       EPISTREL_TEST_PERF_HOST: github-runner
+      # ADR-190 (#793): the runner is not the reference host, so a budget miss is recorded
+      # (`within_budget: false`) and listed by the Summarise step, not failed. Only a run with
+      # `reference` gates the budgets. Errors, empty or degraded results still fail.
+      EPISTREL_TEST_PERF_HOST_CLASS: other
       EPISTREL_TEST_PERF_CACHE_DIR: ${{ github.workspace }}/build/scale-cache
     steps:
       - uses: actions/checkout@v7
@@ -171,9 +175,13 @@ jobs:
         if: always()
         env:
           OUTCOME: ${{ steps.weekly.outcome }}
+        # One `MISS <result> <metric> p95=<x> budget=<y>` line per budget the results record as
+        # missed (`within_budget: false` in p_01, p_02, p_02_could_have_known and p_06's points),
+        # and `NOT MEASURED <result>` for a missing file. A miss alone leaves the run green.
         run: |
+          misses=$(uv run python -m epistrel.tools.perf_docs --misses --results build/perf 2>&1) || misses="(the misses could not be listed) $misses"
           {
-            printf '%s\n' "## Weekly perf run: $OUTCOME (host: github-runner, not the reference host)" '' '```'
+            printf '%s\n' "## Weekly perf run: $OUTCOME (host: github-runner, not the reference host)" '' 'Budget misses (reported, not gated: ADR-190):' '' '```' "${misses:-(none)}" '```' '' '```'
             grep -E '^p_0[126]' build/perf/weekly.log | cut -c1-400 || printf '%s\n' '(no figures printed)'
             grep -E '^(FAILED|ERROR|PASSED) |[0-9]+ (passed|failed)' build/perf/weekly.log | tail -20 || true
             printf '%s\n' '```'

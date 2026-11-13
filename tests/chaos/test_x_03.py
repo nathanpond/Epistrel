@@ -19,6 +19,11 @@ A client-side oracle of each story's head turn must agree with the database.
 and ``EPISTREL_CHAOS_SEED`` (printed) replay a run. The M2 part draws the commit path's crash
 points (``COMMIT_POINTS``); a Lite turn never reaches a staged turn's.
 
+**Reachable plans** (#834). Each part first plays a dry round without a crash plan, its child
+counting every crash point hit (``EngineProcess(count_hits=...)``). A point the dry round never
+hit leaves that run's pool (printed), and a drawn ``nth`` is at most the drawn point's measured
+hits, so every kill plan is one a round reaches. The dry round counts in no tally.
+
 **M6** (``test_x_03__m6``, #213; FR-EXT-17): the same harness over staged turns (a synchronous
 provider served by a ``GameServer`` in this process): every crash
 leaves each staged turn at a stage boundary, never mid-stage, and every one resumes to
@@ -32,7 +37,9 @@ import os
 import random
 import secrets
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
@@ -42,7 +49,14 @@ from epistrel.core import timeline
 from epistrel.core.db import make_engine
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.structured import staged
-from epistrel.testing.faults import COMMIT_POINTS, POINTS, EngineProcess, crash_at
+from epistrel.testing.faults import (
+    COMMIT_POINTS,
+    STAGED_PURCHASE_POINTS,
+    CrashPlan,
+    EngineProcess,
+    crash_at,
+    read_hits,
+)
 from tests import provider_support as ps
 from tests import staged_crash_support as sc
 from tests.auth_support import CREDENTIAL_A, auth_settings
@@ -191,17 +205,40 @@ async def _create(child: EngineProcess) -> Story:
     return Story(created["story_id"], players[0])
 
 
+def _reachable(points: Sequence[str], hits: Counter[str], label: str) -> list[str]:
+    """``points`` the dry round hit (#834); the others leave this run's pool, printed."""
+    pool = [p for p in points if hits[p] > 0]
+    dropped = [p for p in points if hits[p] == 0]
+    print(f"X-03 {label} dry hits={dict(hits)} dropped={dropped}")
+    assert pool, f"seed={SEED}: the dry round reached no crash point"
+    return pool
+
+
+def _kill(rng: random.Random, pool: Sequence[str], hits: Counter[str], nth_max: int) -> CrashPlan:
+    """A kill plan a round reaches: a point of ``pool``, its ``nth`` at most its measured hits."""
+    point = rng.choice(pool)
+    return crash_at(point, rng.randint(1, min(nth_max, hits[point])))
+
+
+def _draw(
+    rng: random.Random, pool: Sequence[str], hits: Counter[str], nth_max: int
+) -> CrashPlan | None:
+    """A round's plan: none for ``NO_KILL`` of the rounds, else a reachable kill."""
+    return None if rng.random() < NO_KILL else _kill(rng, pool, hits, nth_max)
+
+
 @pytest.mark.chaos
 @pytest.mark.chaos_quick
 @pytest.mark.integration
 @pytest.mark.part("M2", "NFR-REL-1,2")
-async def test_x_03(pg_url: str) -> None:
+async def test_x_03(pg_url: str, tmp_path: Path) -> None:
     """Kills at random crash points across turns, truncations, swaps and forks leave no
     partial operation, and every rebuild equals the incremental projections.
 
     Complements asserted: crash points fired (more than one point when the run is long enough),
     interrupted requests were retried under their keys and answered, forks joined the pool, and
-    every key the client was answered for maps to exactly one committed operation."""
+    every key the client was answered for maps to exactly one committed operation. A dry
+    iteration first measures each point's hits (#834): ``nth`` is clamped to them."""
     print(f"\nX-03 seed={SEED} iterations={ITERATIONS} ops={OPS}")
     rng = random.Random(SEED)  # noqa: S311 - a replayable seed, not a secret
     tally = Tally()
@@ -215,8 +252,16 @@ async def test_x_03(pg_url: str) -> None:
             await child.start()
             pool = [await _create(child) for _ in range(STORIES)]
             await child.kill()
+            dry = Tally()
+            child.count_hits = str(tmp_path / "x03-hits")
+            await _iteration(db, models, child, rng, pool, dry, "dry", None)
+            child.count_hits = None
+            tally.keys.update(dry.keys)  # checked at the end like every answered key
+            hits = read_hits(str(tmp_path / "x03-hits"))
+            points = _reachable(COMMIT_POINTS, hits, "M2")
             for iteration in range(ITERATIONS):
-                await _iteration(db, models, child, rng, pool, tally, iteration)
+                plan = _draw(rng, points, hits, NTH_MAX)
+                await _iteration(db, models, child, rng, pool, tally, iteration, plan)
             await _final(db, pool, tally)
         finally:
             await child.kill()
@@ -240,13 +285,9 @@ async def _iteration(
     rng: random.Random,
     pool: list[Story],
     tally: Tally,
-    iteration: int,
+    iteration: int | str,
+    plan: CrashPlan | None,
 ) -> None:
-    plan = (
-        None
-        if rng.random() < NO_KILL
-        else crash_at(rng.choice(COMMIT_POINTS), rng.randint(1, NTH_MAX))
-    )
     child.crash = plan
     await child.start()
     touched: set[str] = set()
@@ -328,6 +369,8 @@ class StagedTally:
     retried: int = 0
     found_at: Counter[str] = field(default_factory=Counter)
     """The stages the story's staged turns were found at after each crash."""
+    dry: int = 0
+    """Staged turns the dry round played (#834), in none of the counts above."""
 
 
 async def _boundaries(db: Any, story: str, setup: frozenset[str]) -> list[str]:
@@ -391,15 +434,18 @@ async def _staged_stages(db: Any, story: str, setup: frozenset[str]) -> Counter[
 @pytest.mark.chaos_quick
 @pytest.mark.integration
 @pytest.mark.part("M6", "FR-EXT-17")
-async def test_x_03__m6(pg_url: str, engine: Any, states_delivered: None) -> None:
+async def test_x_03__m6(pg_url: str, engine: Any, states_delivered: None, tmp_path: Path) -> None:
     """#213 (FR-EXT-17): kills at random points across staged turns.
 
     A child engine (``api`` mode, as the M2 part: the harness is the worker; a staged turn's
     request claims and sends its effects itself) plays staged purchases on a synchronous,
     deduplicating provider (``GameServer`` in this process), ``STAGED_OPS`` per
     round (``ROUNDS``, tied to ``EPISTREL_CHAOS_ITERATIONS``), each round under a crash plan
-    drawn over every crash point (the commit path's, which a staged turn's stages hit too, and
-    the stage boundaries ``staged.*``; 20 % of rounds get none). When the child dies, every
+    drawn over the points a staged purchase reaches (``STAGED_PURCHASE_POINTS``: the commit
+    path's, which a staged turn's stages hit too, and the stage boundaries ``staged.*``; 20 % of
+    rounds get none). A dry round first counts each point's hits (#834): a point it never hit
+    leaves the pool, ``nth`` is at most the point's hits, and when every round drew none the
+    last one gets a kill plan, so a run always kills. When the child dies, every
     staged turn is found at a stage boundary, never mid-stage: its logged stages are the ones
     its ``turn_stage`` says and no row of a later stage exists without the earlier stage's. The
     harness then runs the worker's recovery pass (which resumes stalled staged turns), starts
@@ -428,36 +474,63 @@ async def test_x_03__m6(pg_url: str, engine: Any, states_delivered: None) -> Non
                     story = await sc.http_story(client, db, server)
                 child.stub_rules = sc.purchase_rules(story.cal)
                 await child.kill()
-                for iteration in range(ROUNDS):
-                    await _staged_iteration(db, child, rng, story, tally, iteration)
+                hits = await _staged_dry_round(db, child, story, tally, tmp_path / "x03m6-hits")
+                plans = _staged_plans(rng, hits)
+                for iteration, plan in enumerate(plans):
+                    await _staged_iteration(db, child, story, tally, iteration, plan)
                 await _staged_final(db, story, tally)
         finally:
             await child.kill()
             await db.dispose()
     print(
         f"X-03 staged staged_turns={tally.staged} kills={dict(tally.kills)} "
-        f"retried={tally.retried} found_at={dict(tally.found_at)} purchases={server.purchases}"
+        f"retried={tally.retried} found_at={dict(tally.found_at)} purchases={server.purchases} "
+        f"dry={tally.dry}"
     )
     assert sum(tally.kills.values()) > 0, f"seed={SEED}: no crash point fired"
     assert tally.retried == sum(tally.kills.values()), f"seed={SEED}"
     assert tally.staged == ROUNDS * STAGED_OPS, f"seed={SEED}"
     assert tally.staged >= (200 if ITERATIONS >= 500 else 20), f"seed={SEED}: {tally.staged}"
-    assert server.purchases == tally.staged, f"seed={SEED}: one purchase per staged turn"
+    assert server.purchases == tally.staged + tally.dry, f"seed={SEED}: one per staged turn"
+
+
+async def _staged_dry_round(
+    db: Any, child: EngineProcess, story: sc.Staged, tally: StagedTally, path: Path
+) -> Counter[str]:
+    """A round without a crash plan whose child counts its crash point hits (#834): how often
+    each point is hit in a round of ``STAGED_OPS`` purchases. Its turns count only as ``dry``."""
+    child.crash = None
+    child.count_hits = str(path)
+    await child.start()
+    for step in range(STAGED_OPS):
+        answer = await sc.buy(child, story, f"x03m6-{SEED}-dry-{step}")
+        assert answer is not None, f"seed={SEED}: the dry round crashed"
+        assert answer.status_code == 200, f"seed={SEED}: {answer.text}"
+        tally.dry += 1
+    await child.kill()
+    child.count_hits = None
+    await recover(db)
+    return read_hits(str(path))
+
+
+def _staged_plans(rng: random.Random, hits: Counter[str]) -> list[CrashPlan | None]:
+    """``ROUNDS`` plans over the points the dry round hit, ``nth`` clamped to their hits; when
+    every round drew ``NO_KILL``, the last one is drawn again as a kill plan (#834)."""
+    pool = _reachable(STAGED_PURCHASE_POINTS, hits, "staged")
+    plans = [_draw(rng, pool, hits, STAGED_NTH_MAX) for _ in range(ROUNDS)]
+    if all(plan is None for plan in plans):
+        plans[-1] = _kill(rng, pool, hits, STAGED_NTH_MAX)
+    return plans
 
 
 async def _staged_iteration(
     db: Any,
     child: EngineProcess,
-    rng: random.Random,
     story: sc.Staged,
     tally: StagedTally,
     iteration: int,
+    plan: CrashPlan | None,
 ) -> None:
-    plan = (
-        None
-        if rng.random() < NO_KILL
-        else crash_at(rng.choice(POINTS), rng.randint(1, STAGED_NTH_MAX))
-    )
     context = f"seed={SEED} iteration={iteration} plan={plan}"
     child.crash = plan
     await child.start()
@@ -498,7 +571,7 @@ async def _staged_final(db: Any, story: sc.Staged, tally: StagedTally) -> None:
         "WHERE o.story_id = :s AND o.turn_stage IS NOT NULL",
         s=story.story,
     )
-    assert len(found) == tally.staged, f"seed={SEED}"
+    assert len(found) == tally.staged + tally.dry, f"seed={SEED}"
     for row in found:
         logged = [e["stage"] for e in row.stage_log or [] if e.get("stage") in staged.STAGES]
         assert (row.stage, row.status, logged) == ("completed", "done", list(staged.STAGES))

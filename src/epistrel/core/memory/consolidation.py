@@ -36,12 +36,13 @@ outputs.
 **Inputs** (``collect``). Level 1: the window's hot, active episodic memories in the scope
 (and those an overflow deadline retired uncovered, #147, so a later run covers them) and
 its canon facts (current versions positioned in it; the only objective-canon inputs); level 2:
-the window's active level-1 outputs. Each is declared by its version (``memories:<id>``, the
-memory's membership and text digest; ``operations:<id>`` for its operation), so a truncation or
-an erasure between the read and the commit drops the output (FR-STORE-27, #70). A window holds
-at most ``MAX_INPUTS`` inputs, cut at a whole turn. ``inputs_hash`` is the **replay key**: a
-digest of the inputs' kinds, positions and text digests with the scope and level, so it is the
-same in a fork (ids are not part of it) and moves only when an input's content does.
+the window's active level-1 outputs. Each is declared by its version
+(``memories:<story_id>:<id>``, the memory's membership and text digest; ``operations:<id>``
+for its operation), so a truncation or an erasure between the read and the commit drops the
+output (FR-STORE-27, #70). A window holds at most ``MAX_INPUTS`` inputs, cut at a whole turn.
+``inputs_hash`` is the **replay key**: a digest of the inputs' kinds, positions and text
+digests with the scope and level, so it is the same in a fork (ids are not part of it) and
+moves only when an input's content does.
 
 **The modality rule** (``derive``; FR-MEM-9). A statement keeps the epistemic type of what it
 rests on, whatever the model proposed: it may be ``objective`` only when every supporting input
@@ -521,7 +522,7 @@ def _memory_input(row: Any, names: Mapping[str, str], level: int) -> Input:
     else:
         epistemic = _output_epistemic(row.modality)
     return Input(
-        key=input_key(memories.name, str(row.id)),
+        key=input_key(memories.name, f"{row.story_id}:{row.id}"),
         record_id=str(row.id),
         kind=MemoryKind(row.kind).value,
         text=row.text,

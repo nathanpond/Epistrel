@@ -51,6 +51,8 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
+import bisect
+import itertools
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -66,8 +68,8 @@ from sqlalchemy import (
     insert,
     or_,
     select,
-    true,
     tuple_,
+    union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -476,19 +478,29 @@ async def _scene_predicates(conn: AsyncConnection, story_id: str) -> frozenset[s
     return frozenset(str(i) for i in found)
 
 
-def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> ColumnElement[bool]:
+def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> list[ColumnElement[bool]]:
     """The rows ``scene`` can keep at some turn from ``from_turn`` on (#153): not closed at or
     before ``(from_turn, 0)`` (``through``), and valid past that turn's story time (``covers``;
-    story time never decreases with the turn). The rest are dropped by every such turn."""
+    story time never decreases with the turn). The rest are dropped by every such turn.
+
+    #892: as three disjoint arms, whose union is that condition, each served by one of the
+    table's in-force indexes (``tables.projections._in_force_indexes``), so a read finds only the
+    rows it keeps instead of filtering the story's history: open and valid for ever, open and
+    valid past that story time, and closed at or after ``from_turn`` (the exact condition is
+    checked on those)."""
     start = basis.at(NarrativePosition(from_turn))
     closed = tuple_(table.c.closed_turn, func.coalesce(table.c.closed_slot, 0))
-    return and_(
-        or_(
-            table.c.closed_by_fact_id.is_(None),
-            and_(table.c.closed_turn.is_not(None), closed > tuple_(from_turn, 0)),
+    is_open = table.c.closed_by_fact_id.is_(None)
+    return [
+        and_(is_open, table.c.valid_to.is_(None)),
+        and_(is_open, table.c.valid_to > start),
+        and_(
+            table.c.closed_by_fact_id.is_not(None),
+            table.c.closed_turn >= from_turn,
+            closed > tuple_(from_turn, 0),
+            or_(table.c.valid_to.is_(None), table.c.valid_to > start),
         ),
-        or_(table.c.valid_to.is_(None), table.c.valid_to > start),
-    )
+    ]
 
 
 async def _scene_inputs(
@@ -499,33 +511,30 @@ async def _scene_inputs(
 ) -> tuple[list[Row], list[Row]]:
     """The story's placement rows and its ``scene`` relationship rows; with ``from_turn``, only
     those a scene from that turn on can use, so a write at the head reads the rows still open
-    there rather than the story's whole history."""
+    there rather than the story's whole history (#153), through an index (#892)."""
     if from_turn is not None and basis is None:
         basis = await _basis(conn, story_id)
 
-    def bounded(table: Table) -> ColumnElement[bool]:
-        return (
-            true() if from_turn is None or basis is None else _from_turn_on(table, from_turn, basis)
-        )
-
-    places = [
-        dict(r._mapping)
-        for r in await conn.execute(
-            select(placement).where(placement.c.story_id == story_id, bounded(placement))
-        )
-    ]
-    scene_ids = await _scene_predicates(conn, story_id)
-    presences = (
-        [
-            dict(r._mapping)
-            for r in await conn.execute(
-                select(relationships).where(
-                    relationships.c.story_id == story_id,
-                    relationships.c.predicate_id.in_(sorted(scene_ids)),
-                    bounded(relationships),
+    async def read(table: Table, *where: ColumnElement[bool]) -> list[Row]:
+        if from_turn is None or basis is None:
+            query: Any = select(table).where(*where)
+        else:
+            query = union_all(
+                *(
+                    select(table).where(*where, arm)
+                    for arm in _from_turn_on(table, from_turn, basis)
                 )
             )
-        ]
+        return [dict(r._mapping) for r in await conn.execute(query)]
+
+    places = await read(placement, placement.c.story_id == story_id)
+    scene_ids = await _scene_predicates(conn, story_id)
+    presences = (
+        await read(
+            relationships,
+            relationships.c.story_id == story_id,
+            relationships.c.predicate_id.in_(sorted(scene_ids)),
+        )
         if scene_ids
         else []
     )
@@ -549,10 +558,11 @@ async def _scenes(
         return {}
     actor = await _actor(conn, story_id)
     basis = basis or await _basis(conn, story_id)
+    nows = [basis.at(_end_of(turn, variant)) for turn, variant, _ in turns]
     out: dict[tuple[Any, ...], Row] = {}
-    for turn, variant, operation_id in turns:
-        now = basis.at(_end_of(turn, variant))
-        found = scene(places, presences, actor, turn_position(turn), now)
+    for (turn, variant, operation_id), found in zip(
+        turns, _swept(places, presences, actor, turns, nows), strict=True
+    ):
         if found.empty:
             continue
         out[(story_id, turn, variant)] = {
@@ -564,6 +574,71 @@ async def _scenes(
             "source_operation_id": operation_id,
         }
     return out
+
+
+def _swept(
+    places: Sequence[Row],
+    presences: Sequence[Row],
+    actor: str | None,
+    turns: Sequence[tuple[int, int, str]],
+    nows: Sequence[int],
+) -> list[Scene]:
+    """``scene`` at each of ``turns`` (ascending), at story time ``nows``, in one sweep (#887).
+
+    A row passes ``through`` and ``covers`` at a contiguous run of the turns, because turns
+    ascend and story time never decreases with the turn: the run is found by bisection, and a
+    turn's scene is recomputed (by ``scene``, from the rows in force) only where the rows in
+    force change. If story time ever decreases, each turn's scene is computed over every row."""
+    if any(later < earlier for earlier, later in itertools.pairwise(nows)):
+        return [
+            scene(places, presences, actor, turn_position(turn), now)
+            for (turn, _, _), now in zip(turns, nows, strict=True)
+        ]
+    numbers = [turn for turn, _, _ in turns]
+    starts: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    ends: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for kind, rows in enumerate((places, presences)):
+        for index, row in enumerate(rows):
+            span = _span(row, numbers, nows)
+            if span is not None:
+                starts[span[0]].append((kind, index))
+                ends[span[1]].append((kind, index))
+    held: tuple[dict[int, Row], dict[int, Row]] = ({}, {})
+    found = Scene(None, ())
+    out: list[Scene] = []
+    for at, (turn, now) in enumerate(zip(numbers, nows, strict=True)):
+        leaving, entering = ends.pop(at, []), starts.pop(at, [])
+        for kind, index in leaving:
+            del held[kind][index]
+        for kind, index in entering:
+            held[kind][index] = (places, presences)[kind][index]
+        if leaving or entering or at == 0:
+            in_force = [[held[kind][i] for i in sorted(held[kind])] for kind in (0, 1)]
+            found = scene(in_force[0], in_force[1], actor, turn_position(turn), now)
+        out.append(found)
+    return out
+
+
+def _span(
+    row: Mapping[str, Any], turns: Sequence[int], nows: Sequence[int]
+) -> tuple[int, int] | None:
+    """The indexes ``[start, end)`` of ``turns`` at which ``row`` passes ``through`` (at
+    ``turn_position``) and ``covers`` (at ``nows``); ``None`` when it passes at none."""
+    start, end = 0, len(turns)
+    since = row["since_turn"]
+    if since is not None:
+        start = bisect.bisect_left(turns, int(since) + (1 if (row["since_slot"] or 0) > 0 else 0))
+    if row["closed_by_fact_id"] is not None:
+        closed = row["closed_turn"]
+        if closed is None:
+            return None
+        end = bisect.bisect_left(turns, int(closed) + (1 if (row["closed_slot"] or 0) > 0 else 0))
+    lo, hi = row["valid_from"], row["valid_to"]
+    if lo is not None:
+        start = max(start, bisect.bisect_left(nows, lo))
+    if hi is not None:
+        end = min(end, bisect.bisect_left(nows, hi))
+    return (start, end) if start < end else None
 
 
 # -- writing --------------------------------------------------------------------------------

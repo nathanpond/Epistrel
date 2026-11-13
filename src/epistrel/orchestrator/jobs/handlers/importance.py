@@ -152,7 +152,8 @@ async def _fan_out(ctx: JobContext) -> JobOutput:
     for story_id in candidates:
         async with ctx.db.begin() as conn:
             exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
-            if exists is not None:
+            # #784: asked inside the story's own partition, one story per transaction.
+            if exists is not None and await records.has_unscored(conn, story_id):
                 await schedule_in(conn, story_id)
                 scheduled += 1
     return JobOutput(result={"stories": len(candidates), "scheduled": scheduled})

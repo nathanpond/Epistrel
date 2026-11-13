@@ -99,12 +99,15 @@ class Server:
         return target
 
     def restore(self, url: str, dump: Path) -> None:
-        """``pg_restore --clean --if-exists`` of ``dump`` over ``url``'s database."""
+        """``dump`` restored as ``url``'s database, the way docs/OPERATIONS.md restores: the
+        database dropped and created empty, then ``pg_restore`` into it (#784: ``--clean`` over
+        a partitioned ``memories`` reports an error per story partition's inherited key)."""
+        name = _name(url)
+        self.psql(f'DROP DATABASE "{name}" WITH (FORCE)', database=self.container.dbname)
+        self.psql(f'CREATE DATABASE "{name}"', database=self.container.dbname)
         with dump.open("rb") as archive:
             done = self._exec(
                 "pg_restore",
-                "--clean",
-                "--if-exists",
                 "--no-owner",
                 "-U",
                 self.container.username,
@@ -138,9 +141,9 @@ def dedicated_server() -> Iterator[Server]:
             pytrace=False,
         )
     try:
-        from testcontainers.community.postgres import PostgresContainer
+        from epistrel.testing import postgres
 
-        container = PostgresContainer(PG_IMAGE, driver="psycopg")
+        container = postgres.container(PG_IMAGE)
         container.start()
     except Exception as exc:
         pytest.fail(f"Docker is needed: {type(exc).__name__}: {exc}", pytrace=False)

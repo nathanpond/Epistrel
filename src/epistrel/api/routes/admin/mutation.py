@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
+from epistrel.api.iso import IsoDateTime
 from epistrel.api.responses import MutationResponse
 from epistrel.core.canon.facts import Fact, Visibility
 from epistrel.core.enums import MemoryKind, RetrievalTier
@@ -363,7 +364,7 @@ async def list_facts(
     engine: EngineDep,
     viewpoint: str | None = None,
     as_of_story_time: int | None = None,
-    as_of_record_time: datetime | None = None,
+    as_of_record_time: IsoDateTime | None = None,
     subject: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
     predicate: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
     include_superseded: bool = False,

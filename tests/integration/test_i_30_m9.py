@@ -37,6 +37,7 @@ from epistrel.core import clock
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.media import sweep as media_sweep
+from epistrel.core.ratings import RatingFields, create_rating
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
@@ -47,12 +48,21 @@ from epistrel.testing.images import PASS, ScriptedChecks
 from tests import image_prompt_support as ip
 from tests.conformance.conftest import migrated_database
 from tests.image_job_support import configure, image_settings_for
-from tests.image_safety_support import assert_no_age, prompt_checked, recognise_sexual
+from tests.image_safety_support import (
+    assert_no_age,
+    figures,
+    payload,
+    prompt_checked,
+    recognise_sexual,
+    safety_calls,
+)
 from tests.image_support import Outputs, StubImageGenerator, registered
 from tests.integration.ownership_fixtures import headers
 from tests.media_support import png, uploaded
 from tests.minors_support import SUBJECTS_HEADING
 from tests.offboarding_support import OFFBOARDING, run_jobs
+from tests.policy_support import OPERATOR as POLICY_OPERATOR
+from tests.policy_support import global_policy, rated_policy_rating, unique, words
 from tests.story_support import WRITE, create, story_body
 
 ADAPTER = "stub_sync"
@@ -360,6 +370,130 @@ async def test_i_30__m9_minor_refused(image_settings: Settings, engine: AsyncEng
         ordinary = await app.request({"subject": subject(true_age=MINOR_AGE)})
         assert ordinary.status_code == 202, ordinary.text
         assert app.generator.requests == []
+
+
+def word_of(prefix: str) -> str:
+    """A word no other test's policy lists: the policy matches only this test's requests."""
+    return unique(prefix).replace("-", "")
+
+
+def refused_by(response: httpx.Response) -> list[str]:
+    """The policies a 422 ``guardrail_violation`` names."""
+    assert response.status_code == 422, response.text
+    status, code, details = error_of(response)
+    assert (status, code) == (422, "guardrail_violation"), response.text
+    return [str(v["policy_id"]) for v in details["violations"]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_policy_scopes(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A subject image request is judged by the image-prompt policies outside the seeded minors
+    policy (#844): a global word-list policy refuses a description holding its word, and a
+    rating policy (listed by its rating, as C-22 writes it) refuses one requested at that
+    rating. Each refusal is 422 ``guardrail_violation`` naming the policy, before any job or
+    generation call. (No principal-scoped policy exists: a policy's scope is global, rating,
+    story or character.)
+
+    Complement asserted: the rating policy's word passes under another rating (the deployment
+    default), and a description holding neither word passes at the policy's rating."""
+    global_word, rating_word = word_of("kraken"), word_of("wyvern")
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        app.guard.reset()
+        rating_id, rated = await rated_policy_rating(
+            app.lib, engine, words(rating_word), applies_to=["image_prompt"]
+        )
+        made = await global_policy(app.lib, words(global_word), applies_to=["image_prompt"])
+        try:
+            before = await subject_jobs(engine)
+            by_global = await app.request(
+                {"subject": subject(description=f"{DESCRIPTION} Holding a {global_word}.")}
+            )
+            assert refused_by(by_global) == [made.id]
+            by_rating = await app.request(
+                {
+                    "subject": subject(description=f"{DESCRIPTION} Holding a {rating_word}."),
+                    "content_rating": rating_id,
+                }
+            )
+            assert refused_by(by_rating) == [rated.id]
+            assert await subject_jobs(engine) == before
+            assert app.generator.requests == []
+
+            elsewhere = await app.request(
+                {"subject": subject(description=f"{DESCRIPTION} Holding a {rating_word}.")}
+            )
+            assert elsewhere.status_code == 202, elsewhere.text
+            plain = await app.request(body(content_rating=rating_id))
+            assert plain.status_code == 202, plain.text
+        finally:
+            await app.lib.policies_retire(POLICY_OPERATOR, made.id)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_figures(image_settings: Settings, engine: AsyncEngine) -> None:
+    """The figure classification sees the subject request's description (#844): an adult
+    subject whose description names an extra figure that the classification answers ``minor``,
+    with a sexualizing phrase, is refused 422 ``guardrail_violation`` by the minors policy, and
+    the minors check received that figure as a minor figure.
+
+    Complement asserted: the same description without the extra figure passes (202)."""
+    extra = "beside a young girl"
+    unsafe = f"{DESCRIPTION} {UNSAFE}"
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        app.guard.reset()
+        recognise_sexual(app.guard, UNSAFE)
+        figures(app.guard, extra, ("a young girl", "minor"))
+        before = await subject_jobs(engine)
+        refused = await app.request({"subject": subject(description=f"{unsafe} {extra}.")})
+        assert refused_by(refused) == [MINORS_POLICY_ID]
+        assert await subject_jobs(engine) == before
+        minors_checks = [
+            payload(c)
+            for c in safety_calls(app.guard)
+            if SUBJECTS_HEADING in payload(c) and UNSAFE in payload(c)
+        ]
+        assert any("figure_1: minor figure; a young girl" in p for p in minors_checks)
+        assert all(f"- subject_1: age {TRUE_AGE}" in p for p in minors_checks)
+
+        passed = await app.request({"subject": subject(description=unsafe)})
+        assert passed.status_code == 202, passed.text
+        assert app.generator.requests == []
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_retired_rating(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A subject image request naming a retired content rating (retired through ``DELETE
+    /admin/content-ratings/{id}``) answers 422 ``validation_error`` with ``{field:
+    body.content_rating, reason: retired, rating_id}``, before any job.
+
+    Complement asserted: the same rating, while active, is accepted (202)."""
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        rating = await create_rating(
+            engine, RatingFields(name=unique("subject-rating")), principal="p-operator"
+        )
+        rating_id = rating.rating.id
+        active = await app.request(body(content_rating=rating_id))
+        assert active.status_code == 202, active.text
+
+        retired = await app.client.delete(
+            f"/admin/content-ratings/{rating_id}", headers=headers("p-operator")
+        )
+        assert retired.status_code == 200, retired.text
+        before = await subject_jobs(engine)
+        status, code, details = error_of(await app.request(body(content_rating=rating_id)))
+        assert (status, code) == (422, "validation_error")
+        assert {k: details.get(k) for k in ("field", "reason", "rating_id")} == {
+            "field": "body.content_rating",
+            "reason": "retired",
+            "rating_id": rating_id,
+        }
+        assert await subject_jobs(engine) == before
 
 
 @pytest.mark.integration

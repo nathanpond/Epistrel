@@ -12,11 +12,13 @@ which ``tests/property/test_time_m4.py`` covers."""
 from __future__ import annotations
 
 import asyncio
+import random
 from collections import Counter
 from typing import Any
 
 import httpx2 as httpx
 import pytest
+from alembic import command
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import text
@@ -38,6 +40,7 @@ from epistrel.core.resolution.types import ResolvedTime
 from tests.auth_support import auth_settings, bearer
 from tests.canon_support import World, at, commit, run, world
 from tests.canon_support import supersede as supersede_fact
+from tests.conftest import alembic_config
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.fork_support import fork
 from tests.openapi_support import assert_documented, lists_code
@@ -328,6 +331,102 @@ async def test_a_write_at_the_head_reads_the_placements_still_open(engine: Async
         assert then.location is not None
         assert (then.location.entity_id, sorted(present(then))) == (kitchen, sorted([bobby, cal]))
     assert read[0] == read[1], read
+
+
+async def examined(engine: AsyncEngine, sql: str, params: Any) -> int:
+    """The rows ``sql``'s scans examine (each scan's rows kept plus those its filter and recheck
+    removed), from ``EXPLAIN (ANALYZE, FORMAT JSON)`` with sequential scans priced out: on these
+    small tables the planner would otherwise read every row whatever indexes exist. The tables are
+    analysed first, so the plan follows the stories' rows as they are now."""
+    await execute_in_tx(engine, ("ANALYZE placement", {}), ("ANALYZE relationships", {}))
+    async with engine.connect() as conn:
+        await conn.execute(text("SET LOCAL enable_seqscan = off"))
+        raw = await conn.get_raw_connection()
+        cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+        await cursor.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params)
+        found = await cursor.fetchone()
+        await conn.rollback()
+    assert found is not None
+    total = 0
+    nodes = [found[0][0]["Plan"]]
+    while nodes:
+        node = nodes.pop()
+        nodes += node.get("Plans", [])
+        if "Relation Name" in node:
+            kept = node["Actual Rows"] + node.get("Rows Removed by Filter", 0)
+            kept += node.get("Rows Removed by Index Recheck", 0)
+            total += kept * node["Actual Loops"]
+    return total
+
+
+async def test_a_write_at_the_head_examines_only_the_rows_still_open(scratch_database: str) -> None:
+    """#892: the scene inputs a head write reads (its placement and ``scene`` relationship rows)
+    are found through an index, not by filtering the story's whole history: the rows their scans
+    examine are the same after 2 past stays and presences, expired (``valid_to``) and closed (a
+    later fact closed them), as after 40: no more after 40. #153's test above counts the rows
+    answered; this counts the rows read to find them. A small story may still be read through
+    another of the story's indexes (it costs the same there), so the check is that the history
+    adds nothing, not that the two counts are equal.
+
+    It runs in a database of its own. In the shared one, the other tests' many small stories
+    make the planner estimate any one story at a row or two, so every index that starts with
+    ``story_id`` costs the same, and CI's runs read [28, 8] and then [8, 170] through other
+    indexes. Here the statistics describe only these stories, as they would in a deployment."""
+    command.upgrade(alembic_config(scratch_database), "head")
+    engine = make_engine(auth_settings(scratch_database))
+    try:
+        await _examines_only_open_rows(engine)
+    finally:
+        await engine.dispose()
+
+
+async def _examines_only_open_rows(engine: AsyncEngine) -> None:
+    seen_rows: list[int] = []
+    for stays in (2, 40):
+        w = await world(engine)
+        story = w.story_id
+        bobby, ann, cal = w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+        kitchen, garden, school = (w.places[p] for p in ("kitchen", "garden", "school"))
+        await execute_in_tx(
+            engine, ("UPDATE stories SET story_minute_zero = 100000 WHERE id = :s", {"s": story})
+        )
+        stay = await commit(engine, story, at(ann, garden, 0, None))
+        visit = await commit(engine, story, rel(ann, PRESENT_AT, garden, 0))
+        for i in range(stays):
+            place = kitchen if i % 2 else garden
+            await commit(engine, story, at(bobby, place, i * 10, i * 10 + 5))
+            await commit(engine, story, at(bobby, place, i * 10, i * 10 + 5, predicate=PRESENT_AT))
+            stay = await supersede_fact(engine, story, stay.id, at(ann, place, i * 10, None))
+            visit = await supersede_fact(
+                engine, story, visit.id, rel(ann, PRESENT_AT, place, i * 10)
+            )
+        await supersede_fact(engine, story, stay.id, at(ann, school, 100000, None))
+        await supersede_fact(engine, story, visit.id, rel(ann, PRESENT_AT, school, 100000))
+        await commit(engine, story, at(bobby, kitchen, 100000, None))
+        for table in ("placement", "relationships"):
+            history = await scalar(
+                engine,
+                f"SELECT count(*) FILTER (WHERE closed_by_fact_id IS NOT NULL) * 1000 "  # noqa: S608
+                f"+ count(*) FILTER (WHERE valid_to IS NOT NULL) FROM {table} WHERE story_id = :s",
+                s=story,
+            )
+            assert divmod(history, 1000) == (stays + 1, stays), (table, history)
+        with statements(engine) as seen:
+            await commit(engine, story, at(cal, kitchen, 100000, None))
+        reads = [
+            (sql, params)
+            for table in ("placement", "relationships")
+            for sql, params in seen.reading(table)
+            if "valid_to >" in sql
+        ]
+        assert {"placement", "relationships"} <= {
+            t for t in TABLES if any(t in q for q, _ in reads)
+        }
+        seen_rows.append(sum([await examined(engine, sql, params) for sql, params in reads]))
+        then = await scene_of(engine, story, viewpoint="omniscient")
+        assert then.location is not None
+        assert (then.location.entity_id, sorted(present(then))) == (kitchen, sorted([bobby, cal]))
+    assert seen_rows[1] <= seen_rows[0], seen_rows
 
 
 @pytest.mark.part("M4", "FR-STORE-3")
@@ -653,3 +752,91 @@ def test_i_01__structured_rebuild(pg_url: str) -> None:
         "closed",
     )
     assert all(OCCURRED[k] > 0 for k in kinds), OCCURRED
+
+
+def _random_scene_rows(rng: Any, turns: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Placement and presence rows with random positions, closers and valid-time."""
+    entities = ["actor", "e1", "e2", "e3"]
+    places = ["p1", "p2", "p3"]
+
+    def positioned(row: dict[str, Any]) -> dict[str, Any]:
+        since = rng.choice([None, *range(0, turns + 2)])
+        row["since_turn"] = since
+        row["since_slot"] = rng.choice([None, 0, 1])
+        closed = rng.random() < 0.4
+        row["closed_by_fact_id"] = "F" if closed else None
+        row["closed_turn"] = rng.choice([None, *range(0, turns + 2)]) if closed else None
+        row["closed_slot"] = rng.choice([None, 0, 2]) if closed else None
+        lo = rng.choice([None, *range(0, 10 * turns, 7)])
+        row["valid_from"] = lo
+        row["valid_to"] = rng.choice([None, (lo or 0) + rng.randint(1, 40)])
+        row["source_fact_id"] = f"{rng.randint(0, 9999):04d}"
+        return row
+
+    placements = [
+        positioned(
+            {
+                "entity_id": rng.choice(entities),
+                "location_id": rng.choice([None, *places]),
+            }
+        )
+        for _ in range(rng.randint(0, 14))
+    ]
+    presences = [
+        positioned({"subject_id": rng.choice(entities), "object_id": rng.choice(places)})
+        for _ in range(rng.randint(0, 6))
+    ]
+    return placements, presences
+
+
+@pytest.mark.part("M4", "FR-STORE-3")
+def test_i_01__structured_scene_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#887: the fold's one sweep over the turns answers, at every turn, exactly the scene
+    ``scene`` computes over every row (2,000 random histories, turns with gaps, story time
+    flat or rising, and falling, where the sweep falls back), and calls ``scene`` only where
+    the rows in force change, so a fold of a long story is linear in it."""
+    rng = random.Random(887)  # noqa: S311 - test data
+    for case in range(2_000):
+        count = rng.randint(1, 30)
+        numbers = sorted(rng.sample(range(1, 3 * count + 1), count))
+        turns = [(n, rng.randint(1, 3), f"op{n}") for n in numbers]
+        nows = sorted(rng.randint(0, 10 * count) for _ in turns)
+        if case % 10 == 0:
+            rng.shuffle(nows)
+        placements, presences = _random_scene_rows(rng, 3 * count)
+        expected = [
+            structured.scene(placements, presences, "actor", structured.turn_position(n), now)
+            for n, now in zip(numbers, nows, strict=True)
+        ]
+        assert structured._swept(placements, presences, "actor", turns, nows) == expected, case
+
+    calls = Counter[str]()
+    original = structured.scene
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls["rows"] += len(args[0]) + len(args[1])
+        return original(*args, **kwargs)
+
+    long = 2_000
+    placements = [
+        {
+            "entity_id": "actor" if i % 2 else "e1",
+            "location_id": "p1",
+            "since_turn": i,
+            "since_slot": 0,
+            "closed_by_fact_id": None,
+            "closed_turn": None,
+            "closed_slot": None,
+            "valid_from": 10 * i,
+            "valid_to": 10 * i + 25,
+            "source_fact_id": f"{i:05d}",
+        }
+        for i in range(1, long + 1)
+    ]
+    turns = [(n, 1, f"op{n}") for n in range(1, long + 1)]
+    nows = [10 * n + 5 for n in range(1, long + 1)]
+    monkeypatch.setattr(structured, "scene", counted)
+    swept = structured._swept(placements, [], "actor", turns, nows)
+    assert len(swept) == long
+    assert swept[-1] == structured.Scene("p1", ("actor", "e1"))
+    assert calls["rows"] <= 4 * long, calls

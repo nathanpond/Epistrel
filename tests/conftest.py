@@ -204,9 +204,9 @@ def pg_url() -> Iterator[str]:
         return
 
     try:
-        from testcontainers.community.postgres import PostgresContainer
+        from epistrel.testing import postgres
 
-        container = PostgresContainer(PG_IMAGE, driver="psycopg")
+        container = postgres.container(PG_IMAGE)
         container.start()
     except Exception as exc:
         pytest.fail(f"{NO_DOCKER_MESSAGE}\nCause: {type(exc).__name__}: {exc}", pytrace=False)

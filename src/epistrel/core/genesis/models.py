@@ -37,7 +37,6 @@ from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -62,7 +61,7 @@ from epistrel.core.catalog.service import Revision
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import Ulid
 from epistrel.core.ownership import Owner, Principal
-from epistrel.core.profiles.impact import CAMEL_CASE, TwoStageRequest
+from epistrel.core.profiles.impact import TwoStageRequest
 from epistrel.core.providers import ProviderBindings
 from epistrel.core.tables import character_catalog, personas
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
@@ -361,7 +360,6 @@ class StoryFromScenario(TwoStageRequest):
     strict: StrictBool = False
     ignore_warnings: StrictBool = Field(
         default=False,
-        validation_alias=AliasChoices("ignore_warnings", CAMEL_CASE),
         description="Create even when the profile leaves a recommended capability unmet "
         "(FR-PROF-7); `ignoreWarnings` is the same flag for camelCase clients.",
     )

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from alembic import command
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import __version__
@@ -1068,5 +1070,346 @@ def test_the_escalation_tables(scratch_database: str) -> None:
         }
         command.downgrade(cfg, "0064")
         assert tables() == set()
+    finally:
+        engine.dispose()
+
+
+MEMORY_STORIES = {
+    "01HZZZZZZZZZZZZZZZZZZZZZS1": 4,  # vectors on every other memory
+    "01HZZZZZZZZZZZZZZZZZZZZZS2": 3,
+    "01HZZZZZZZZZZZZZZZZZZZZZS3": 5,
+    "01HZZZZZZZZZZZZZZZZZZZZZS4": 0,  # a story with no memory still gets its partition
+}
+
+
+def _memory_digests(conn: Any) -> dict[str, tuple[int, str]]:
+    """Per story: its memories' count and the MD5 of every column of every row, in id order."""
+    return {
+        str(r.story_id).rstrip(): (int(r.n), str(r.digest))
+        for r in conn.execute(
+            text(
+                "SELECT story_id, count(*) AS n, "
+                "md5(string_agg(m::text, '|' ORDER BY m.id)) AS digest "
+                "FROM memories m GROUP BY story_id"
+            )
+        )
+    }
+
+
+def test_memories_are_partitioned_by_story(scratch_database: str) -> None:
+    """0151 (#784, ADR-187): over a pinned deployment's memories (three stories with memories,
+    vectors on some, and one story with none), every story gets its own LIST partition of
+    ``memories`` and each story's memories land in it with every column unchanged (per-story
+    count and checksum); the parent's primary key is ``(id, story_id)``, it has no default
+    partition, its indexes are the old names (the HNSW index included) and each partition
+    carries ``fillfactor = 70``. The downgrade rebuilds the unpartitioned table, with the same
+    rows, its ``(id)`` primary key, its indexes, triggers and ``fillfactor``."""
+    from epistrel.core.memory.story_partitions import partition_name
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0150")
+    engine = make_sync_engine(scratch_database)
+
+    def scalar(sql: str, **params: Any) -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text(sql), params)
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    def triggers() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT tgname FROM pg_trigger WHERE tgrelid = 'memories'::regclass "
+                        "AND NOT tgisinternal"
+                    )
+                )
+            )
+
+    def primary_key() -> str:
+        return str(
+            scalar(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'memories'::regclass AND contype = 'p'"
+            )
+        )
+
+    try:
+        with engine.begin() as conn:
+            # The pin's retype (``core.embeddings.retype``) at 4 dimensions.
+            conn.execute(text("ALTER TABLE memories ALTER COLUMN embedding TYPE vector(4)"))
+            conn.execute(
+                text(
+                    "CREATE INDEX ix_memories_embedding_hnsw ON memories USING hnsw "
+                    "(embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)"
+                )
+            )
+            profile = conn.scalar(text("SELECT id FROM engine_profiles ORDER BY id LIMIT 1"))
+            for ordinal, (story, count) in enumerate(MEMORY_STORIES.items()):
+                operation = f"{story[:-2]}O{ordinal}"
+                conn.execute(
+                    text(
+                        "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                        "VALUES (:s, 'p-1', :p)"
+                    ),
+                    {"s": story, "p": profile},
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO operations (operation_id, story_id, kind, principal, status, "
+                        "membership_tx) VALUES (:o, :s, 'genesis', 'p-1', 'committed', now())"
+                    ),
+                    {"o": operation, "s": story},
+                )
+                for n in range(count):
+                    conn.execute(
+                        text(
+                            "INSERT INTO memories (id, story_id, kind, text, provenance, "
+                            "trust_tier, operation_id, membership_tx, importance, embedding, "
+                            "participants) VALUES (:i, :s, 'episodic', :t, 'render', 'in_world', "
+                            ":o, now(), :imp, CAST(:v AS vector), ARRAY[:s]::char(26)[])"
+                        ),
+                        {
+                            "i": new_ulid(),
+                            "s": story,
+                            "t": f"Memory {n} of story {ordinal}.",
+                            "o": operation,
+                            "imp": n / 10,
+                            "v": None if n % 2 else f"[{n + 1}, {ordinal}, 0.5, 0.25]",
+                        },
+                    )
+        with engine.connect() as conn:
+            before = _memory_digests(conn)
+        assert {s: n for s, (n, _) in before.items()} == {
+            s: n for s, n in MEMORY_STORIES.items() if n
+        }
+        flat_indexes = indexes()
+        assert "ix_memories_embedding_hnsw" in flat_indexes
+        assert primary_key() == "PRIMARY KEY (id)"
+
+        command.upgrade(cfg, "0151")
+        with engine.connect() as conn:
+            assert _memory_digests(conn) == before
+            landed = {
+                (str(r.story_id).rstrip(), str(r.partition))
+                for r in conn.execute(
+                    text("SELECT DISTINCT story_id, tableoid::regclass AS partition FROM memories")
+                )
+            }
+            partitions = set(
+                conn.scalars(
+                    text(
+                        "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = "
+                        "i.inhrelid WHERE i.inhparent = 'memories'::regclass"
+                    )
+                )
+            )
+            fillfactors = set(
+                conn.scalars(
+                    text(
+                        "SELECT array_to_string(c.reloptions, ',') FROM pg_inherits i "
+                        "JOIN pg_class c ON c.oid = i.inhrelid "
+                        "WHERE i.inhparent = 'memories'::regclass"
+                    )
+                )
+            )
+        assert landed == {(s, partition_name(s)) for s, n in MEMORY_STORIES.items() if n}
+        assert partitions == {partition_name(s) for s in MEMORY_STORIES}
+        assert fillfactors == {"fillfactor=70"}
+        assert scalar("SELECT relkind FROM pg_class WHERE relname = 'memories'") == "p"
+        assert scalar("SELECT pg_get_partkeydef(CAST('memories' AS regclass))") == "LIST (story_id)"
+        assert scalar("SELECT partdefid FROM pg_partitioned_table") == 0  # no default
+        assert scalar("SELECT to_regclass('memories_old')") is None
+        assert primary_key() == "PRIMARY KEY (id, story_id)"
+        assert indexes() == flat_indexes
+        assert triggers() == {"memories_guard", "memories_no_truncate"}
+        assert (
+            scalar(
+                "SELECT count(*) FROM pg_trigger WHERE tgname = 'memories_no_truncate' "
+                "AND tgrelid = CAST(:p AS regclass)",
+                p=partition_name(next(iter(MEMORY_STORIES))),
+            )
+            == 1
+        )
+
+        command.downgrade(cfg, "0150")
+        with engine.connect() as conn:
+            assert _memory_digests(conn) == before
+        assert scalar("SELECT relkind FROM pg_class WHERE relname = 'memories'") == "r"
+        assert scalar("SELECT reloptions FROM pg_class WHERE relname = 'memories'") == [
+            "fillfactor=70"
+        ]
+        assert scalar("SELECT count(*) FROM pg_class WHERE relname LIKE 'memories_p_%'") == 0
+        assert primary_key() == "PRIMARY KEY (id)"
+        assert indexes() == flat_indexes
+        assert triggers() == {"memories_guard", "memories_no_truncate"}
+        assert "hnsw" in str(
+            scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_memories_embedding_hnsw'")
+        )
+    finally:
+        engine.dispose()
+
+
+def _closers(url: str) -> dict[str, tuple[set[str], set[str]]]:
+    """Per fact: its stored ``closed_by``, and the rows the pre-#471 ``_closed_by`` anti-join
+    finds (``supersedes`` containing its id, same story)."""
+    engine = make_sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            return {
+                str(r.id): ({str(c) for c in r.closed_by}, {str(c) for c in r.oracle})
+                for r in conn.execute(
+                    text(
+                        "SELECT f.id, f.closed_by, ARRAY(SELECT s.id FROM facts s "
+                        "WHERE s.story_id = f.story_id AND s.supersedes @> ARRAY[f.id]) AS oracle "
+                        "FROM facts f"
+                    )
+                )
+            }
+    finally:
+        engine.dispose()
+
+
+async def _closing_history(url: str) -> tuple[str, str, set[str]]:
+    """A story with supersedes (one write closing two versions, with remainders), an erased
+    closer, and a fork of it; answers the story, the fork and the erased ids."""
+    from epistrel.core.db import make_engine
+    from tests.auth_support import auth_settings
+    from tests.canon_support import at, commit, supersede, world
+    from tests.fork_support import fork
+
+    engine = make_engine(auth_settings(url))
+    try:
+        w = await world(engine)
+        story = w.story_id
+        bobby, ann = w.people["Bobby"], w.people["Ann"]
+        kitchen, garden, school = (w.places[p] for p in ("kitchen", "garden", "school"))
+        first = await commit(engine, story, at(bobby, kitchen, 0, 50))
+        await commit(engine, story, at(bobby, garden, 20, 30))  # closes first, keeps remainders
+        moved = await commit(engine, story, at(ann, kitchen, 0, None))
+        await supersede(engine, story, moved.id, at(ann, garden, 0, None))
+        closer = await commit(engine, story, at(ann, school, 10, 20))
+        forked = await fork(engine, story)
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL epistrel.erasure = 'on'"))
+            await conn.execute(text("DELETE FROM facts WHERE id = :i"), {"i": closer.id})
+        assert first.id
+        return story, forked.story_id, {closer.id}
+    finally:
+        await engine.dispose()
+
+
+def test_facts_closing_marker_backfill(scratch_database: str) -> None:
+    """0152 (#471, ADR-189): on a database with supersedes (a write closing a version with
+    remainders, a supersede), an erased closer and a fork, the backfill sets every fact's
+    ``closed_by`` to exactly the rows the old ``_closed_by`` anti-join finds, and equal to what
+    the write path stored, but for the erased closer. The guard lets ``closed_by`` only grow.
+    The downgrade drops the column and restores ``ix_facts_supersedes`` and 0060's guard."""
+    import asyncio
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "head")
+    story, forked, erased = asyncio.run(_closing_history(scratch_database))
+    engine = make_sync_engine(scratch_database)
+
+    def scalar(sql: str, **params: Any) -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text(sql), params)
+
+    try:
+        live = _closers(scratch_database)
+        stories = {
+            str(s).rstrip()
+            for s in (
+                scalar("SELECT array_agg(DISTINCT story_id) FROM facts WHERE closed_by <> '{}'")
+                or ()
+            )
+        }
+        assert {story, forked} <= stories  # both the source and the fork have closed versions
+        assert any(stored - oracle == erased for stored, oracle in live.values())
+
+        command.downgrade(cfg, "0151")
+        assert scalar("SELECT to_regclass('ix_facts_supersedes')") == "ix_facts_supersedes"
+        assert (
+            scalar(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_name = 'facts' AND column_name = 'closed_by'"
+            )
+            == 0
+        )
+        guard = str(
+            scalar("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_facts_append_only'")
+        )
+        assert "closed_by" not in guard
+        assert "'committed>revised'" in guard
+
+        command.upgrade(cfg, "0152")
+        backfilled = _closers(scratch_database)
+        assert set(backfilled) == set(live)
+        assert sum(1 for stored, _ in backfilled.values() if stored) >= 3
+        for fact_id, (stored, oracle) in backfilled.items():
+            assert stored == oracle, fact_id
+            assert stored == live[fact_id][0] - erased, fact_id
+        assert scalar("SELECT to_regclass('ix_facts_supersedes')") is None
+
+        closed = next(k for k, (stored, _) in backfilled.items() if stored)
+        with pytest.raises(DBAPIError, match="keeps every closer"), engine.begin() as conn:
+            conn.execute(text("UPDATE facts SET closed_by = '{}' WHERE id = :i"), {"i": closed})
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE facts SET closed_by = closed_by || ARRAY[:n]::char(26)[] WHERE id = :i"
+                ),
+                {"i": closed, "n": new_ulid()},
+            )
+    finally:
+        engine.dispose()
+
+
+_STORY_DELETE_GUARDS = """
+SELECT DISTINCT c.relname::text, p.proname::text, pg_get_functiondef(p.oid) LIKE '%(0126)%'
+FROM pg_trigger t
+JOIN pg_class c ON c.oid = t.tgrelid
+JOIN pg_proc p ON p.oid = t.tgfoid
+WHERE NOT t.tgisinternal
+  AND p.prokind = 'f'
+  AND (p.proname LIKE '%append_only' OR p.proname LIKE '%_guard')
+  AND c.relname::text = ANY(:tables)
+  AND pg_get_functiondef(p.oid) LIKE '%allow_story_delete%'
+"""
+
+
+def test_every_prunable_guard_keeps_the_prune_exemption(scratch_database: str) -> None:
+    """0126 splices pruning's exemption into the guard of every table a pruning deletes from. A
+    later migration that replaces such a guard whole (0152's facts guard, #471) must splice it
+    in again, at head and after stepping back down past it, or a pruning can no longer delete
+    those rows.
+
+    Complement asserted: the facts guard is among the guards checked, at both revisions."""
+    from epistrel.core.prune import PRUNABLE_TABLES
+
+    cfg = alembic_config(scratch_database)
+    engine = make_sync_engine(scratch_database)
+    tables = [t.name for t in PRUNABLE_TABLES]
+
+    def guards() -> dict[tuple[str, str], bool]:
+        with engine.connect() as conn:
+            rows = conn.execute(text(_STORY_DELETE_GUARDS), {"tables": tables}).all()
+        return {(r[0], r[1]): r[2] for r in rows}
+
+    try:
+        for target in ("head", "0151"):
+            command.upgrade(cfg, "head")
+            if target != "head":
+                command.downgrade(cfg, target)
+            found = guards()
+            assert ("facts", "epistrel_facts_append_only") in found, target
+            missing = sorted(k for k, has in found.items() if not has)
+            assert not missing, f"{target}: guards without 0126's prune exemption: {missing}"
     finally:
         engine.dispose()

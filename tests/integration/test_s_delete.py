@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine, ProfileOverridesPatch, RelationRequest
@@ -24,22 +27,28 @@ from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.membership import Position
+from epistrel.core.memory import story_partitions
+from epistrel.core.memory.story_partitions import not_a_partition, partition_name
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.retrieval import pipeline
 from epistrel.core.states import proposals as state_proposals
-from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
+from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES, delete_story
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turns import beats
 from epistrel.core.verify import shadow
 from epistrel.core.world_clock import stops as scheduled
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
+from epistrel.orchestrator.jobs.handlers import memory_partitions as memory_partitions_job
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.jobs.handlers import registered as registered_kinds
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from epistrel.testing import pauses
 from tests import (
     amendment_support,
     canon_support,
@@ -53,12 +62,17 @@ from tests import (
 )
 from tests import erasure_support as erasure
 from tests import genesis_support as g
-from tests.event_support import interleave, play_turn, rows, scalar
+from tests import retrieval_support as retrieval
+from tests.canon_support import PRINCIPAL as CANON_PRINCIPAL
+from tests.event_support import interleave, new_story, play_turn, rows, scalar
+from tests.offboarding_support import worker
 from tests.policy_support import unique, words
 from tests.respond_support import respond_client
 from tests.story_support import WRITE, create, dump, public_tables, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
+DROP_KIND = memory_partitions_job.MEMORY_PARTITION_DROP
+"""#865: the job kind that drops a deleted story's memories table."""
 
 
 async def _plant_m7_jobs(engine: AsyncEngine, story_id: str) -> None:
@@ -595,8 +609,9 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     async with engine.connect() as conn:
         scoped = await conn.scalars(
             text(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                f"AND {not_a_partition()}"
             )
         )
         for table in sorted(set(scoped) - STORY_ID_EXCEPTIONS):
@@ -706,7 +721,12 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
         "audit_log",
         "idempotency_keys",
         "ownership_events",
+        "jobs",
     }
+    # #865: the one job the deletion adds is the drop of the story's memories table, run after
+    # the commit.
+    assert len(added["jobs"]) == 1
+    assert await _drop_job(engine, victim) == (DROP_KIND, None, victim, "queued")
     (dropped,) = await rows(
         engine,
         "SELECT entity_type, entity_id, kind, old, new, acting_principal FROM ownership_events "
@@ -774,8 +794,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         with_story_id = set(
             await conn.scalars(
                 text(
-                    "SELECT table_name FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                    "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                    "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                    f"AND {not_a_partition()}"
                 )
             )
         )
@@ -794,11 +815,13 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
 
         foreign_keys = await conn.execute(
             text(
+                # Column pairs by position: #784's ``memories (operation_id, story_id)`` key
+                # pairs ``story_id`` with ``operations.story_id``, its own story.
                 "SELECT c.conrelid::regclass::text, a.attname, c.confrelid::regclass::text, "
                 "fa.attname FROM pg_constraint c "
-                "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
-                "JOIN pg_attribute fa ON fa.attrelid = c.confrelid "
-                "AND fa.attnum = ANY(c.confkey) "
+                "CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, fattnum) "
+                "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+                "JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.fattnum "
                 "WHERE c.contype = 'f' AND c.conrelid::regclass::text = ANY(:t)"
             ),
             {"t": story_tables},
@@ -806,6 +829,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         allowed = {
             ("story_id", "stories", "id"),
             ("operation_id", "operations", "operation_id"),
+            # #784: ``memories``' operation key is ``(operation_id, story_id)``, so a memory and
+            # its operation are of one story.
+            ("story_id", "operations", "story_id"),
             # #160's mandatory provenance: a belief and the transition that produced it name each
             # other (deferred keys); the provenance trigger holds both to one story and holder.
             ("provenance", "belief_transitions", "id"),
@@ -898,3 +924,201 @@ async def test_s_delete__erasure(pg_url: str, engine: AsyncEngine) -> None:
         await erasure.erase(client, "catalog_character", halvard, stories[1])
         assert sum((await erasure.residue(engine, stories[1], terms)).values()) == 0
         assert await _rows_of(engine, stories[2]) == unrelated
+
+
+# -- #865: a deleted story's memories partition ------------------------------------------------
+
+
+async def _drop_job(engine: AsyncEngine, story_id: str) -> tuple[object, ...]:
+    """The story's ``memory_partition_drop`` job: its kind, story, target and status."""
+    (job,) = await rows(
+        engine,
+        "SELECT kind, story_id, payload->>'story_id' AS target, status FROM jobs "
+        "WHERE coalesce_key = :k",
+        k=memory_partitions_job.coalesce_key(story_id),
+    )
+    return tuple(job)
+
+
+async def _partition(engine: AsyncEngine, story_id: str) -> str | None:
+    """The story's memories table, attached or not (``None``: there is none)."""
+    found = await scalar(engine, "SELECT to_regclass(:c)::text", c=f'"{partition_name(story_id)}"')
+    return None if found is None else str(found)
+
+
+async def _run_drop_jobs(engine: AsyncEngine) -> list[str]:
+    """Run every due ``memory_partition_drop`` job through a worker (no other kind); the
+    outcomes their results recorded."""
+    others = [kind for kind in registered_kinds() if kind != DROP_KIND]
+    found = worker(engine)
+    ran: list[str] = []
+    while (
+        job := await job_queue.claim(engine, "s-delete-test", lease_s=30, exclude_kinds=others)
+    ) is not None:
+        await found.execute(job)
+        (row,) = await rows(engine, "SELECT status, result FROM jobs WHERE id = :j", j=job.id)
+        assert row.status == "done", tuple(row)
+        ran.append(str(row.result["outcome"]))
+    return ran
+
+
+async def test_a_deleted_story_s_partition_is_dropped(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """#865: ``DELETE /stories/{id}`` answers once the rows are deleted, with the story's
+    memories partition still there; the ``memory_partition_drop`` job its transaction enqueued
+    then detaches and drops it, and a second run finds nothing to drop. Another story's
+    partition is untouched."""
+    async with rest(settings, engine) as client:
+        victim, other = [
+            (await create(client, story_body("Ada", "Brann")))["story_id"] for _ in range(2)
+        ]
+        await memory_support.derived_memory(engine, victim, "The victim's own.", [])
+        assert await _partition(engine, victim) is not None
+        response = await client.delete(f"/stories/{victim}", headers=WRITE)
+        assert response.status_code == 204, response.text
+    assert await _partition(engine, victim) is not None  # the drop waits for the job
+    assert story_partitions.DROPPED in await _run_drop_jobs(engine)
+    assert await _partition(engine, victim) is None
+    assert await _partition(engine, other) is not None
+    assert await story_partitions.drop_partition(engine, victim) == story_partitions.ABSENT
+    # A live story's partition is never dropped, by the job or a direct call.
+    assert await story_partitions.drop_partition(engine, other) == story_partitions.LIVE
+    assert await _partition(engine, other) is not None
+
+
+async def test_the_sweep_drops_orphan_partitions_only(engine: AsyncEngine) -> None:
+    """#865: the sweep drops a partition whose bound names no story (one a failed creation
+    left), finalizes a detach left pending and drops it, and drops a detached ``memories_p_*``
+    table (a crash between the detach and the drop). It skips an orphan whose story's advisory
+    lock another session holds (a creation in flight) and drops it once the lock is released,
+    and it never drops a live story's partition. A sweep started while another runs does nothing."""
+    live = await new_story(engine)
+    orphan, held, detached, pending = (new_ulid() for _ in range(4))
+    for story_id in (orphan, held, detached, pending):
+        async with engine.begin() as conn:
+            assert await story_partitions.create_partition(conn, story_id)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(f"ALTER TABLE memories DETACH PARTITION {partition_name(detached)}")
+        )
+    await _leave_detach_pending(engine, pending)
+    assert await scalar(
+        engine,
+        "SELECT inhdetachpending FROM pg_inherits WHERE inhrelid = to_regclass(:c)",
+        c=partition_name(pending),
+    )
+
+    async with engine.connect() as pooled:
+        lock = await pooled.execution_options(isolation_level="AUTOCOMMIT")
+        await lock.execute(
+            text("SELECT pg_advisory_lock(:n, hashtext(:s))"),
+            {"n": story_partitions.LOCK_NAMESPACE, "s": held},
+        )
+        async with engine.connect() as sweeping:
+            await sweeping.execute(
+                text("SELECT pg_advisory_lock(:n, :k)"),
+                dict(zip(("n", "k"), story_partitions.SWEEP_LOCK, strict=True)),
+            )
+            assert await story_partitions.sweep_orphans(engine) == {"locked": 1}
+            await sweeping.execute(
+                text("SELECT pg_advisory_unlock(:n, :k)"),
+                dict(zip(("n", "k"), story_partitions.SWEEP_LOCK, strict=True)),
+            )
+        counts = await story_partitions.sweep_orphans(engine)
+        assert counts["busy"] >= 1
+        assert counts["dropped"] >= 2
+        assert counts["leftovers"] >= 1
+        for gone in (orphan, detached, pending):
+            assert await _partition(engine, gone) is None, gone
+        assert await _partition(engine, held) is not None
+        assert await _partition(engine, live) is not None
+        await lock.execute(
+            text("SELECT pg_advisory_unlock(:n, hashtext(:s))"),
+            {"n": story_partitions.LOCK_NAMESPACE, "s": held},
+        )
+    await story_partitions.sweep_orphans(engine)
+    assert await _partition(engine, held) is None
+    assert await _partition(engine, live) is not None
+
+
+async def _leave_detach_pending(engine: AsyncEngine, story_id: str) -> None:
+    """Start ``DETACH … CONCURRENTLY`` of ``story_id``'s partition and cancel it in its second
+    phase (while an open transaction holds ``memories``), so the detach is left pending."""
+    table = partition_name(story_id)
+    async with engine.connect() as reader, engine.connect() as pooled:
+        # ACCESS SHARE on ``memories``, held (#784: one story's partition, not every one's).
+        await reader.execute(
+            text("SELECT count(*) FROM memories WHERE story_id = :s"), {"s": story_id}
+        )
+        detacher = await pooled.execution_options(isolation_level="AUTOCOMMIT")
+        pid = await detacher.scalar(text("SELECT pg_backend_pid()"))
+        detach = asyncio.create_task(
+            detacher.execute(text(f"ALTER TABLE memories DETACH PARTITION {table} CONCURRENTLY"))
+        )
+        for _ in range(200):  # the first phase commits, then the second waits on ``reader``
+            if await scalar(
+                engine,
+                "SELECT EXISTS (SELECT 1 FROM pg_inherits WHERE inhdetachpending "
+                "AND inhrelid = to_regclass(:c))",
+                c=table,
+            ):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise AssertionError(f"{table}'s detach never became pending")
+        await scalar(engine, "SELECT pg_cancel_backend(:p)", p=pid)
+        with pytest.raises(DBAPIError):
+            await detach
+        await detacher.invalidate()
+        await reader.rollback()
+
+
+async def _retrieve_within(
+    engine: AsyncEngine, story_id: str, limit_s: float, hold: pauses.Hold | None = None
+) -> None:
+    """A retrieval of ``story_id`` (its memories touched) finishes within ``limit_s``. When it
+    does not, ``hold`` is released first (so whatever blocks it can finish and nothing hangs),
+    then the test fails."""
+
+    async def retrieve() -> None:
+        async with engine.begin() as conn:
+            await pipeline.retrieve(conn, story_id, pipeline.RetrievalQuery("the old song"))
+
+    started = time.monotonic()
+    task = asyncio.create_task(retrieve())
+    done, _ = await asyncio.wait({task}, timeout=limit_s)
+    if not done:
+        if hold is not None:
+            hold.release()
+        await task
+        raise AssertionError(
+            f"the retrieval was blocked for {time.monotonic() - started:.1f} s (limit {limit_s} s)"
+        )
+    await task
+
+
+async def test_a_deletion_does_not_stall_another_story_s_retrieval(engine: AsyncEngine) -> None:
+    """#865: while a deletion's transaction is open (its rows deleted, its drop enqueued) and
+    while its partition's drop is between the detach and the ``DROP``, another story's
+    retrieval completes within 2 s: neither holds ACCESS EXCLUSIVE on ``memories``. Complement:
+    the partition is gone afterwards."""
+    victim = await retrieval.build_story(engine, fillers=12)
+    bystander = await retrieval.build_story(engine, fillers=12)
+    with pauses.held(pauses.STORY_DELETE_BEFORE_COMMIT) as hold:
+        deletion = asyncio.create_task(
+            delete_story(engine, victim.story_id, principal=CANON_PRINCIPAL)
+        )
+        await hold.arrived()
+        await _retrieve_within(engine, bystander.story_id, 2.0, hold)
+        hold.release()
+        await deletion
+    assert await _partition(engine, victim.story_id) is not None
+    with pauses.held(pauses.MEMORY_PARTITION_DETACHED) as hold:
+        drop = asyncio.create_task(_run_drop_jobs(engine))
+        await hold.arrived()
+        await _retrieve_within(engine, bystander.story_id, 2.0, hold)
+        hold.release()
+        assert story_partitions.DROPPED in await drop
+    assert await _partition(engine, victim.story_id) is None
+    await _retrieve_within(engine, bystander.story_id, 2.0)

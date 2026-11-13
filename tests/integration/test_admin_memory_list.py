@@ -73,11 +73,11 @@ async def test_list_memories(
         engine,
         (
             "UPDATE memories SET retrieval_tier = 'retired', retired_reason = 'floor', "
-            "retired_at = now(), retired_turn = 10 WHERE id = :m",
-            {"m": retired},
+            "retired_at = now(), retired_turn = 10 WHERE story_id = :s AND id = :m",
+            {"s": story, "m": retired},
         ),
     )
-    await pin_rows(engine, [pinned])
+    await pin_rows(engine, story, [pinned])
     everything = sorted([*episodic, *(str(r.id) for r in level1), str(reflection.id), held])
 
     async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (

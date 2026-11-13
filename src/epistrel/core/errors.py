@@ -546,7 +546,8 @@ class ImagesDisabled(EpistrelError):
 
 class InvalidRange(EpistrelError):
     """An image usage report's ``from`` after its ``to``, or a range longer than 366 days
-    (FR-IMG-11; #269). ``details``: ``{from, to}``."""
+    (FR-IMG-11; #269), ``details``: ``{from, to}``; or a ``to`` without ``from`` whose default
+    30-day range would start before 0001-01-01 (#836), ``details``: ``{to, field}``."""
 
     code = "invalid_range"
     http_status = 422

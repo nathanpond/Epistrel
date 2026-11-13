@@ -35,6 +35,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.ids import CROCKFORD, ULID_LENGTH
+from epistrel.core.memory.story_partitions import not_a_partition
 
 OPERATIONAL_TABLES = frozenset(
     {
@@ -380,8 +381,9 @@ async def compared_tables(db: AsyncEngine) -> list[str]:
         found = set(
             await conn.scalars(
                 text(
-                    "SELECT table_name FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                    "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                    "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                    f"AND {not_a_partition()}"
                 )
             )
         )

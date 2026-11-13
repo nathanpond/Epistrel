@@ -2,7 +2,7 @@
 
 **Working draft**
 
-Each ADR records a decision, its context, and consequences, so the *why* travels with the project. Status values: **Accepted**, **Superseded**, **Proposed**. ADRs are append-only: when a later ADR changes part of an earlier one, the earlier ADR gains an **Amended by** line naming the later ADR and the clause it changes, and clauses that are now wrong carry an inline *[superseded by ADR-…]* marker. Where a later ADR narrows an earlier ADR's **Consequences**, that line is restated in its narrowed form and marked *[revised per ADR-…]*, so no broader claim remains readable as current. A factual slip in an ADR's own text that no later decision changes (a wrong file path, a misnamed test) is not an amendment: the original text stays, followed by an inline *[corrected YYYY-MM-DD, #N: …]* marker naming the date, the issue and the correct fact; a correction never changes a decision. The current rule is always the latest ADR in the chain; the requirements specification (*03*) is normative where the two differ. The **indexes** below are generated from the log on every change: by requirement area, and by ADR with each one's standing — current, amended, or partly superseded.
+Each ADR records a decision, its context, and consequences, so the *why* travels with the project. Status values: **Accepted**, **Superseded**, **Proposed**. ADRs are append-only: when a later ADR changes part of an earlier one, the earlier ADR gains an **Amended by** line naming the later ADR and the clause it changes, and clauses that are now wrong carry an inline *[superseded by ADR-…]* marker. Where a later ADR narrows an earlier ADR's **Consequences**, that line is restated in its narrowed form and marked *[revised per ADR-…]*, so no broader claim remains readable as current. A factual slip in an ADR's own text that no later decision changes (a wrong file path, a misnamed test) is not an amendment: the original text stays, followed by an inline *[corrected YYYY-MM-DD, #N: …]* marker naming the date, the issue and the correct fact; a correction never changes a decision. The current rule is always the latest ADR in the chain; the requirements specification (*03*) is normative where the two differ. The **indexes** below are generated from the log on every change, by `uv run python -m epistrel.tools.adr_index --write` (CI runs it with `--check`): by requirement area, and by ADR with each one's standing — current, amended, or partly superseded.
 
 ---
 
@@ -16,45 +16,46 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
-| FR-MEM | §4 | 070, 071, 072, 075, 169 |
-| FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
+| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177 |
+| FR-STORE | §2 | 018, 045, 054, 071, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 157, 167, 172, 175, 176, 187, 188 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 122, 144, 169, 174, 175 |
+| FR-BITEMP | §3 | 189 |
+| FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
+| FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
-| FR-TURN | §6 | 043, 169, 170 |
-| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
+| FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
+| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167 |
-| FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174, 177 |
+| FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144, 150, 170, 185 |
-| FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
-| FR-STATE | §15.1 | 055, 072, 144 |
+| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185 |
+| FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
+| FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
-| FR-MULTI | §16 | 043, 126 |
+| FR-MULTI | §16 | 043, 054, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
-| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
-| FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182, 183 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
+| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171, 176 |
+| FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142, 164 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182, 186 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
-| FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
+| FR-OBS | §19 | 017, 129, 158, 162 |
+| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
-| NFR-REL | §20 | 045, 127, 175 |
+| NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185 |
+| NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
+| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
 | NFR-PORT | §20 | 150 |
-| NFR-OPS | §20 | 127, 148, 151 |
+| NFR-OPS | §20 | 127, 148, 151, 191 |
 | NFR-MAINT | §20 | 148 |
 
 ### By ADR
@@ -63,7 +64,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | ADR | Title | Standing | Read with |
 |---|---|---|---|
-| 001 | LLM as renderer; authoritative state is external | Amended | 077 |
+| 001 | LLM as renderer; authoritative state is external | Partly superseded | 077 |
 | 002 | Single transactional store (PostgreSQL + pgvector) | Amended | 054, 127, 137, 145 |
 | 003 | Event sourcing + bitemporal canon | Amended | 027, 080, 122 |
 | 004 | Epistemic-first: per-character viewpoint is the core primitive | Current | — |
@@ -85,7 +86,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 020 | Every external read is an event; single source of truth for external values | Amended | 030, 056 |
 | 021 | Natural-language history rewrite with configurable, orthogonal modes | Amended | 027, 042, 053 |
 | 022 | Determined/undetermined (world) and known/unknown (viewpoint) are separate axes; a determined fact has one value | Partly superseded | 049, 053, 035 |
-| 023 | Character modeling: interaction-or-salience trigger; model liberally, weight conservatively; player has no interiority | Amended | 047 |
+| 023 | Character modeling: interaction-or-salience trigger; model liberally, weight conservatively; player has no interiority | Partly superseded | 047 |
 | 024 | Declared `think` is checked, not trusted; false beliefs require a permitted, antecedent-backed cause | Amended | 034, 036 |
 | 025 | Belief formation is explicit, typed, and resolved as-of the exposure frame | Amended | 027, 034, 041, 069, 075 |
 | 026 | Presence is not perception; route by an authoritative audience, with an envelope/content split | Amended | 043, 047, 071 |
@@ -169,7 +170,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 104 | Image limits count every provider output; catalog results are candidates attached deliberately | Amended | 109, 135, 138 |
 | 105 | Image metadata states its guarantees; an image's audience viewpoint is separate from its camera POV | Amended | 110 |
 | 106 | Creative quality is outside the guarantee; Epistrel guarantees the inputs | Amended | 112 |
-| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 14141, 183 |
+| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 141, 183 |
 | 108 | The image safety path knows true ages; the image model gets only what the audience perceives | Amended | 114, 129 |
 | 109 | Catalog candidates are durable private assets; image reservations are atomic; unchecked uploads are named as such | Partly superseded | 113, 114, 117, 135 |
 | 110 | Checker certification is reported per policy; image tests and ADR consequences stay inside the guarantee boundary | Current | — |
@@ -249,6 +250,11 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
+| 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
+| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Amended | 191 |
+| 189 | A closed fact version stores its closers, and canon reads find them by key | Current | — |
+| 190 | The engine-only latency budgets are gated on the reference host only and reported elsewhere | Current | — |
+| 191 | The compose database ships a lock table sized for 6,400 stories, and the test servers run it | Current | — |
 
 ---
 
@@ -256,7 +262,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 **Status:** Accepted.
 **Amended by:** ADR-077 — "renderer" is superseded by "the model proposes; the engine validates"; several consequential steps are model-dependent and measured.
 **Context:** In open roleplay the transcript *is* the world, which is why memory collapses and the model's errors become canon.
-**Decision:** A language model renders prose from state and proposes state changes; it is never the source of truth. The authoritative world lives in Epistrel.
+**Decision:** A language model renders prose *[superseded by ADR-077: the model proposes; the engine validates; several consequential steps are model-dependent and measured]* from state and proposes state changes; it is never the source of truth. The authoritative world lives in Epistrel.
 **Consequences:** Enables selective context, external verification, and a stable past. Requires a structured write path (ADR-008) and a validation layer (ADR-010).
 
 ---
@@ -399,7 +405,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 **Decision:** Deterministic is the default and the hot path; a model is reached only through explicit gates that fail toward safety. Per-job disposition:
 - **Verification / entailment (hot path, gated).** Engine Core normalizes claims and returns supported/contradicted/novel deterministically; it returns `uncertain` — and only then does the Orchestrator call the entailment model — on (a) an unresolved predicate, (b) a world-knowledge-dependent conflict, (c) a partial/ambiguous match *[narrowed by ADR-162: approximate bounds are not one; FR-PROP-10 resolves them deterministically to `uncertain`, with no call]*. The gate is a **tunable predicate-resolution-confidence threshold**, shipped as config and launched conservatively.
 - **Salience (hot-ish; model behind a deterministic pre-filter).** Rules skip obvious non-salient turns; the model resolves the rest. Biased toward recall — a missed signal (under-commitment) is the worse error.
-- **Extraction backstop (hot path).** *Refined by ADR-065:* a structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`) *[default superseded by ADR-158: `gated` is the default; `always` is a profile's choice]*, with gating available only as an evidence-driven reduction.
+- **Extraction backstop (hot path).** *[superseded by ADR-065: claim detection runs on every render by default]* A structurally valid render does not prove every claim in its prose was declared, so claim detection now runs deterministic detectors on every render and the model extraction on every render by default (`extraction_mode = always`) *[default superseded by ADR-158: `gated` is the default; `always` is a profile's choice]*, with gating available only as an evidence-driven reduction.
 - **Consolidation / reflection, importance scoring (off hot path, no gate).** Model-first, latency-tolerant; model tier chosen freely.
 - **Everything else (deterministic, no model, ever).** Commitment lifecycle, visibility scoping, bitemporal reads, projections, repair-ladder selection, mutation primitives, directive-classification mechanics.
 Launch conservative (high continuity, more escalation), then **tighten data-drivenly:** gates are tunable config, never hardcoded; every tightening is validated in **shadow/canary** before promotion; a predicate-shape graduates to deterministic only when its escalation **yield** (the fraction of escalations where the model flips the deterministic tentative verdict) is low **and** the residual flips are low-consequence. A model fallback's verdict is validated, never trusted: `uncertain`/low-confidence resolves to the safe disposition (needs-repair or surface to author), never a silent `supported` (cf. FR-MODEL-6). Testability is unaffected — the cognition-port stub keeps the engine deterministic in tests regardless of which jobs use a model.
@@ -446,7 +452,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Status:** Accepted.
 **Amended by:** ADR-047 — "never surfaced or hinted" is superseded by non-disclosure (verbatim, paraphrase, or narrated inner state) with legitimate inference from visible behavior; player output is viewpoint-filtered.
 **Context:** Real stories accrue minor characters (a recurring delivery driver) who should have memory, but the model tends to inflate every minor character into a plot point; and the human player should not be modeled the same way as NPCs.
-**Decision:** Modeling is triggered by **direct interaction** (dialogue, mutual acknowledgment) **or explicit salience** — not by mere appearance. Existence and narrative weight are separate axes: **model liberally, weight conservatively** — a modeled character carries no implied significance and stays low-weight unless the story develops it; minor-character modeling is lazy and sparse for cost. A modeled minor character is a **full character** with first-class private `think`/memory under the same non-leakage rules; "minor" limits weight, not privacy. Private `think` is never disclosed to the player (verbatim, paraphrased, or as narrated inner state); inference from the character's own visible behavior is legitimate (refined by ADR-047). Grounded resurfacing of a *recorded* private memory later is encouraged (the long-horizon payoff); inventing an unrecorded "memory" is confabulation, caught by verify (discriminator: a backing partition record). The **player** exists as a modeled character for others' memory/beliefs but has no engine-held interiority (`say`/`do` recorded as witnessed; no `think`, no partition; asymmetry machinery does not run for the player-character; the human is authoritative over their own utterances).
+**Decision:** Modeling is triggered by **direct interaction** (dialogue, mutual acknowledgment) **or explicit salience** — not by mere appearance. Existence and narrative weight are separate axes: **model liberally, weight conservatively** — a modeled character carries no implied significance and stays low-weight unless the story develops it; minor-character modeling is lazy and sparse for cost. A modeled minor character is a **full character** with first-class private `think`/memory under the same non-leakage rules; "minor" limits weight, not privacy. Private `think` is never disclosed to the player (verbatim, paraphrased, or as narrated inner state); inference from the character's own visible behavior is legitimate *[superseded by ADR-047: non-disclosure (verbatim, paraphrase, or narrated inner state) with legitimate inference from visible behavior; player output is viewpoint-filtered]*. Grounded resurfacing of a *recorded* private memory later is encouraged (the long-horizon payoff); inventing an unrecorded "memory" is confabulation, caught by verify (discriminator: a backing partition record). The **player** exists as a modeled character for others' memory/beliefs but has no engine-held interiority (`say`/`do` recorded as witnessed; no `think`, no partition; asymmetry machinery does not run for the player-character; the human is authoritative over their own utterances).
 **Consequences:** Minor characters accrete into recurring ones with real memory; the engine restrains narrative inflation without suppressing grounded callbacks; the player's interiority stays where it belongs (the human's head); sparse modeling controls cost at hobby scale.
 
 ### ADR-024 — Declared `think` is checked, not trusted; false beliefs require a permitted, antecedent-backed cause
@@ -516,7 +522,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 **Status:** Accepted.
 **Amended by:** ADR-044 — the eval gate rule ("mean clears floor by 1 SD") is superseded for zero-tolerance metrics; ADR-045 — re-embedded vectors are not byte-identical; ADR-046 — erasure is a control action with a restore-surviving ledger; ADR-070/072 — vector retention follows the hot/retired tier; ADR-071 — consolidation preserves epistemic type; ADR-091 — Epistrel authorizes no end users; it authenticates the calling service and guarantees privacy per requested viewpoint; ADR-103 — erasure reaches images only through declared or named subjects; ADR-078 — request roles are separate request fields
 **Context:** Consolidation could merge private memories into a reflection more visible than its inputs, and did not distinguish replaying a stored result from rerunning a model. Story isolation was being relied on as if it were authorization. Erasure was described as scoped row deletion, though subject references survive in prose, summaries, rejected outputs, logs, caches, exports, and backups. Acceptance criteria mapped only requirement areas to tests, eval floors were unspecified, "any compatible model works" conflated protocol with capability, and the soak test expected sublinear storage from an append-only log.
-**Decision:** **Consolidation** preserves scope (output visibility = intersection of input scopes; objective reflections only from public records) and records model/version/prompt hash; replay reuses stored results, reruns are new operations. **Authorization** uses caller roles — player, author/GM, operator, internal service — granted per story and enforced on every surface; players can never reach NPC private state. *[superseded by ADR-091: Epistrel authenticates only the calling service, authorizes no users, and guarantees privacy per requested viewpoint]* **Erasure** has a stated boundary: structured deletion, subject-reference indexing so derived prose can be redacted or regenerated, rebuilt caches, an erasure ledger reapplied after restore, no story content in operational logs by default, and explicit exclusion of delivered exports and provider-held data. **Acceptance** is per requirement: every test has an ID and a generated appendix maps every Must requirement to at least one test, checked in CI; numeric **NFR-QUAL** floors are set (0 asymmetry violations and leaks; entailment false-contradiction ≤ 2% and false-support ≤ 1%; consolidation faithfulness ≥ 98%; salience recall ≥ 95% / precision ≥ 70%; structured output ≥ 99%; resolution recall@10 ≥ 0.9; generation conformance ≥ 98%). **Protocol compatibility** is guaranteed separately from per-purpose **capability**. **Storage** is stated honestly: the active working set stays bounded *[superseded by ADR-070: the hot retrieval sets are bounded; history is not]* and total storage is linear with a bounded constant under the retention policy (dormant continuations kept until story deletion, compaction opt-in; audit records 90 days by default).
+**Decision:** **Consolidation** preserves scope (output visibility = intersection of input scopes; objective reflections only from public records) and records model/version/prompt hash; replay reuses stored results, reruns are new operations. **Authorization** uses caller roles — player, author/GM, operator, internal service — granted per story and enforced on every surface; players can never reach NPC private state. *[superseded by ADR-091: Epistrel authenticates only the calling service, authorizes no users, and guarantees privacy per requested viewpoint]* **Erasure** has a stated boundary: structured deletion, subject-reference indexing so derived prose can be redacted or regenerated, rebuilt caches, an erasure ledger reapplied after restore, no story content in operational logs by default, and explicit exclusion of delivered exports and provider-held data. **Acceptance** is per requirement: every test has an ID and a generated appendix maps every Must requirement to at least one test, checked in CI; numeric **NFR-QUAL** floors are set (0 asymmetry violations and leaks; entailment false-contradiction ≤ 2% and false-support ≤ 1%; consolidation faithfulness ≥ 98%; salience recall ≥ 95% / precision ≥ 70%; structured output ≥ 99%; resolution recall@10 ≥ 0.9; generation conformance ≥ 98%) *[gate rule superseded in part by ADR-044: the eval gate rule ("mean clears floor by 1 SD") holds for rate floors only; zero-tolerance floors pass on observed zero across all seeds on ≥ 300 labeled cases]*. **Protocol compatibility** is guaranteed separately from per-purpose **capability**. **Storage** is stated honestly: the active working set stays bounded *[superseded by ADR-070: the hot retrieval sets are bounded; history is not]* and total storage is linear with a bounded constant under the retention policy (dormant continuations kept until story deletion, compaction opt-in; audit records 90 days by default).
 **Consequences:** Consolidation can't leak; API access matches story roles *[superseded by ADR-091]*; erasure promises are ones the engine can keep; acceptance is measurable and enforced per requirement.
 
 ### ADR-034 — Belief antecedents: independently verified and earlier, not "a prior turn"
@@ -1991,6 +1997,101 @@ Tuning and its exit certification come after every milestone that may change a p
 - docs/03 FR-MEDIA-2 gains an *[amended by ADR-186]* marker and the exemption; FR-IMG-14 is assigned to M9 in §22. docs/04 I-30 tests the exemption beside a purged upload in the same sweep.
 - A deployment's storage now grows with subject images until consumers delete them or their owners are offboarded; nothing expires them. Operators see them in `GET /media` and in a principal's owned media.
 - `MediaAsset` reads carry `origin`, and `depicted_subjects` admits the `{kind: subject, id, label, true_age}` declaration only on a subject image; the declaration is not a subject an erasure can name, so it is not indexed.
+
+---
+
+### ADR-187 — Memories are partitioned by story: each story has its own table and HNSW graph
+**Status:** Accepted.
+**Amended by:** ADR-188 — the `operations` foreign key names the story, every connection plans custom, and deployment-wide changes need a sized lock table (the fourth bullet; the scale consequence).
+**Context:** `memories` had one HNSW index over every story's vectors. A story's vector search walked that shared graph and filtered to its own rows, so other stories' vectors decided what it found. Identical texts embed identically (a repeated "Hello."), and thousands of identical vectors build a poor graph: beside them, the iterative scan could return none of a small story's vectors at any `hnsw.max_scan_tuples` (#784, the likely cause of #706's flake). Raising the scan cap (#706) bounded the miss without removing it, and made a small story's search read up to the cap. The owner decided at `/n8-plan M10` round one (2026-11-11) to partition `memories` by story: "There's never a reason to reach into another story's memories."
+**Decision:** The owner's decision, applied by #784 (migration 0151).
+- `memories` is LIST-partitioned by `story_id`, one partition per story (`memories_p_<story id>`), with **no default partition**. Every path that creates a story (a blank or inline-cast story, a story from a scenario, a fork, a bundle import) creates its partition first, in a short transaction of its own; a memory written for a story with no partition fails (SQLSTATE 23514), which is a bug, never a user error.
+- Every index, the HNSW index included, is declared on the parent, so each partition has its own: **each story's vector search walks a graph of its own vectors only**, which no other story's vectors can crowd. The HNSW index is still created by the first pin and rebuilt by a dimension change (FR-MEM-8; `core.embeddings.retype`), now across the partitions.
+- The primary key is `(id, story_id)`, because Postgres cannot enforce a partitioned table's uniqueness without the partition key. **Memory ids stay globally unique by ULID generation**, as every other record's are; a fork copies memories under new ids.
+- Each partition carries the table's `fillfactor = 70` and a `TRUNCATE` refusal of its own; the row guard and the `operations` foreign key are cloned to it on attach. *[superseded in part by ADR-188: the foreign key is `(operation_id, story_id) REFERENCES operations (operation_id, story_id)`]*
+**Alternatives considered:** Keeping the global index and making test fixtures stamp distinct vectors removes the test flake but not the production miss for a story of repeated lines. An exact search fallback, or deduplicating vectors, amends the fixed statement count of a retrieval and still searches a shared graph. A partial HNSW index per story on the shared table needs the same per-story DDL and leaves the planner choosing among thousands of indexes on one table. Hash partitioning into a fixed number of buckets keeps other stories' vectors in each graph.
+**Consequences:**
+- The scale assumption is thousands of stories per deployment, where Postgres plans and locks a partition per story well (a query that names its story prunes to its partition). *[superseded in part by ADR-188: a statement that names no story locks about 15 relations per story until it commits and fails with `out of shared memory` beyond about a thousand stories on default settings; the engine's own statements name their story, and the deployment-wide operator actions need `max_locks_per_transaction` sized by docs/OPERATIONS.md's rule]* A deployment expected to hold hundreds of thousands of stories would need another layout (hash buckets with per-bucket graphs, or partitions by story group), and that would be a new decision. Statements that do not name a story read every partition; #866 makes every hot query name it, and #865 drops a story's partition when the story is deleted (FR-STORE-16).
+- **Hot statements name their story** (#866). Every `memories` statement of a turn, a retrieval, a retirement run, the reconcile (its story-less fan-out and each story's `hot_counts_reconcile`) and a re-embed job filters by `story_id`, so it plans inside the story's partition. `tests/integration/test_memory_partition_pruning.py` captures those statements and `EXPLAIN`s each one, and that capture is the registry of hot statements. The same file holds the paths ADR-188 made name their story to the same check: prune, erasure, a fork's `amendment_parts` subquery, an amendment's record part, the rewrite's text read and `core.mutation`'s re-reads. Every connection plans custom (`plan_cache_mode = force_custom_plan`, ADR-188), because a generic plan cannot prune when planned.
+- **Exempt statements** read every partition on purpose. None is hot, and each is listed with why:
+  - `core.embeddings.change_model`'s `UPDATE`s, which null retained, retired and dormant vectors (and every vector on a dimension change), and its `SELECT` that orders the stories to re-embed by their latest memory. A model change is one deployment-wide write. Split per story, it would leave mixed vector spaces between the statements.
+  - `core.embeddings.retype`'s `UPDATE`, `ALTER COLUMN` and HNSW `CREATE INDEX`. These are schema changes on the parent that recurse into every partition.
+  - The re-embed status page's per-story counts (`orchestrator.jobs.handlers.reembed.status`). They correlate on the page's story ids, so each counts one story's rows, but the plan holds every partition. The page answers only while a re-embed run is under way, and a run starts with a model change that already needs every partition's lock (ADR-188's sizing).
+  - The legacy job-input key `memories:<id>` of a job queued before #784's fix. It is read without its story until those jobs drain.
+- A database is restored into an empty database (docs/OPERATIONS.md): `pg_restore --clean` over an existing one reports an error for each partition's inherited primary key.
+- Upgrading runs migration 0151 with the engine stopped. It copies every memory into its story's partition and builds each partition's indexes, in time proportional to the deployment's memory count, in batches of stories so a crashed run resumes. The downgrade rebuilds the unpartitioned table.
+- A story's vector arm no longer depends on other stories' vectors or on `hnsw.max_scan_tuples` to find a story's own vectors; the cap remains a cost bound (NFR-SCALE-1).
+- No older ADR states the single global index, so none gains a marker; docs/02 describes the partitioned table.
+
+---
+
+### ADR-188 — Memories' operation key names the story, and the lock table is sized for deployment-wide changes
+**Status:** Accepted. Amends ADR-187 (the foreign key; the scale consequence).
+**Amended by:** ADR-191 — `docker-compose.yml` ships `max_locks_per_transaction = 1024` and a 128 MB `/dev/shm`, which cover 6,400 stories by this ADR's rule, and every test server runs the same value.
+**Context:** CI on #784 (run 43159822725) failed with `out of shared memory` (`HINT: You might need to increase max_locks_per_transaction`) in long integration shards and in the eval runner, where one database collects many stories. A statement that cannot prune plans over every partition and locks each one and its 14 indexes, 15 relations a story, until its transaction ends. Postgres's lock table is shared by the whole server and holds about `max_locks_per_transaction × (max_connections + max_prepared_transactions)` locks. Measured on `pgvector/pgvector:pg16` with the defaults (64, 100), one such statement held 7,516 locks at 500 stories and 10,921 at 727, and failed at 1,327. While one transaction holds that many, other transactions fail to take a single lock, so unrelated turns failed too (REST 503 `database_unavailable`). Three paths reached every partition:
+- the foreign-key check a deleted `operations` row runs (`SELECT 1 FROM memories WHERE operation_id = $1 FOR KEY SHARE`), which names no story, on every `DELETE /stories/{id}` (FR-STORE-16), prune and operation cleanup;
+- generic plans: psycopg prepares a statement it has run five times, and the plan cache, the foreign-key check's included, may then plan it generically, and a generic plan cannot prune when planned and locks every partition when run (PostgreSQL 16);
+- statements that name no story: a job's memory input versions (`memories:<id>` read by id alone), a fork's amendment-part subquery, prune's operation-keyed reads, the hourly reconcile and importance fan-outs (`GROUP BY story_id` over every memory), and the eval runner's isolation count.
+**Decision:** Applied by #784's fix.
+- `memories`' foreign key is `(operation_id, story_id) REFERENCES operations (operation_id, story_id)`, on a new unique `uq_operations_operation_id_story_id` (migration 0151, edited before any release). A memory and its operation belong to one story, and the check of an operation's deletion reads that story's partition alone (or nothing, for an operation with no story).
+- Every connection the engine opens runs with `plan_cache_mode = force_custom_plan` (`core.db.SESSION_OPTIONS`, appended to any `options` the DSN carries), so each statement is planned with its parameters and prunes to its story.
+- A partition is created under a global transaction advisory lock: Postgres names its indexes after its name cut to 63 bytes, and ULIDs made in the same millisecond share that prefix, so two creations at once collided on the generated index names.
+- The paths above name their story. A memory's job-input key is `memories:<story_id>:<id>`, and the reader still accepts the older `memories:<id>` of a job queued before. The fan-outs list the stories and ask each one's partition in that story's own transaction. The runner counts `memories` a batch of partitions per transaction.
+- Some operator actions change every story's partition in one transaction and cannot be split: the first embedding pin and a dimension change (FR-MEM-8: the retype and the HNSW build), an embedding model change (nulling the old vectors), a migration that alters `memories`, and `pg_dump`. Their lock cost grows with the number of stories, so a deployment of more than 500 stories sizes `max_locks_per_transaction` to `16 × stories ÷ (max_connections + max_prepared_transactions)` (rounded up to a power of two, at least 64) before them. docs/OPERATIONS.md states the rule. This is an operational requirement of ADR-187's layout, not a fix for the engine's own statements, which must keep naming their story.
+**Alternatives considered:** Raising `max_locks_per_transaction` alone would have hidden the per-turn paths until a larger deployment. Dropping the foreign key would lose the check that a memory's operation exists. Hash partitioning into a fixed number of buckets would bound every lock count, the deployment-wide ones included, but brings other stories' vectors back into each graph (ADR-187's alternatives). Splitting a model change per story would leave a mixed vector space between its transactions, and Postgres cannot retype one partition alone.
+**Consequences:**
+- A deletion, prune, fork, turn and retrieval locks one story's partition whatever the deployment's size (NFR-SCALE-1). `tests/integration/test_memory_records.py::test_an_operation_s_deletion_checks_only_its_story_s_partition` holds the foreign-key check to its story's partition past the plan cache's fifth run.
+- Each statement is planned on every run, which costs planning time on statements psycopg used to prepare. Before this decision, a prepared statement on `memories` could not prune either.
+- `operations` carries one more unique index, on `(operation_id, story_id)`.
+- Test code that scans or updates `memories` names the story, or reads the table a batch of partitions per transaction (`tests.story_support.table_rows`).
+- #866 still makes every hot statement name its story. The remaining unpruned operator lookups go to it, with this decision's measurements: beyond about a thousand stories on default settings, an unpruned statement fails outright rather than running slowly. ADR-187 lists the statements that stay unpruned.
+
+### ADR-189 — A closed fact version stores its closers, and canon reads find them by key
+**Status:** Accepted.
+**Context:** #471. A fact version is closed by the rows whose `supersedes` names it (docs/02 §4.4). In the corrected view it is current while no *active* row closes it. Canon reads (`canon`, `canon_at`, `canon_as_recorded`, the read set's `KeyedLookup.canon_context`, verification and the projections through them) tested this with an anti-join, `NOT EXISTS (facts closer WHERE closer.supersedes @> ARRAY[f.id] …)`, which probed the `ix_facts_supersedes` GIN index once per candidate row. On #153's 50k fixture a subject with about 250 versions read 130 candidate rows. That was 130 probes, about 7.7 ms a statement, and 5 to 8 statements an occasion query. The rule is more than a lookup. A closer counts only when it is active (truncation, swap and regenerate flip membership; a fork's copies are active), when it is outside the operations a structured regenerate leaves out (`membership.excluding`), when it was written at or before the read's position (`through_position`), and, for `canon_as_recorded`, when it was recorded by the record-time and in the timeline then (`active_as_of`). A version can have more than one closer: one truncated away and a later one active, or a supersede and its remainders. `superseded_by` holds only the first, and an erasure can delete a closer's row. The owner's decision (2026-10-20) was a stored marker, done in M10 (NFR-PERF-1 headroom, FR-BITEMP-1..5 unchanged).
+**Decision:** Applied by #471 (migration 0152).
+- `facts.closed_by` (`char(26)[]`, default `{}`) is the inverse of `supersedes`. It lists every row whose `supersedes` names the version, in id order within a write. The writer (`canon.facts._write`, the only one in play) appends the new version's id and its remainders' ids to each version it closes, in the same `UPDATE` and transaction that set `tx_to` and `superseded_by`.
+- A read's closing test is `EXISTS (facts closer WHERE closer.id = ANY(f.closed_by) AND closer.story_id = f.story_id AND …)`, with the same membership, `excluding`, position and record-time conditions on the closer row as before. An open version has an empty array and costs no lookup. A closed one costs one primary-key lookup per closer, never a containment probe. Write-path reads (`_load`, `_current_overlapping`) use the same test.
+- Nothing about the closer is copied onto the closed version, so nothing else needs maintaining. A truncation, untruncation, swap or regenerate flips the closer's membership, and the read sees the flip on the closer row. `excluding` and record-time are tested there too. An erasure that deletes a closer leaves its id in `closed_by`. No row has that id, so the lookup finds nothing, as the anti-join found no row. ULIDs are never reused. An erasure that deletes the closed version takes its marker with it.
+- A story bundle does not carry `closed_by` (`COLUMNS_NOT_EXPORTED`, so the published bundle schema is unchanged). The import rebuilds it from the imported rows' `supersedes` (`canon.facts.rebuild_closers`), so bundles from before 0152 import correctly too.
+- A fork maps `closed_by` through its id map as it maps `supersedes`. A closer it does not copy (written after the fork point) drops out, so the version reads open in the fork, as before.
+- The append-only guard (`epistrel_facts_append_only`) and `MUTABLE_FACT_COLUMNS` admit `closed_by`, but only growing (`NEW.closed_by @> OLD.closed_by`). An id once stored stays, the erased ones included, as `supersedes` and `superseded_by` keep erased ids today.
+- Migration 0152 adds the column, replaces the guard, and backfills every version's `closed_by` from `supersedes` (ordered by the closer's `tx_from` and id). It drops `ix_facts_supersedes`, since no read or write searches `supersedes` by containment any more. A fork maps it row by row with `unnest`, and `supersedes` stays as the record of what each row closed. The downgrade restores 0060's guard and the index and drops the column.
+**Alternatives considered:** Reusing `superseded_by` cannot express a second closer. A version whose first closer was truncated away and which a later row closed again would read open. A `closed_turn`/`closed_tx` copy of the closer's coordinates on the version would have to be rewritten on every membership flip, fork and erasure, and still could not say which of several closers is active at a position. Batching `canon_context`'s subjects into one statement saves round trips but not probes. A separate closers table would be a new table for what one array column holds.
+**Consequences:**
+- Canon reads cost a primary-key lookup per closer of a candidate row, and nothing for an open one. `tests/integration/test_canon_closing_marker.py::test_canon_context_plan_has_no_supersedes_probe` holds `canon_context`'s plan on a few hundred versions of one subject free of `supersedes`.
+- The answers are unchanged. `test_bitemp__closing_marker` (part `M4`, FR-BITEMP-1..5) keeps the old anti-join as an oracle and checks every read kind against it at every narrative position and record-time, under commits, supersedes, truncations, regenerations, erasures, forks and excluded operations. It also checks after every step that `closed_by` is exactly the inverse of `supersedes` over the existing rows, with only erased ids besides. `test_bitemp__reads_find_closers_by_key` checks that the read functions' SQL has no `supersedes` containment. `tests/integration/test_migrations.py::test_facts_closing_marker_backfill` checks the backfill against the anti-join.
+- Every write that closes versions costs one more array append on each, which is the `UPDATE` it already ran. The GIN index's maintenance on every insert is gone.
+- A new writer of `facts` rows with a non-empty `supersedes` must append to the closed versions' `closed_by` in its transaction, or the versions it closes read open. `_write` writes them in play and the bundle import rebuilds them (`tests/integration/test_canon_closing_marker.py::test_rebuild_closers_sets_an_imported_story_s_markers`), and the property test guards the first.
+
+### ADR-190 — The engine-only latency budgets are gated on the reference host only and reported elsewhere
+**Status:** Accepted.
+**Context:** #793. The weekly scale suite (`perf.yml`'s `weekly` job: P-01, P-02 and P-06) runs on the GitHub-hosted runner, the host the owner chose for the performance suites on #153. It gated NFR-PERF-1's p95 ≤ 150 ms (P-01, and P-06's steps up to ~50k memories, NFR-SCALE-1) and NFR-PERF-2's p95 ≤ 50 ms (P-02 and its could-have-known span) on that runner. The runner is not NFR-PERF-4's reference host (4 vCPU, 16 GB, NVMe, Postgres co-located), and its timings move with the image and its neighbours. P-01 has been over budget there every week since 2026-10-27 (p95 about 290 ms on 2026-11-11, mostly the vector and lexical arms). The failing run opened or commented on the "Weekly perf run failed" issue every week, whatever changed. NFR-PERF-4 already says that results on other hosts are reported, not gated, and the `weekly-structured` and `weekly-multi` jobs follow it. The owner's M10 decision (option c) was to treat the engine-only budgets the same way. #868 sets and meets a measured target.
+**Decision:** Applied by #793.
+- NFR-PERF-1,2's budgets, and NFR-SCALE-1's at each step of P-06's curve up to ~50k memories, are gated only on the reference host. On any other host, the GitHub-hosted runner included, they are measured and reported, not gated, mirroring NFR-PERF-4.
+- `EPISTREL_TEST_PERF_HOST_CLASS` (`reference` or `other`, default `other`; any other value is an error) names the host class. `tests.perf.scale_support.budget_verdict(measured_ms, budget_ms, host_class)` answers `Verdict(within, fail)`: a miss fails only under `reference`. A missing measurement (none, or NaN) fails under either class.
+- P-01's, P-02's and the could-have-known summaries record `within_budget`, as P-06's points already did. P-06's per-point `gated` is true only for a step up to ~50k on the reference host. `docs/capacity.md`'s Gated column follows it, and a result from before this decision, which has no host class, reads as `other`.
+- An error, an empty or degraded result, a wrong verdict or path, and a missing measurement still fail under either class. P-01's and P-02's second measurement after a miss stays.
+- `perf.yml`'s weekly job sets `EPISTREL_TEST_PERF_HOST_CLASS: other`. Its summary lists every miss as `MISS <result> <metric> p95=<x> budget=<y>` (`python -m epistrel.tools.perf_docs --misses`). The "Weekly perf run failed" issue is still filed for a red run, and a miss alone no longer makes the run red.
+**Alternatives considered:** Keeping the gate on the runner left the weekly run red every week. That said nothing new about a change, and a real regression (an error, a degraded arm) would read the same as the runner's usual miss. Raising the budgets to what the runner measures would change NFR-PERF-1,2 to fit a host the requirements never named. Gating on a fixed multiple of the budget on the runner would make a figure that no requirement states. A self-hosted reference runner would be new infrastructure, outside #793.
+**Consequences:**
+- The runner's weekly run is green while it shows its misses in the step summary, in `docs/perf.md` (**over budget**) and in `docs/capacity.md` (Within 150 ms **no**). A budget regression on the runner is read there, not from a red run.
+- A run with `EPISTREL_TEST_PERF_HOST_CLASS=reference` gates as before. `tests/perf/test_p_01.py::test_p_01__gate_bites` checks the verdict both ways on a slowed vector arm, and that a degraded or a mostly empty result fails on either class.
+- Until a reference host runs the suite, NFR-PERF-1,2's budgets have no gate. #868 tracks meeting a measured target.
+
+### ADR-191 — The compose database ships a lock table sized for 6,400 stories, and the test servers run it
+**Status:** Accepted. Amends ADR-188 (the lock-table sizing).
+**Context:** #784, the owner's decision of 2026-11-12 (option (a)). ADR-188 left the lock table to the operator: an embedding model change or dimension retype (FR-MEM-8), a migration that alters `memories`, and `pg_dump` change or lock every story's partition in one transaction, and on Postgres's defaults (64 locks per transaction, 100 connections) they fail past about a thousand stories. ADR-188 measured this at 1,673 partitions: a whole-table `UPDATE` or `ALTER TYPE` failed, an `ADD COLUMN` took about 1,675 locks and a `CREATE INDEX` about 3,350. Nothing raised the setting, so a hobby install made with `docker compose up` (NFR-OPS-1) would meet the failure at its first model change after a thousand or so stories, and the tests ran on a server unlike the one shipped.
+**Decision:** Applied by #784's follow-up commit.
+- `docker-compose.yml`'s `db` service runs `postgres -c max_locks_per_transaction=1024` with `shm_size: 128mb`. By ADR-188's rule, on Postgres's 100 connections and no prepared transactions, 6,400 stories need 16 × 6,400 ÷ 100 = 1,024, and 64 MB + 8 MB × 6.4 = 115.2 MB of `/dev/shm` fits in 128 MB. The lock table costs about 30 MB more shared memory.
+- `epistrel.testing.postgres` holds the value, the story count it covers and the rule. Every PostgreSQL server the tests and tools start runs it through `postgres.container`, with the same `/dev/shm`: the session database (`tests/conftest.py::pg_url`, which CI's integration shards use), the erasure ledger's servers (`tests/ledger_support.dedicated_server`), X-06's supervised server, and the model-matrix and capacity tools' throwaway server (`epistrel.tools.model_matrix.database`). CI starts no Postgres service of its own.
+- A deployment beyond 6,400 stories, with fewer connections, or not started from the compose file still sizes the setting by ADR-188's rule before those actions (docs/OPERATIONS.md).
+**Alternatives considered:** Leaving the setting to the operator (option (b)) was cheapest, but the first embedding model change on a large install would fail until they raised it. Hash partitions with a fixed modulus (option (c)) would bound every lock count but bring other stories' vectors back into each graph, and one table with an exact-search fallback (option (d)) would drop the per-story search ADR-187 chose. A value sized for tens of thousands of stories would cost a hobby install hundreds of MB of shared memory that it never uses.
+**Consequences:**
+- The deployment-wide actions work out of the box on a compose install of up to 6,400 stories. `tests/test_compose.py::test_the_lock_table_is_sized_for_the_stated_story_count` fails if the compose value or `shm_size` drops below the rule for that count or drifts from the test servers' value.
+- The tests run on the shipped configuration. `tests/integration/test_memory_partition_pruning.py::test_the_test_server_runs_the_shipped_lock_table` reads `SHOW max_locks_per_transaction` on the test database, so a server named by `EPISTREL_TEST_DATABASE_URL` needs the setting too.
+- `test_a_deployment_wide_retype_needs_the_shipped_lock_table`, in the same file, scales the rule down to a server of 5 connections. A retype over the 320 partitions that 1,024 covers there succeeds, and on the default 64 it fails with `out of shared memory`.
+- The larger lock table hides an unpruned statement until about six times as many stories as before. The engine's own statements still name their story, and the pruning registry (`test_hot_statements_stay_in_the_story_s_partition` and its siblings) checks their plans, whatever the lock table's size.
 
 ---
 

@@ -367,6 +367,24 @@ async def test_a_scenario_story_plays_a_turn(client: httpx.AsyncClient) -> None:
     assert turn["timeline_revision"] == 3
 
 
+async def test_a_scenario_story_writes_into_its_own_partition(
+    client: httpx.AsyncClient, engine: AsyncEngine
+) -> None:
+    """#784 (ADR-187): genesis makes the story's ``memories`` partition before the story's
+    transaction, so the story's first memory lands in it (``tableoid``)."""
+    from epistrel.core.memory.story_partitions import partition_name
+    from tests.memory_support import derived_memory, partitions_of
+
+    mara = await g.catalog_character_id(client, "Mara Venn")
+    scenario_id = await _scenario(client)
+    made = await g.create_from(
+        client, g.from_scenario(scenario_id, slots={"mother": g.catalog_slot(mara)})
+    )
+    story = made["story_id"]
+    await derived_memory(engine, story, "The tide turns.", [])
+    assert await partitions_of(engine, story) == {partition_name(story)}
+
+
 async def test_the_recommended_profile_is_the_story_profile(client: httpx.AsyncClient) -> None:
     """A scenario that recommends an assignable engine profile creates its story under that
     profile when the request names none: the creation answer and the story read agree.

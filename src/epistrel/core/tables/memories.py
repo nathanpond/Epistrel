@@ -74,6 +74,14 @@ erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is r
 guard fires after the row is written (migration 0067, #452), and the table keeps 30 % of each page
 free (``fillfactor = 70``), so a retrieval's ``last_accessed_at`` touch is a heap-only update that
 writes no index entry.
+**Partitioned by story** (#784, migration 0151; ADR-187): LIST partitions on ``story_id``, one
+per story (``memories_p_<story>``, ``core.memory.story_partitions``), no default partition, so
+a story's rows, indexes and HNSW graph are its own. The primary key is ``(id, story_id)``,
+and the ``operations`` foreign key is ``(operation_id, story_id)`` (on ``operations``' unique
+``(operation_id, story_id)``, ADR-188), so the check an operation's deletion runs reads the
+story's partition alone; each
+partition carries the ``fillfactor`` and a ``TRUNCATE`` refusal of its own. Every path that
+creates a story creates its partition first: a memory for a story with none fails (23514).
 ``core.memory.records`` is the only writer of rows; ``core.mutation``, ``core.memory.retirement``
 and ``core.memory.pins`` update them.
 """
@@ -90,6 +98,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Computed,
+    ForeignKeyConstraint,
     Index,
     Integer,
     SmallInteger,
@@ -207,7 +216,9 @@ memories = Table(
     "memories",
     metadata,
     Column("id", ulid_type(), primary_key=True),
-    Column("story_id", ulid_type(), nullable=False),
+    # #784 (migration 0151, ADR-187): the partition key is part of the primary key, after
+    # ``id`` (Postgres cannot enforce ``id`` alone across partitions; ULIDs keep it unique).
+    Column("story_id", ulid_type(), primary_key=True),
     Column("kind", pg_enum(MemoryKind, "memory_kind"), nullable=False),
     Column("text", Text, nullable=False),
     Column("holder_character_id", ulid_type(), nullable=True),
@@ -222,7 +233,11 @@ memories = Table(
     Column("trust_tier", pg_enum(MemoryTrustTier, "memory_trust_tier"), nullable=False),
     Column("importance", REAL, nullable=True),
     Column("importance_at", Integer, nullable=True),
-    *derived_columns(),
+    # #784 (ADR-187): the producing operation is keyed by story too (``FOREIGN KEY
+    # (operation_id, story_id)``, below), so the RI check of an operation's deletion names the
+    # story and reads its partition alone; keyed by ``operation_id`` alone it planned over, and
+    # locked, every story's partition and its indexes.
+    *derived_columns(story_keyed=True),
     Column("beat", SmallInteger, nullable=True),
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
@@ -305,8 +320,12 @@ memories = Table(
         "AND jsonb_array_length(visibility->'characters') > 0)",
         name="visibility_characters",
     ),
+    ForeignKeyConstraint(
+        ["operation_id", "story_id"], ["operations.operation_id", "operations.story_id"]
+    ),
     *derived_indexes("memories"),
     Index("ix_memories_story_membership_tier", "story_id", "membership", "retrieval_tier"),
+    postgresql_partition_by="LIST (story_id)",
 )
 Index("ix_memories_story_holder", memories.c.story_id, memories.c.holder_character_id)
 Index("ix_memories_source_event_ids", memories.c.source_event_ids, postgresql_using="gin")

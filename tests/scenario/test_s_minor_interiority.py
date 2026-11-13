@@ -205,7 +205,10 @@ async def test_s_minor_interiority(
         assert (verdict["kind"], verdict["rule"]) == ("supported", "recall")
         assert verdict["recall"]["grounded"] is True
         backing = await rows(
-            engine, "SELECT text FROM memories WHERE id = :m", m=verdict["recall"]["memory_id"]
+            engine,
+            "SELECT text FROM memories WHERE story_id = :s AND id = :m",
+            s=story,
+            m=verdict["recall"]["memory_id"],
         )
         recorded = [m.text for m in await ps.memories_of(engine, story, driver.id)]
         (backed,) = [r.text for r in backing]

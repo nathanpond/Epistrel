@@ -174,7 +174,8 @@ async def test_u_06(pg_url: str, engine: AsyncEngine, drained_embedding_jobs: No
         (memory,) = await rows(
             engine,
             "SELECT provenance::text AS provenance, trust_tier::text AS tier, text FROM memories "
-            "WHERE id = :m",
+            "WHERE story_id = :s AND id = :m",
+            s=story,
             m=memory_id,
         )
         assert (memory.provenance, memory.tier) == ("author", "author")

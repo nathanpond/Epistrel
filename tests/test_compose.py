@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 
 import pytest
 import yaml
 
 from epistrel.config import load_settings
+from epistrel.testing import postgres
 from tests.conftest import PG_IMAGE, REPO_ROOT
 
 COMPOSE = REPO_ROOT / "docker-compose.yml"
@@ -95,3 +97,41 @@ def test_the_minio_override_is_a_separate_file_on_the_tests_image() -> None:
     for name in ("MINIO_ROOT_PASSWORD", "EPISTREL_MEDIA_S3_SECRET_KEY"):
         line = next(line for line in text.splitlines() if f"{name}:" in line)
         assert AUTH_DEV_ONLY_COMMENT in line, name
+
+
+def _server_settings(command: list[str]) -> dict[str, str]:
+    """The ``-c name=value`` settings of a ``postgres`` command line."""
+    assert command[0] == "postgres", command
+    flags = command[1:]
+    assert len(flags) % 2 == 0, command
+    assert all(f == "-c" for f in flags[::2]), command
+    return dict(flag.split("=", 1) for flag in flags[1::2])
+
+
+def _megabytes(size: str) -> float:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kmg]?)b?", size.strip().lower())
+    assert match, size
+    return float(match[1]) * {"k": 1 / 1024, "m": 1, "g": 1024, "": 1 / 1024**2}[match[2]]
+
+
+def test_the_lock_table_is_sized_for_the_stated_story_count() -> None:
+    """#784 option (a), ADR-191: compose's database runs with a ``max_locks_per_transaction``
+    and a ``/dev/shm`` that ADR-188's rule needs for ``COVERED_STORIES`` stories on its
+    connections, and with the value every test server runs (``epistrel.testing.postgres``)."""
+    db = _compose()["services"]["db"]
+    settings = _server_settings(db["command"])
+    locks = int(settings["max_locks_per_transaction"])
+    connections = int(settings.get("max_connections", postgres.DEFAULT_MAX_CONNECTIONS)) + int(
+        settings.get("max_prepared_transactions", 0)
+    )
+    assert locks >= postgres.required_locks(postgres.COVERED_STORIES, connections)
+    assert locks == postgres.MAX_LOCKS_PER_TRANSACTION
+    assert postgres.server_args() == ["-c", f"max_locks_per_transaction={locks}"]
+    shm = _megabytes(str(db["shm_size"]))
+    assert shm >= postgres.required_shm_mb(postgres.COVERED_STORIES)
+    assert shm == postgres.SHM_SIZE_MB
+    # The rule's own arithmetic (ADR-188): 16 * 6,400 / 100 = 1,024; 64 + 8 * 6.4 = 115.2 MB.
+    assert postgres.required_locks(6400) == 1024
+    assert postgres.required_locks(6401) == 2048
+    assert postgres.required_locks(100) == 64
+    assert postgres.required_shm_mb(6400) == pytest.approx(115.2)

@@ -456,9 +456,14 @@ async def test_a_fork_carries_the_story_ledger(
         refused = await respond(client, fork_id, body(player, "Who is there?"))
         assert refused.status_code == 409, refused.text
         assert refused.json()["error"]["code"] == "erased_subject_referenced"
+        # Scoped to this test's stories: other modules' erasures may leave their own rows
+        # pending in the session database (#884).
         pending = await scalar(
             engine,
-            "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL",
+            "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL "
+            "AND story_ref IN (:s, :f)",
+            s=sid,
+            f=fork_id,
         )
         assert pending == 0
 
@@ -530,8 +535,10 @@ async def test_a_fork_retries_when_an_erasure_commits_under_it(
         assert forked.status_code == 201, forked.text
         fork_id = forked.json()["story_id"]
         assert len(calls) == 2, calls  # the first attempt was refused and retried
-        assert fork_id == calls[1] != calls[0]
-        assert await scalar(engine, "SELECT count(*) FROM stories WHERE id = :s", s=calls[0]) == 0
+        # #784: the fork's id is made once, before the retries (its memories partition is made
+        # for it first), so both attempts copy into it; the first attempt's copy rolled back.
+        assert calls == [fork_id, fork_id]
+        assert await scalar(engine, "SELECT count(*) FROM stories WHERE id = :s", s=fork_id) == 1
         assert sum((await e.residue(engine, fork_id, e.TERMS)).values()) == 0
         (copy,) = await rows(
             engine,

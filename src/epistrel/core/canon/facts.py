@@ -27,11 +27,12 @@ with the turn or control action that produced it, under the story lock:
   a supersede with a wider valid-time and ``authority = author``. Nothing is ever deleted
   (FR-BITEMP-2); the trigger refuses it outside erasure and story deletion.
 
-**Current version.** A version is closed by a row whose ``supersedes`` names it. In the
-corrected view a version is current when it is active and no **active** row closes it, so when
-the operation that closed it is discarded (a truncation), it is current again without any
-write, and an untruncation closes it again. ``tx_to`` records the first closure and is never
-rewritten.
+**Current version.** A version is closed by a row whose ``supersedes`` names it (the version's
+``closed_by`` lists those rows, written with them, so a read finds them by primary key,
+#471). In the corrected view a version is current when it is active and no **active** row
+closes it, so when the operation that closed it is discarded (a truncation), it is current
+again without any write, and an untruncation closes it again. ``tx_to`` records the first
+closure and is never rewritten.
 
 **Reads** (``canon``, ``canon_at``, ``canon_as_recorded``) take a viewpoint and filter by
 visibility: ``objective`` and ``public`` reach every viewpoint, a ``characters`` scope only the
@@ -66,6 +67,7 @@ from sqlalchemy import (
     BigInteger,
     ColumnElement,
     and_,
+    any_,
     cast,
     exists,
     func,
@@ -463,11 +465,17 @@ def _closed_by(
     f: Any, record_time: datetime | None, through: Position | None = None
 ) -> ColumnElement[bool]:
     """Some row in the timeline (at ``record_time``, or now; at or before ``through`` when
-    given) closes version ``f``."""
+    given) closes version ``f``.
+
+    #471 (ADR-189): the closers are the rows ``f.closed_by`` names (the stored inverse of
+    their ``supersedes``), found by primary key, so an open version costs no lookup and a
+    closed one a lookup per closer, never a probe of ``supersedes``. Membership, the
+    ``excluding`` operations, position and record-time are tested on the closer row as read,
+    so a truncation, a fork's flip or an erased closer (an id no row has) needs no write."""
     s = _CLOSER
     where = [
+        s.c.id == any_(f.c.closed_by),
         s.c.story_id == f.c.story_id,
-        s.c.supersedes.contains(cast(array([f.c.id]), ARRAY(facts.c.id.type))),
     ]
     if record_time is None:
         where.append(active_only(s))
@@ -558,10 +566,16 @@ async def _current_overlapping(
 
 
 def _conflicts(predicate: Predicate, stored: Proposition, current: Fact) -> bool:
-    """Whether ``current`` cannot stay current beside ``stored`` over overlapping time: the
-    same proposition (either polarity), or for a functional predicate, an affirmed other object
-    under the same uniqueness key."""
-    other = current.proposition
+    """Whether ``current`` cannot stay current beside ``stored`` over overlapping time
+    (``_clashes``)."""
+    return _clashes(predicate, stored, current.proposition)
+
+
+def _clashes(predicate: Predicate, stored: Proposition, other: Proposition) -> bool:
+    """Whether a current version of ``other`` cannot stay current beside ``stored`` over
+    overlapping time: the same proposition (either polarity), or for a functional predicate, an
+    affirmed other object under the same uniqueness key. The scale fixture's bulk builder
+    (#490) plans its supersede chains with it."""
     if other.normalized_key() == stored.normalized_key():
         return True
     return (
@@ -612,30 +626,13 @@ async def _append_event(
 ) -> str:
     """Append the write's ``derived`` event to its operation, after the operation's own events
     (the caller holds the story lock: a commit step)."""
-    model = validate(type_, payload)
-    body = model.model_dump(mode="json")
+    body = validate(type_, payload).model_dump(mode="json")
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == w.story_id)
     )
     event_id = new_ulid()
     await conn.execute(
-        insert(events).values(
-            id=event_id,
-            story_id=w.story_id,
-            seq=int(last or 0) + 1,
-            operation_id=w.operation.operation_id,
-            category=EventCategory.DERIVED.value,
-            narrative_turn=w.operation.narrative_turn,
-            turn_variant=w.operation.turn_variant,
-            beat=w.beat,
-            step=step_of(w.beat, w.operation.operation_id),
-            slot_k=w.slot_k,
-            principal=w.operation.principal,
-            type=type_,
-            payload=body,
-            provenance=_event_provenance(w.operation).value,
-            authority=Authority.AUTHORITATIVE.value,
-        )
+        insert(events).values(**_event_row(w, event_id, int(last or 0) + 1, type_, body))
     )
     await index_records(
         conn,
@@ -646,6 +643,30 @@ async def _append_event(
         ],
     )
     return event_id
+
+
+def _event_row(
+    w: _Write, event_id: str, seq: int, type_: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``events`` row of the write's ``derived`` event (``_append_event``; the scale
+    fixture's bulk builder writes the same rows, #490)."""
+    return {
+        "id": event_id,
+        "story_id": w.story_id,
+        "seq": seq,
+        "operation_id": w.operation.operation_id,
+        "category": EventCategory.DERIVED.value,
+        "narrative_turn": w.operation.narrative_turn,
+        "turn_variant": w.operation.turn_variant,
+        "beat": w.beat,
+        "step": step_of(w.beat, w.operation.operation_id),
+        "slot_k": w.slot_k,
+        "principal": w.operation.principal,
+        "type": type_,
+        "payload": body,
+        "provenance": _event_provenance(w.operation).value,
+        "authority": Authority.AUTHORITATIVE.value,
+    }
 
 
 async def _validate(conn: AsyncConnection, w: _Write) -> None:
@@ -843,13 +864,18 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
         for row in rows:
             row["amendment_part_id"] = w.amendment_part_id
 
+    closers = _closers(rows)
     for current in closing:
         await conn.execute(
             update(facts)
-            .where(facts.c.id == current.id)
+            .where(facts.c.story_id == w.story_id, facts.c.id == current.id)
             .values(
                 tx_to=func.coalesce(facts.c.tx_to, at),
                 superseded_by=func.coalesce(facts.c.superseded_by, fact_id),
+                # #471 (ADR-189): the stored inverse of ``supersedes`` a canon read tests.
+                closed_by=facts.c.closed_by.concat(
+                    cast(array(closers.get(current.id, [])), ARRAY(facts.c.id.type))
+                ),
             )
         )
     await insert_derived(conn, facts, rows)
@@ -873,6 +899,17 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
     for hook in list(FACT_HOOKS):
         await hook(conn, change)
     return fact
+
+
+def _closers(rows: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    """#471 (ADR-189): for each version the write's ``rows`` close, the ids of the rows whose
+    ``supersedes`` names it (the new version, and the remainders kept of it), in id order:
+    what the write appends to that version's ``closed_by``."""
+    found: dict[str, list[str]] = {}
+    for row in rows:
+        for closed in row["supersedes"]:
+            found.setdefault(str(closed), []).append(str(row["id"]))
+    return {closed: sorted(ids) for closed, ids in found.items()}
 
 
 def _row(
@@ -924,6 +961,23 @@ def _row(
         "thunk_id": thunk_id,
         "resolution_level": resolution_level,
     }
+
+
+async def rebuild_closers(conn: AsyncConnection, story_id: str) -> int:
+    """#471 (ADR-189): set every version of ``story_id`` whose ``closed_by`` is empty to the
+    rows whose ``supersedes`` names it (a bundle import, whose rows carry no ``closed_by``, as
+    migration 0152's backfill did for every story). Answers the versions it set."""
+    found = await conn.execute(
+        text(
+            "UPDATE facts f SET closed_by = c.ids FROM ("
+            "SELECT x.closed, array_agg(s.id ORDER BY s.tx_from, s.id) AS ids "
+            "FROM facts s CROSS JOIN LATERAL unnest(s.supersedes) AS x(closed) "
+            "WHERE s.story_id = :s GROUP BY x.closed) c "
+            "WHERE f.story_id = :s AND f.id = c.closed AND f.closed_by = '{}'"
+        ),
+        {"s": story_id},
+    )
+    return int(found.rowcount)
 
 
 async def _written(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> dict[str, Fact]:
@@ -1808,6 +1862,7 @@ __all__ = [
     "hidden_from",
     "locked_keys",
     "read_version",
+    "rebuild_closers",
     "refuse_holder",
     "register_fact_hook",
     "remove_fact_hook",

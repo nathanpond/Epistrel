@@ -109,6 +109,7 @@ from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import DERIVED_TABLES, POSITION_MAX
+from epistrel.core.memory.story_partitions import claim, story_partition
 from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
@@ -329,26 +330,30 @@ async def fork(
     """Copy ``story_id`` into a new story; see the module docstring."""
     forked: Forked | None = None
     moved: dict[Membership, list[str]] = {}
-    for attempt in range(1, SNAPSHOT_ATTEMPTS + 1):
-        moved = {}
-        try:
-            async with db.connect() as conn, conn.begin():
-                forked = await _copy(
-                    conn, story_id, request, principal, expected_revision, moved=moved
+    # #784: the fork's id once, before the snapshot retries, and its memories partition made
+    # in a short transaction of its own before the copy's (ADR-187).
+    fork_id = new_ulid()
+    async with story_partition(db, fork_id):
+        for attempt in range(1, SNAPSHOT_ATTEMPTS + 1):
+            moved = {}
+            try:
+                async with db.connect() as conn, conn.begin():
+                    forked = await _copy(
+                        conn, story_id, fork_id, request, principal, expected_revision, moved=moved
+                    )
+                    await _erasure_fence(db, conn, story_id, forked.story_id)
+                break
+            except ErasedMeanwhile:
+                forked = None
+                logger.warning(
+                    "fork of %s: an erasure committed meanwhile (attempt %d)", story_id, attempt
                 )
-                await _erasure_fence(db, conn, story_id, forked.story_id)
-            break
-        except ErasedMeanwhile:
-            forked = None
-            logger.warning(
-                "fork of %s: an erasure committed meanwhile (attempt %d)", story_id, attempt
-            )
-        except DBAPIError as exc:
-            if getattr(exc.orig, "sqlstate", None) != SERIALIZATION_FAILURE:
-                raise
-            logger.warning("fork of %s: serialization failure (attempt %d)", story_id, attempt)
-        if attempt < SNAPSHOT_ATTEMPTS:
-            await asyncio.sleep(snapshot_backoff_s(attempt))
+            except DBAPIError as exc:
+                if getattr(exc.orig, "sqlstate", None) != SERIALIZATION_FAILURE:
+                    raise
+                logger.warning("fork of %s: serialization failure (attempt %d)", story_id, attempt)
+            if attempt < SNAPSHOT_ATTEMPTS:
+                await asyncio.sleep(snapshot_backoff_s(attempt))
     if forked is None:
         raise DatabaseUnavailable(
             "the fork's snapshot could not be read consistently; retry",
@@ -374,6 +379,7 @@ async def fork(
 async def _copy(
     conn: AsyncConnection,
     source: str,
+    fork_id: str,
     request: ForkRequest,
     principal: str,
     expected_revision: int | None,
@@ -382,6 +388,7 @@ async def _copy(
 ) -> Forked:
     """The whole copy, inside ``conn``'s transaction (REPEATABLE READ from its first read)."""
     await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    await claim(conn, fork_id)  # #875: the fork's key, held to this commit
     # The key the copy binds at its end is locked first, so this call's own lease renewal
     # cannot commit under the snapshot and fail the bind (#637).
     call = idempotency.current_call()
@@ -404,7 +411,6 @@ async def _copy(
             "at_turn must be a turn of the story, from 0 to its head",
             {"field": "body.at_turn", "head": head},
         )
-    fork_id = new_ulid()
     for statement in _SETUP:
         await conn.exec_driver_sql(statement)
     await _map(conn, [(source, fork_id)], "story")
@@ -700,6 +706,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
             f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
             "ORDER BY s.n) AS char(26)[])"
         ),
+        # #471 (ADR-189): the stored inverse of ``supersedes`` keeps the copied closers only,
+        # so a version closed only after N reads open in the fork, as above.
+        "closed_by": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.closed_by) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
     },
     # Commitments (#146): a thunk's resolution and an entry's discharge name the fork's copies;
     # one made after N is not copied, so the thunk is open and the entry undischarged there (the
@@ -879,7 +892,9 @@ ROW_FILTERS: dict[str, str] = {
         f"OR (t.record_table = 'events' AND t.record_id::text IN {_EVENT_IDS}) "
         + " ".join(
             f"OR (t.record_table = '{name}' AND t.record_id IN "  # noqa: S608 - fixed names
-            f'(SELECT r.id FROM "{name}" r WHERE r.operation_id IN {_OPERATION_IDS}))'
+            # #784: ``r.story_id`` names the source's partition of ``memories``.
+            f'(SELECT r.id FROM "{name}" r WHERE r.story_id = :source '
+            f"AND r.operation_id IN {_OPERATION_IDS}))"
             for name in ("facts", "beliefs", "memories", "utterances", "state_changes")
         )
         + ")"
@@ -909,8 +924,13 @@ def _row_filter(table: Table) -> str:
 
 async def _map_primary_keys(conn: AsyncConnection, table: Table, where: str, source: str) -> None:
     """New ids for the rows' own single-column id key (characters, policies, …) when no
-    earlier step mapped them."""
+    earlier step mapped them. A key of the partitioned shape, an id followed by the partition
+    key ``story_id`` (#784's ``memories``: ``(id, story_id)``), is its id: the fork's
+    ``story_id`` is its own. A key that leads with ``story_id`` (``client_events``, …) is no
+    row id and maps nothing here, as before."""
     keys = list(table.primary_key.columns)
+    if len(keys) == 2 and keys[1].name == "story_id":
+        keys = keys[:1]
     if len(keys) != 1 or keys[0].name == "story_id" or not _is_id(keys[0]):
         return
     key = keys[0].name

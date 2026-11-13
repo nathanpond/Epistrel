@@ -17,6 +17,7 @@ from sqlalchemy import (
     SmallInteger,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -61,6 +62,10 @@ a rewound tail also has ``turn_variant > 1`` but is no regeneration, so it has n
 
 ACTIVE_TURN_PREDICATE = "kind = 'turn' AND membership = 'active' AND status = 'committed'"
 """The rows ``uq_operations_active_turn`` covers: a story's active committed turn variants."""
+
+OPERATION_STORY_KEY = "uq_operations_operation_id_story_id"
+"""The unique ``(operation_id, story_id)`` key ``memories (operation_id, story_id)`` references
+(#784, ADR-187). ``operation_id`` alone is the primary key, so it is unique trivially."""
 
 operations = Table(
     "operations",
@@ -130,6 +135,10 @@ operations = Table(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",
         name="turn_has_position",
     ),
+    # #784 (migration 0151, ADR-187): the target of ``memories``' story-keyed foreign key. The
+    # RI check of an operation's deletion names the story, so it reads one ``memories``
+    # partition, not every story's.
+    UniqueConstraint("operation_id", "story_id", name=OPERATION_STORY_KEY),
     Index("ix_operations_story_position", "story_id", "narrative_turn", "turn_variant"),
     # #622 (migration 0106): the newest consolidation's turn, a backward index scan.
     Index(

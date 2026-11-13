@@ -1,6 +1,7 @@
 """The scale fixtures P-01, P-02 and P-06 share (#153), built once per session and only when a
 test asks for one: ``scale_50k`` (the default spec: 50k memories, 100k events) for the weekly
-suite, ``scale_1k`` (the same proportions at 1k memories) for the PR smoke.
+suite, ``scale_1k`` (the same proportions at 1k memories) for the PR smoke, and
+``scale_1k_stories`` (three such stories in one database, #866) for P-01's partition plan.
 
 ``scale_50k_knowledge`` and ``scale_1k_knowledge`` (#182) add per-character beliefs and
 exposures to them (``epistrel.testing.fixtures.knowledge``, no memory made private, so P-01's
@@ -32,6 +33,13 @@ async def scale_50k(pg_url: str) -> AsyncIterator[ScaleRun]:
 @pytest.fixture(scope="session")
 async def scale_1k(pg_url: str) -> AsyncIterator[ScaleRun]:
     async with scale_database(pg_url, scale.ScaleSpec.scaled(SMOKE_MEMORIES)) as run:
+        yield run
+
+
+@pytest.fixture(scope="session")
+async def scale_1k_stories(pg_url: str) -> AsyncIterator[ScaleRun]:
+    """Three stories of the 1k spec in one database (#866: P-01's partition plan)."""
+    async with scale_database(pg_url, scale.ScaleSpec.scaled(SMOKE_MEMORIES), stories=3) as run:
         yield run
 
 

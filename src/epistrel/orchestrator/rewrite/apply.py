@@ -121,13 +121,21 @@ async def _names(conn: AsyncConnection, entity_id: str | None) -> tuple[str, ...
     return await _surface_forms(conn, entity_id)
 
 
-async def _text_of(conn: AsyncConnection, table: str, record_id: str) -> str | None:
+async def _text_of(
+    conn: AsyncConnection, story_id: str | None, table: str, record_id: str
+) -> str | None:
+    """The text of an event, or of a memory of ``story_id`` (#784: its partition)."""
     if table == "events":
         payload = await conn.scalar(select(events.c.payload).where(events.c.id == record_id))
         text = dict(payload or {}).get("text")
         return text if isinstance(text, str) else None
-    if table == "memories":
-        found = await conn.scalar(select(memories.c.text).where(memories.c.id == record_id))
+    if table == "memories" and story_id is not None:
+        # #784: the story names its partition of ``memories``.
+        found = await conn.scalar(
+            select(memories.c.text).where(
+                memories.c.story_id == story_id, memories.c.id == record_id
+            )
+        )
         return None if found is None else str(found)
     return None
 
@@ -288,7 +296,7 @@ async def prepare(
                     continue
                 if entry.get("action") == "fix" and record[0] in ("events", "memories"):
                     change = by_key.get(entry.get("change_key"))
-                    text = await _text_of(conn, *record)
+                    text = await _text_of(conn, story_id, *record)
                     if change is None or text is None:
                         continue
                     old = await _names(conn, change.summary.get("superseded_object_id"))
@@ -369,7 +377,7 @@ async def prepare(
                     prepared.notifications.append(notice)
         texts = {
             (e["record"]["table"], e["record"]["id"]): await _text_of(
-                conn, e["record"]["table"], e["record"]["id"]
+                conn, story_id, e["record"]["table"], e["record"]["id"]
             )
             for e in radius.get("irreducible") or []
         }
@@ -384,7 +392,7 @@ async def prepare(
         if record in seen:
             continue
         async with db.connect() as conn:
-            before = await _text_of(conn, *record)
+            before = await _text_of(conn, story_id, *record)
         rewritten = (
             None
             if before is None

@@ -171,8 +171,9 @@ async def test_c_05(s: Scratch) -> None:
     await execute_in_tx(
         s.db,
         (
-            "UPDATE memories SET embedding_model_version = 'elsewhere/old-model' WHERE id = :m",
-            {"m": first},
+            "UPDATE memories SET embedding_model_version = 'elsewhere/old-model' "
+            "WHERE story_id = :s AND id = :m",
+            {"s": story, "m": first},
         ),
     )
     mixed = await _search(s, story, stored[first].text)
@@ -259,7 +260,11 @@ async def test_c_05__model_change(s: Scratch) -> None:
     story, _, memory_ids = await _embedded_story(s)
     retired = memory_ids[1]
     await execute_in_tx(
-        s.db, ("UPDATE memories SET retrieval_tier = 'retired' WHERE id = :m", {"m": retired})
+        s.db,
+        (
+            "UPDATE memories SET retrieval_tier = 'retired' WHERE story_id = :s AND id = :m",
+            {"s": story, "m": retired},
+        ),
     )
     old = (await vectors(s.db, story))[memory_ids[0]].vector
 

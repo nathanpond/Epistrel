@@ -19,6 +19,9 @@ port. Options the child applies to itself before serving:
   ``EPISTREL_TEST_FAULTS=1`` and ``EPISTREL_TEST_CRASH_AT``, and its ``nth`` hit of the named
   crash point (``epistrel.testing.crash``) ends it with ``os._exit(137)`` after printing
   ``EPISTREL-FAULT crash <point> <kind>``. ``crash`` may be changed between restarts;
+- ``count_hits`` (#834): a file the child appends every crash point hit to
+  (``crash.count_env``; ``crash.read_hits`` reads it back), so a test can measure which points
+  its workload reaches before it draws a plan. It may be changed between restarts;
 - ``mode``: ``EPISTREL_MODE`` (``all`` by default; ``api`` runs no job worker, so a harness
   drains jobs itself);
 - ``stub_rules`` (#213): ``StubRule``s the child's stub adapter answers with
@@ -90,9 +93,12 @@ from epistrel.testing.crash import (
     EXIT_STATUS,
     POINTS,
     STAGED_POINTS,
+    STAGED_PURCHASE_POINTS,
     CrashPlan,
+    count_env,
     crash_at,
     hit,
+    read_hits,
 )
 
 FAULT_MARKER = "EPISTREL-FAULT"
@@ -156,6 +162,7 @@ class EngineProcess:
         stub_latency_s: float = 0.0,
         turn_start_delay_s: float = 0.0,
         crash: CrashPlan | None = None,
+        count_hits: str | None = None,
         mode: str = "all",
         stub_rules: Sequence[StubRule] = (),
         deliver: Sequence[str] = (),
@@ -171,6 +178,7 @@ class EngineProcess:
         self.stub_latency_s = stub_latency_s
         self.turn_start_delay_s = turn_start_delay_s
         self.crash = crash
+        self.count_hits = count_hits
         self.mode = mode
         self.stub_rules = list(stub_rules)
         self.deliver = list(deliver)
@@ -205,6 +213,7 @@ class EngineProcess:
             "EPISTREL_MEDIA_ROOT": self.media_root,
             "EPISTREL_ERASURE_LEDGER_DIR": self.erasure_ledger_dir,
             **(self.crash.env() if self.crash is not None else {}),
+            **(count_env(self.count_hits) if self.count_hits is not None else {}),
             **({"EPISTREL_CONFIG_KEY": self.config_key} if self.config_key else {}),
         }
 
@@ -586,15 +595,18 @@ __all__ = [
     "LISTENING",
     "POINTS",
     "STAGED_POINTS",
+    "STAGED_PURCHASE_POINTS",
     "START_ATTEMPTS",
     "CrashPlan",
     "EngineProcess",
     "StubRule",
     "StubRules",
+    "count_env",
     "crash_at",
     "free_port",
     "hit",
     "main",
+    "read_hits",
     "readset_intersection_disabled",
     "serve",
 ]

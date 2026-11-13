@@ -29,7 +29,7 @@ it); a window whose inputs changed, or an explicit request, is rerun, and the ou
 replaces (an explicit request's: those of the windows inside the one asked for) become
 ``superseded``. A window an earlier one partly covers starts after it. It plans
 the window (``ScopeMismatch`` refuses mixed scopes before any call), declares every input
-(``memories:<id>``, ``operations:<id>``), then, outside the snapshot, calls the
+(``memories:<story_id>:<id>``, ``operations:<id>``), then, outside the snapshot, calls the
 ``consolidation`` purpose through the Model Access Layer once per ``CHUNK_RECORDS`` inputs
 (``structured_call``: parse, validate, retry), under its own budget of ``MAX_CALLS_PER_RUN``
 (10) calls, routed by the story's ``models.purposes.consolidation``. The engine recomputes each

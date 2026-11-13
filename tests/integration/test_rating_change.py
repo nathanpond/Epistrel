@@ -153,6 +153,10 @@ async def test_i_22__relax_tighten(pg_url: str) -> None:
         paused = await story(s.client, explicit)
         assert paused["status"] == "paused"
         assert paused["pause"]["job_id"] == job_id
+        # #783: a rating check's progress is exactly {done, total}.
+        assert set(paused["pause"]) == {"job_id", "cause", "progress"}
+        assert paused["pause"]["cause"] == "rating_check"
+        assert set(paused["pause"]["progress"]) == {"done", "total"}
         history = await s.client.get(f"/stories/{explicit}/history", headers=READ)
         assert history.status_code == 200, history.text
         assert (await check(s.client, explicit, job_id))["status"] == "checking"

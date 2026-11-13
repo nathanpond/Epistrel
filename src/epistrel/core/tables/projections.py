@@ -27,7 +27,9 @@ event log, folded by ``core.projections.structured``:
   (ids and typed literals, never prose), the fact's outer valid bounds, its narrative position
   (``since_turn``/``since_slot``, ``NULL`` for a position-less fact), the active version that
   closed it (``closed_by_fact_id`` and its position; ``NULL`` while current: a superseded row is
-  closed, never deleted, while its fact is active) and its visibility.
+  closed, never deleted, while its fact is active) and its visibility. It and ``placement`` are
+  indexed for the rows still in force at a turn (#892): the open ones by ``valid_to``, the
+  closed ones by ``closed_turn`` (``relationships`` by predicate first).
 - ``placement``: the same for ``placement`` predicates, keyed by ``(story_id, source_fact_id)``:
   the placed ``entity_id`` and exactly one of ``location_id`` (``located_at``) and
   ``container_id`` (``holds``: the holder contains the item), and ``since_beat`` (the beat of
@@ -145,6 +147,31 @@ def _structured_columns() -> list[Column[Any]]:
     ]
 
 
+def _in_force_indexes(table: str, *keys: str) -> list[Index]:
+    """#892: the indexes a write at turn N finds the rows a scene from N on can use through
+    (``structured._from_turn_on``): the open rows by ``valid_to`` (a ``NULL`` one is valid for
+    ever), and the closed rows by the turn that closed them, each after ``story_id`` and
+    ``keys`` (``relationships``' predicate: the scene reads only the ``scene`` predicates').
+    Without them each turn's scene refresh filtered every row of the story."""
+    name = "_".join(("ix", table, "story", *(k.removesuffix("_id") for k in keys)))
+    return [
+        Index(
+            f"{name}_open_valid_to",
+            "story_id",
+            *keys,
+            "valid_to",
+            postgresql_where=text("closed_by_fact_id IS NULL"),
+        ),
+        Index(
+            f"{name}_closed_turn",
+            "story_id",
+            *keys,
+            "closed_turn",
+            postgresql_where=text("closed_by_fact_id IS NOT NULL"),
+        ),
+    ]
+
+
 relationships = Table(
     "relationships",
     metadata,
@@ -157,6 +184,7 @@ relationships = Table(
     *_structured_columns(),
     Index("ix_relationships_story_subject", "story_id", "subject_id"),
     Index("ix_relationships_story_object", "story_id", "object_id"),
+    *_in_force_indexes("relationships", "predicate_id"),
 )
 
 placement = Table(
@@ -174,6 +202,7 @@ placement = Table(
     Index("ix_placement_story_entity", "story_id", "entity_id"),
     Index("ix_placement_story_location", "story_id", "location_id"),
     Index("ix_placement_story_container", "story_id", "container_id"),
+    *_in_force_indexes("placement"),
 )
 
 scene_state = Table(

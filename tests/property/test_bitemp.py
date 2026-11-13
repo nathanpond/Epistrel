@@ -44,6 +44,7 @@ from epistrel.core.enums import RecordProvenance
 from epistrel.core.events import Operation
 from tests.auth_support import auth_settings
 from tests.canon_support import LOCATED_AT, World, at, commit, run, supersede, world
+from tests.closing_marker_support import check_equivalence, check_read_sql
 from tests.event_support import play_turn, scalar
 from tests.projection_support import truncate, untruncate
 
@@ -332,3 +333,20 @@ def test_bitemp(pg_url: str) -> None:
     assert tally.checked > 0
     assert tally.checked >= tally.skipped
     assert {"commit", "supersede", "retcon", "truncate", "untruncate", "double"} <= set(tally.seen)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M4", "FR-BITEMP-1,2,3,4,5")
+def test_bitemp__closing_marker(pg_url: str) -> None:
+    """#471 (ADR-189): canon's stored ``closed_by`` reads exactly what the old anti-join over
+    ``supersedes`` read, over random histories, at every position and record-time
+    (``tests.closing_marker_support.check_equivalence``)."""
+    check_equivalence(pg_url)
+
+
+@pytest.mark.part("M4", "FR-BITEMP-1,2,3,4,5")
+def test_bitemp__reads_find_closers_by_key() -> None:
+    """#471 (ADR-189): ``canon``, ``canon_at``, ``canon_as_recorded`` and the read set (through
+    ``canon_at``) find closers through ``closed_by``, with no ``supersedes`` containment
+    (``tests.closing_marker_support.check_read_sql``)."""
+    check_read_sql()

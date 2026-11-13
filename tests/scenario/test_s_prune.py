@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core import clock
-from epistrel.core.prune import PRUNABLE_TABLES, PRUNE_RETAINED_TABLES, run_policy
+from epistrel.core.prune import PRUNABLE_TABLES, PRUNE_RETAINED_TABLES, _pk, run_policy
 from epistrel.core.schema import metadata
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import rows, scalar
@@ -196,6 +196,59 @@ def test_prune_table_coverage() -> None:
     }
     unclassified = referencing - pruned - PRUNE_RETAINED_TABLES
     assert unclassified == set(), sorted(unclassified)
+
+
+def test_prune_row_keys() -> None:
+    """#873: every pruned table deletes by a key naming one row within the story, never by the
+    story id (``client_events``' key is ``(story_id, client_event_id)``)."""
+    for table in PRUNABLE_TABLES:
+        key = _pk(table)
+        assert key != "story_id", table.name
+        assert {c.name for c in table.primary_key.columns} - {"story_id"} == {key}, table.name
+
+
+@pytest.mark.part("M7", "FR-STORE-32")
+async def test_s_prune__kept_client_events(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#873 (FR-RESP-10): a prune removes only the pruned operations' dedupe records. Two
+    ingested turns, truncated to the first and pruned: the second turn's ``client_events`` row
+    goes, the first's stays, and re-sending the first's ``client_event_id`` replays it."""
+
+    def ingest(story: str, cid: str, actor: str) -> Any:
+        event = {"client_event_id": cid, "kind": "player_turn", "actor_character_id": actor,
+                 "say": f"I wait ({cid})."}  # fmt: skip
+        return client.post(f"/stories/{story}/ingest", json={"events": [event]}, headers=WRITE)
+
+    async def dedupe(story: str) -> list[str]:
+        found = await rows(
+            engine,
+            "SELECT client_event_id FROM client_events WHERE story_id = :s ORDER BY 1",
+            s=story,
+        )
+        return [r.client_event_id for r in found]
+
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, actor = await _story(client, engine)
+        kept = (await _ok(await ingest(story, "kept", actor), 201))["results"][0]
+        await _ok(await ingest(story, "pruned", actor), 201)
+        assert await dedupe(story) == ["kept", "pruned"]
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        applied = await _ok(await _prune(client, story, ignore_warnings=True))
+        assert applied["applied"] is True
+        assert applied["result"]["deleted"]["operations"] == 1
+
+        assert await dedupe(story) == ["kept"]
+        operations = await scalar(
+            engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story
+        )
+        replay = await _ok(await ingest(story, "kept", actor))
+        assert replay["results"] == [{**kept, "replayed": True}]
+        assert (
+            await scalar(engine, "SELECT count(*) FROM operations WHERE story_id = :s", s=story)
+            == operations
+        )
+        assert await dedupe(story) == ["kept"]
 
 
 async def _aged_tail(client: Any, engine: AsyncEngine, age_days: int) -> str:

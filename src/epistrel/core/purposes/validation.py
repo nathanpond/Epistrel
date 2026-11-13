@@ -50,6 +50,30 @@ or deque) is refused, as is taking a dict's (``.pop``, ``.update``, ``.setdefaul
 ``.popitem``, ``.clear``), which the sandbox always refuses on a mapping; any of these names stays
 accepted as a key that is read and not called. A slice's bounds are constant integers.
 
+#857: a consumer's ``inputs`` are JSON, and a JSON value is never callable, so a call of a
+mutating-name access can never render: whatever it reaches is either a refused method or a JSON
+value. Besides the direct call (#853: ``inputs.list.append(1)``), the scan refuses a call whose
+callee is a simple name that ``{% set %}`` or ``{% with %}`` bound earlier in the template to such
+an access (``{% set p = inputs['pop'] %}{{ p('voter') }}``), and a call whose callee is a filter
+chain (through filters and constant integer indexes) in which ``map(attribute=…)`` or another
+filter's attribute name (``ATTRIBUTE_POSITIONS``, positional or keyword) names one of
+``MUTATING_METHODS`` in any segment (``([inputs]|map(attribute='pop')|first)('voter')``). Binding
+or mapping such a name without calling it stays accepted, because it reads the key when the key
+exists. The alias is one level deep: an alias of an alias or a macro argument is not followed,
+and such a call fails cleanly when it is made.
+
+#858: what fails on every render, whatever the inputs, is refused too. Every ``{% set x.y %}``
+target (``'x' is not a namespace``: no ``namespace`` exists here), so ``{% set inputs._y = 1 %}``
+is refused as well; a slice step of the constant ``0`` (``-0`` and ``+0`` included);
+``slice(0)``; ``map`` with neither a filter nor ``attribute``; ``selectattr``/``rejectattr`` with
+no arguments; and a filter or test given fewer arguments than its signature requires
+(``FILTER_ARGUMENTS``, ``TEST_ARGUMENTS``: ``replace``, ``slice``, ``batch``, ``groupby``,
+``divisibleby``, ``sameas``, ``in`` and the comparisons), as ``is <test>`` or through ``select``,
+``reject``, ``selectattr`` and ``rejectattr``, and through ``map('<filter>', …)``. ``select`` and
+``reject`` with no arguments filter by truthiness and stay accepted. A template can still fail
+for its inputs (``loop(x)``, ``1/0``, a call of a missing attribute): such a call answers 422
+``template_render_error`` (FR-MODEL-15).
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -131,6 +155,39 @@ TEST_POSITIONS: Final[Mapping[str, int]] = {
     "rejectattr": 1,
 }
 """Filters that apply a test named by an argument, and that argument's position (#853)."""
+
+
+def _required(function: Any) -> tuple[str | None, ...]:
+    """The arguments a template must pass filter or test ``function`` (#858): its parameters
+    with no default, past those Jinja passes itself (``_PASSED``, a first ``env``) and the
+    filtered or tested value, each by the keyword that can pass it (``None`` for a
+    positional-only one). Empty when it takes ``*args`` (``map``, ``select`` and the like,
+    which ``_filter_problem`` checks by hand) or its signature cannot be read."""
+    try:
+        parameters = list(inspect.signature(function).parameters.values())
+    except TypeError, ValueError:
+        return ()
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        return ()
+    parameters = [p for p in parameters if p.name not in _PASSED]
+    if parameters and parameters[0].name == "env":
+        parameters = parameters[1:]
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return tuple(
+        None if p.kind is inspect.Parameter.POSITIONAL_ONLY else p.name
+        for p in parameters[1:]
+        if p.kind in positional and p.default is inspect.Parameter.empty
+    )
+
+
+FILTER_ARGUMENTS: Final[Mapping[str, tuple[str | None, ...]]] = {
+    name: needed for name, function in FILTERS.items() if (needed := _required(function))
+}
+"""Built-in filters that need arguments, and their names (#858)."""
+TEST_ARGUMENTS: Final[Mapping[str, tuple[str | None, ...]]] = {
+    name: needed for name, function in TESTS.items() if (needed := _required(function))
+}
+"""Built-in tests that need arguments, and their names (#858)."""
 
 
 def _mutating(*values: object) -> frozenset[str]:
@@ -238,6 +295,26 @@ def _number(arg: nodes.Expr | None, kinds: type | tuple[type, ...]) -> bool:
     )
 
 
+def _zero(arg: nodes.Expr | None) -> bool:
+    """A constant zero, or ``-``/``+`` of one (#858)."""
+    if isinstance(arg, (nodes.Neg, nodes.Pos)):
+        arg = arg.node
+    return _number(arg, (int, float)) and cast(nodes.Const, arg).value == 0
+
+
+def _arity_problem(
+    name: str,
+    needed: tuple[str | None, ...],
+    args: list[nodes.Expr],
+    kwargs: list[nodes.Keyword],
+) -> str | None:
+    """``name`` given fewer than the ``needed`` arguments, by position or keyword (#858)."""
+    given = {kw.key for kw in kwargs}
+    if all(index < len(args) or arg in given for index, arg in enumerate(needed)):
+        return None
+    return f"{name!r} needs {len(needed)} argument(s)"
+
+
 def _constant_key(arg: nodes.Expr) -> bool:
     """A constant item key: a constant, ``-``/``+`` of a numeric constant (#848), or a slice
     whose bounds are constant integers (#853)."""
@@ -264,6 +341,33 @@ def _member(node: nodes.Node) -> str | None:
     return None
 
 
+def _segments(name: str) -> list[str]:
+    """The names in a filter's attribute argument: Jinja's dotted path, or ``sort``'s and
+    ``unique``'s comma-separated list."""
+    return [raw.strip() for raw in re.split(r"[.,]", name)]
+
+
+def _attribute_args(
+    name: str, args: list[nodes.Expr], kwargs: list[nodes.Keyword]
+) -> list[nodes.Expr]:
+    """The arguments that filter ``name`` reads as attribute names (#837, #847): the
+    ``attribute`` keyword and the position ``ATTRIBUTE_POSITIONS`` gives. ``map('<filter>', …)``
+    is that filter with the remaining arguments; ``map(attribute=…)`` reads the attribute
+    itself."""
+    if name == "map" and args:
+        first = args[0]
+        if isinstance(first, nodes.Const) and isinstance(first.value, str):
+            return _attribute_args(first.value, args[1:], kwargs)
+        return []
+    if name not in ATTRIBUTE_POSITIONS and name != "map":
+        return []
+    named = [kw.value for kw in kwargs if kw.key == "attribute"]
+    position = ATTRIBUTE_POSITIONS.get(name)
+    if position is not None and len(args) > position:
+        named.append(args[position])
+    return named
+
+
 def _safe_attribute(arg: nodes.Expr) -> bool:
     """A constant attribute name (Jinja's dotted path or an index) with no segment that starts
     with ``_`` or names one of ``READING_METHODS`` (#852)."""
@@ -272,9 +376,55 @@ def _safe_attribute(arg: nodes.Expr) -> bool:
     if isinstance(arg.value, int):
         return True
     return isinstance(arg.value, str) and not any(
-        _private(part) or part in READING_METHODS
-        for part in (raw.strip() for raw in re.split(r"[.,]", arg.value))
+        _private(part) or part in READING_METHODS for part in _segments(arg.value)
     )
+
+
+def _mutating_attribute(node: nodes.Filter) -> str | None:
+    """The ``MUTATING_METHODS`` name a segment of filter ``node``'s attribute argument names
+    (#857); ``None`` when there is none."""
+    # Jinja annotates a filter's kwargs as `Pair`s, but the parser builds `Keyword`s.
+    kwargs = cast(list[nodes.Keyword], node.kwargs)
+    for arg in _attribute_args(node.name, node.args, kwargs):
+        if isinstance(arg, nodes.Const) and isinstance(arg.value, str):
+            for part in _segments(arg.value):
+                if part in MUTATING_METHODS:
+                    return part
+    return None
+
+
+def _mutating_access(expr: nodes.Node) -> str | None:
+    """The ``MUTATING_METHODS`` name ``expr`` reaches (#857): an attribute or constant key
+    naming one, or a filter chain (through filters and constant integer indexes) with a filter
+    whose attribute argument names one. A JSON value is never callable, so a call of what this
+    names never renders. ``None`` when ``expr`` reaches none."""
+    member = _member(expr)
+    if member in MUTATING_METHODS:
+        return member
+    node: nodes.Node | None = expr
+    while node is not None:
+        if isinstance(node, nodes.Filter):
+            found = _mutating_attribute(node)
+            if found is not None:
+                return found
+            node = node.node
+        elif isinstance(node, nodes.Getitem) and _number(node.arg, int):
+            node = node.node
+        else:
+            return None
+    return None
+
+
+def _bind(aliases: dict[str, str], target: nodes.Node, value: nodes.Node) -> None:
+    """Record (or clear) simple name ``target`` as an alias of a mutating-name access (#857).
+    One level: a name bound to another alias is not followed."""
+    if not isinstance(target, nodes.Name):
+        return
+    found = _mutating_access(value)
+    if found is None:
+        aliases.pop(target.name, None)
+    else:
+        aliases[target.name] = found
 
 
 def _filter_problem(
@@ -292,22 +442,32 @@ def _filter_problem(
         if not (isinstance(first, nodes.Const) and isinstance(first.value, str)):
             return "the filter 'map' names a filter that is computed"
         return _filter_problem(first.value, args[1:], kwargs, None)
-    if name in ATTRIBUTE_POSITIONS or name == "map":
-        # ``map(attribute=…)`` with no filter name reads the attribute itself.
-        named = [kw.value for kw in kwargs if kw.key == "attribute"]
-        position = ATTRIBUTE_POSITIONS.get(name)
-        if position is not None and len(args) > position:
-            named.append(args[position])
-        if not all(_safe_attribute(arg) for arg in named):
-            return (
-                f"the filter {name!r} names an attribute that is computed, starts with '_' or "
-                "names a method that reads by name"
-            )
+    # #858: what Jinja refuses on every render, for any value.
+    if name == "map" and not any(kw.key == "attribute" for kw in kwargs):
+        return "'map' needs 1 argument(s)"
+    if name in ("selectattr", "rejectattr") and not args:
+        return f"{name!r} needs 1 argument(s)"
+    problem = _arity_problem(name, FILTER_ARGUMENTS.get(name, ()), args, kwargs)
+    if problem is not None:
+        return problem
+    if name == "slice":
+        slices = args[0] if args else next(kw.value for kw in kwargs if kw.key == "slices")
+        if _zero(slices):
+            return "the filter 'slice' makes 0 slices"
+    if not all(_safe_attribute(arg) for arg in _attribute_args(name, args, kwargs)):
+        return (
+            f"the filter {name!r} names an attribute that is computed, starts with '_' or "
+            "names a method that reads by name"
+        )
     position = TEST_POSITIONS.get(name)
     if position is not None and len(args) > position:
         test = args[position]
         if not (isinstance(test, nodes.Const) and test.value in TESTS):
             return f"the filter {name!r} names a test that is computed or not a Jinja built-in"
+        needed = TEST_ARGUMENTS.get(cast(str, test.value), ())
+        problem = _arity_problem(cast(str, test.value), needed, args[position + 1 :], kwargs)
+        if problem is not None:
+            return problem
     if name == "format":
         if any(_private(kw.key) for kw in kwargs):
             return "the filter 'format' names a field that starts with '_'"
@@ -350,7 +510,24 @@ def _scan(tree: nodes.Template) -> str | None:
     # A ``.get`` (or ``['get']``, #852) is checked where it is called; one taken without a
     # call could be called with any key later.
     calls = {id(call.node): call for call in tree.find_all(nodes.Call)}
+    # #857: names a `{% set %}` or `{% with %}` bound to a mutating-name access, in document
+    # order, each mapped to the method's name.
+    aliases: dict[str, str] = {}
     for node in tree.find_all(nodes.Node):
+        if isinstance(node, nodes.Assign):
+            _bind(aliases, node.target, node.node)
+        if isinstance(node, nodes.With):
+            for target, value in zip(node.targets, node.values, strict=False):
+                _bind(aliases, target, value)
+        if isinstance(node, nodes.Call):
+            callee = node.node
+            called = (
+                aliases.get(callee.name)
+                if isinstance(callee, nodes.Name)
+                else _mutating_access(callee)
+            )
+            if called is not None:
+                return f"the template uses {called!r}, a method that changes its value"
         refused = REFUSED_STATEMENTS.get(type(node))
         if refused is not None:
             return f"the template uses {{% {refused} %}}, which consumer templates may not"
@@ -363,6 +540,13 @@ def _scan(tree: nodes.Template) -> str | None:
                 return "the template slices by a computed bound; slice bounds are constant integers"
             if not _constant_key(node.arg):
                 return "the template reads an item by a computed key; item keys are constants"
+            if isinstance(node.arg, nodes.Slice) and _zero(node.arg.step):
+                return "the template uses a slice step of 0"
+        if isinstance(node, nodes.NSRef):
+            # #858: no `namespace` exists here (#837), so no target of `{% set x.y %}` is one.
+            return (
+                f"the template sets {node.name}.{node.attr}, and {node.name!r} is not a namespace"
+            )
         member = _member(node)
         if member in FORMAT_METHODS:
             return f"the template uses {member!r}, which consumer templates may not"
@@ -382,8 +566,14 @@ def _scan(tree: nodes.Template) -> str | None:
             return f"the template uses {member!r}, a method that changes its value"
         if isinstance(node, nodes.Name) and node.name in ("self", "super"):
             return f"the template references {node.name!r}, which consumer templates may not"
-        if isinstance(node, nodes.Test) and node.name not in TESTS:
-            return f"the template uses the test {node.name!r}, which is not a Jinja built-in"
+        if isinstance(node, nodes.Test):
+            if node.name not in TESTS:
+                return f"the template uses the test {node.name!r}, which is not a Jinja built-in"
+            needed = TEST_ARGUMENTS.get(node.name, ())
+            test_kwargs = cast(list[nodes.Keyword], node.kwargs)
+            problem = _arity_problem(node.name, needed, node.args, test_kwargs)
+            if problem is not None:
+                return problem
         if isinstance(node, (nodes.Filter, nodes.Test, nodes.Call)) and (
             node.dyn_args is not None or node.dyn_kwargs is not None
         ):
@@ -583,6 +773,7 @@ def check_schema(schema: Any, field: str = "body.output_schema") -> dict[str, An
 __all__ = [
     "ATTRIBUTE_POSITIONS",
     "DESCRIPTION_MAX",
+    "FILTER_ARGUMENTS",
     "FORMAT_METHODS",
     "MAPPING_MUTATING_METHODS",
     "MUTATING_METHODS",
@@ -598,6 +789,7 @@ __all__ = [
     "TEMPLATE_INVALID",
     "TEMPLATE_MAX_BYTES",
     "TEMPLATE_VARIABLES",
+    "TEST_ARGUMENTS",
     "TEST_POSITIONS",
     "PurposeRefused",
     "canonical_json",

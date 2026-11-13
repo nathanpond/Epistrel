@@ -123,7 +123,8 @@ async def _fan_out(ctx: JobContext) -> JobOutput:
     for story_id in candidates:
         async with ctx.db.begin() as conn:
             exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
-            if exists is not None:
+            # #784: asked inside the story's own partition, one story per transaction.
+            if exists is not None and await retirement.needs_reconcile(conn, story_id):
                 await queue.enqueue(
                     conn,
                     RECONCILE,

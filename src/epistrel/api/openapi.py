@@ -267,6 +267,7 @@ ERROR_STATUS: dict[str, int] = {
     "nothing_to_backfill": 409,
     "pruned": 409,
     "job_not_found": 404,
+    "image_job_not_found": 404,
     "export_not_ready": 409,
     "export_expired": 410,
     "bundle_too_large": 413,
@@ -432,6 +433,7 @@ ERROR_STATUS: dict[str, int] = {
     "budget_exhausted": 503,
     "certification_unavailable": 503,
     "rewrite_apply_failed": 503,
+    "too_many_waiters": 503,
     "rewrite_reach_failed": 503,
     "config_key_missing": 503,
     "config_missing": 503,
@@ -608,6 +610,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_busy",
         "viewpoint_unresolved",
         "nothing_to_regenerate",
+        # #885: a directed regeneration's session applied in the call (#712).
+        "rewrite_apply_failed",
     ),
     # #598 (FR-RESP-14): a correction of the latest turn; a later turn, or a turn a correction
     # wrote, is refused.
@@ -787,7 +791,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "fork": ("story_paused", "unknown_chain", "database_unavailable", "turn_boundary_required"),
     "archive_story": ("story_paused", "story_busy"),
     "unarchive_story": ("story_paused", "story_busy"),
-    "delete_story": ("story_busy",),
+    # #885: a story being imported is not deleted (#250).
+    "delete_story": ("story_busy", "story_importing"),
     # A story's characters (#114): one added to a running story is gated and refused on an
     # archived or busy story; a promotion's rating must be assignable, and the memories it
     # seeds into the companion must be ones the character holds or can know (#498); the
@@ -940,6 +945,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "rewrite_apply_failed",
         "model_unavailable",
         "erased_subject_referenced",
+        # #885: a held directed regeneration replayed at the apply (#712) is refused on an
+        # archived story and passes the input gate again.
+        "story_archived",
+        "guardrail_violation",
     ),
     "apply_directive": (
         "omniscient_required",
@@ -1071,6 +1080,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "image_prompt_unavailable",
         "model_unavailable",
         "erasure_pending",
+        "ledger_unavailable",
     ),
     "draft_base_appearance_prompt": (
         "not_found",
@@ -1094,6 +1104,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
             "image_prompt_unavailable",
             "model_unavailable",
             "erasure_pending",
+            # #885: a draft saved between the request's two reads of it.
+            "draft_stale",
         )
         for kind in ("character", "scenario")
     },
@@ -1279,12 +1291,39 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # off; a file since deleted (404, documented by the path rule).
     # ``story_id`` is a query parameter there: an unknown story is 404, a blocked one 503.
     "feedback_aggregates": ("not_found", "erasure_pending"),
-    "feedback_review_guardrail": ("cursor_invalid", "not_found", "erasure_pending"),
-    "feedback_review_memory": ("cursor_invalid", "not_found", "erasure_pending"),
+    "feedback_review_guardrail": (
+        "cursor_invalid",
+        "not_found",
+        "erasure_pending",
+        "ledger_unavailable",
+    ),
+    "feedback_review_memory": (
+        "cursor_invalid",
+        "not_found",
+        "erasure_pending",
+        "ledger_unavailable",
+    ),
     "export_feedback": ("feedback_export_disabled", "media_store_unavailable"),
     "list_feedback_exports": ("cursor_invalid",),
-    "get_feedback_export_content": ("media_store_unavailable",),
+    "get_feedback_export_content": ("media_store_unavailable", "ledger_unavailable"),
     "delete_feedback_export": ("media_store_unavailable",),
+    # Story bundles (#249, #250; #786): an export's archive before it is written or once it
+    # expired, or an unknown job; an import's upload past ``bundle_max_uncompressed_bytes`` and
+    # the up-front refusals of its archive.
+    "open_export_bundle": ("export_not_ready", "export_expired", "job_not_found"),
+    "import_status": ("job_not_found",),
+    "import_story": (
+        "bundle_too_large",
+        "corrupt_bundle",
+        "unsupported_format_version",
+        "rating_required",
+    ),
+    # #885: the erasure ledger compared on the first call after a start that could not compare
+    # it (an unreachable database), before a list or a catalog check reads past it (#348).
+    "list_stories": ("ledger_unavailable",),
+    # #885: an unknown image job; a long poll past this process's waiter limit.
+    "get_image_job": ("image_job_not_found", "too_many_waiters"),
+    "cancel_image_job": ("image_job_not_found",),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)
@@ -1422,7 +1461,9 @@ def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     if method in MUTATING_METHODS:
         codes.append("principal_required")
     if mutating:
-        codes += ["idempotency_conflict", "original_in_flight_timeout"]
+        # #885: a replay passes the erasure gate of the story or record its stored result names
+        # (#369, #346), comparing the ledger first when start-up could not.
+        codes += ["idempotency_conflict", "original_in_flight_timeout", "ledger_unavailable"]
         if STORY_PATH_PARAMETER in path:
             # A commit that times out on the story lock (#472).
             codes += ["revision_conflict", "story_busy"]

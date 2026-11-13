@@ -43,6 +43,7 @@ from epistrel.core.events.operation import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.media.sweep import collect_blob
 from epistrel.core.memory.consolidation import Window
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.observability import logging as telemetry_logging
 from epistrel.orchestrator.jobs import settlement
 from epistrel.orchestrator.jobs.handlers import consolidation, outbox
@@ -115,8 +116,10 @@ async def story_rows(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     async with engine.connect() as conn:
         tables = await conn.scalars(
             text(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                # #784: ``memories`` is read through its parent, pruned to the story.
+                f"AND {not_a_partition()}"
             )
         )
         for table in sorted(set(tables)):
@@ -921,7 +924,10 @@ async def test_s_erasure_boundary__beliefs(erasure_settings: Settings, engine: A
     assert [str(r.id) for r in exposed] == [k.kept_exposure]
     assert await rows(engine, "SELECT id FROM divergences WHERE story_id = :s", s=story) == []
     (shared,) = await rows(
-        engine, "SELECT visibility FROM memories WHERE id = :m", m=k.shared_memory
+        engine,
+        "SELECT visibility FROM memories WHERE story_id = :s AND id = :m",
+        s=story,
+        m=k.shared_memory,
     )
     assert shared.visibility["characters"] == [k.ann]
 

@@ -2,11 +2,11 @@
 
 ``apply_events`` runs inside ``Operation.commit()``'s transaction, before COMMIT. For each
 projection it loads the rows the new events can touch, applies the events, and writes only the
-difference. ``fold`` replays every event of the story's committed operations in ``seq`` order
-through the same ``apply``, in memory (a projection over canon, #137, folds ``facts`` instead:
-``Projection.fold_state``), and ``rebuild`` replaces the stored rows with the result
-under the story lock as a ``maintenance`` operation, so it bumps no revision (FR-CONC-1) and
-writes no event.
+difference (``Projection.write``). ``fold`` replays every event of the story's committed
+operations in ``seq`` order through the same ``apply``, in memory (a projection over canon,
+#137, folds ``facts`` instead: ``Projection.fold_state``), and ``rebuild`` replaces the stored
+rows with the result under the story lock as a ``maintenance`` operation, so it bumps no
+revision (FR-CONC-1) and writes no event.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import ColumnElement, and_, delete, insert, select, update
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.context import SYSTEM_PRINCIPAL
@@ -28,10 +28,8 @@ from epistrel.core.enums import (
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.events.registry import validate
 from epistrel.core.projections.base import (
-    Key,
     LogEvent,
     Projection,
-    Row,
     Rows,
     registered_projections,
 )
@@ -70,7 +68,7 @@ async def apply_events(
         before = rows.snapshot()
         for event in new_events:
             projection.apply(rows, event)
-        await _write_difference(conn, rows, before)
+        await projection.write(conn, rows, before)
 
 
 async def fold(
@@ -122,14 +120,18 @@ async def fold(
     return folded
 
 
-async def replace_with_fold(conn: AsyncConnection, story_id: str) -> dict[str, int]:
-    """Delete the story's projection rows and insert the fold; returns rows per table.
+async def replace_with_fold(
+    conn: AsyncConnection, story_id: str, only: Sequence[Projection] | None = None
+) -> dict[str, int]:
+    """Delete the story's projection rows (or ``only`` these projections') and insert the fold;
+    returns rows per table.
 
     The caller holds the story lock (``rebuild`` runs this as an operation commit step).
     """
-    folded = await fold(conn, story_id)
+    chosen = list(registered_projections()) if only is None else list(only)
+    folded = await fold(conn, story_id, chosen)
     counts: dict[str, int] = {}
-    for projection in registered_projections():
+    for projection in chosen:
         table = projection.table
         await conn.execute(delete(table).where(table.c.story_id == story_id))
         rows = folded[projection.name]
@@ -177,21 +179,3 @@ async def _require_story(db: AsyncEngine | AsyncConnection, story_id: str) -> No
             found = await conn.scalar(query)
     if found is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
-
-
-async def _write_difference(conn: AsyncConnection, rows: Rows, before: dict[Key, Row]) -> None:
-    """Insert the rows ``apply`` added and update the ones it changed (``apply`` never removes)."""
-    table = rows.table
-    after = rows.snapshot()
-
-    def where(key: Key) -> ColumnElement[bool]:
-        pairs = zip(rows.key_columns, key, strict=True)
-        return and_(*(table.c[name] == value for name, value in pairs))
-
-    added = sorted(after.keys() - before.keys())
-    if added:
-        await conn.execute(insert(table), [after[key] for key in added])
-    for key in before.keys() & after.keys():
-        if before[key] != after[key]:
-            changed = {k: v for k, v in after[key].items() if before[key].get(k) != v}
-            await conn.execute(update(table).where(where(key)).values(**changed))

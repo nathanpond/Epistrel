@@ -46,6 +46,7 @@ from epistrel.core.erasure.index import (
     records_of,
 )
 from epistrel.core.ids import new_ulid
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.core.tables.media import SubjectKind
 from epistrel.observability import logging as telemetry_logging
 from epistrel.tools import reindex_subjects
@@ -134,10 +135,11 @@ async def content_tables(engine: AsyncEngine) -> set[str]:
     without ``story_id``, such as ``media_upload_sessions``, can hold a subject's name too)."""
     found = await rows(
         engine,
-        "SELECT DISTINCT c.table_name FROM information_schema.columns c "
+        "SELECT DISTINCT c.table_name FROM information_schema.columns c "  # noqa: S608 - a fixed catalog predicate
         "JOIN information_schema.tables t "
         "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
         "WHERE t.table_type = 'BASE TABLE' AND c.table_schema IN ('public', 'catalog') "
+        f"AND {not_a_partition('c.table_name', 'c.table_schema')} "
         "AND c.data_type IN ('text', 'jsonb', 'json', 'ARRAY', 'character varying')",
     )
     return {str(r.table_name) for r in found}

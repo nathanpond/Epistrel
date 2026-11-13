@@ -27,6 +27,9 @@ Slowing only adds time, so the run cannot pass by luck on a busy host.
 ``test_p_01__own_graph`` (#866; ADR-187) runs one retrieval on a database of three 1k
 stories and checks the vector arm's plan: an index scan of the story's own partition's HNSW
 index, with no other story's partition in it.
+``test_p_01__gap_marks`` (#888) pins the cost of the coverage-gap marks every retrieval
+carries: they read no turn history when the story has no gap, and one row a run of the turns a
+gap leaves, and they count in the retrieval's ``total``.
 """
 
 from __future__ import annotations
@@ -37,10 +40,13 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.backfill import coverage
 from epistrel.core.embeddings import HNSW_INDEX
 from epistrel.core.memory.story_partitions import partition_name as memories_table_of
-from epistrel.core.retrieval import pipeline
+from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.retrieval import coverage_marks, pipeline
 from epistrel.core.retrieval.pipeline import STAGES
 from epistrel.core.retrieval.search import EMBEDDING_UNAVAILABLE, vector_search
 from epistrel.testing.fixtures import scale
@@ -258,3 +264,70 @@ async def test_p_01__own_graph(scale_1k_stories: ScaleRun) -> None:
     assert f"Index Scan using {hnsw[own]} on {own}" in plan, plan
     assert "Seq Scan" not in plan, plan
     assert not [o for o in others if o in plan], plan
+
+
+async def _rows_read(conn: AsyncConnection, sql: str, params: Any, relation: str) -> int:
+    """The rows ``EXPLAIN ANALYZE`` of ``sql`` reads from ``relation`` (its scan nodes')."""
+    raw = await conn.get_raw_connection()
+    cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+    await cursor.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params)
+    (plan,) = (await cursor.fetchone())[0]
+    found, nodes = 0, [plan["Plan"]]
+    while nodes:
+        node = nodes.pop()
+        if node.get("Relation Name") == relation:
+            found += int(node["Actual Rows"]) * int(node.get("Actual Loops", 1))
+        nodes += node.get("Plans", [])
+    return found
+
+
+@pytest.mark.perf_smoke
+@pytest.mark.part("M4", "NFR-PERF-1")
+async def test_p_01__gap_marks(scale_1k: ScaleRun, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#888: the coverage-gap marks of a retrieval (``coverage_marks.gaps``) cost what the
+    story's coverage leaves uncovered, not its turn history. On the 1k fixture (500 turns), as
+    built, there is no gap and no statement reads ``operations``. With the pipeline's coverage
+    broken at turns 101-103, the one gap is found by a read of ``operations`` that answers one
+    row and reads three. A retrieval's ``total`` includes the marks: slowed by 200 ms, the total
+    is at least that.
+
+    Complement asserted: the fixture's turns are all active (a read of every turn would answer
+    500 rows), and the gap is found, so the bounded read is not an empty one."""
+    run = scale_1k
+    story = run.fixture.story
+    window = (1, story.head)
+    async with run.db.connect() as conn:
+        settings = (await effective_configuration(conn, story.story_id, validate=False)).settings
+        assert len(await coverage.active_turns(conn, story.story_id)) == story.head == 500
+        with statements(run.db) as clean:
+            assert await coverage_marks.gaps(conn, story.story_id, settings, window=window) == []
+        assert clean.reading("operations") == []
+
+        level = coverage.capabilities_of(settings)["pipeline"]
+        await conn.execute(
+            text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
+            {"s": story.story_id},
+        )
+        for low, high in ((1, 100), (104, None)):
+            await coverage.add(
+                conn, story.story_id, "pipeline", low, high, source=coverage.LIVE, level=level
+            )
+        with statements(run.db) as broken:
+            found = await coverage_marks.gaps(conn, story.story_id, settings, window=window)
+        assert [(g.capability, g.from_turn, g.to_turn) for g in found] == [("pipeline", 101, 103)]
+        reads = broken.reading("operations")
+        assert len(reads) == 1, reads
+        assert broken.rows_reading("operations") == 1
+        assert await _rows_read(conn, *reads[0], "operations") == 3
+        await conn.rollback()
+
+    async def slowed(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(SLOWED_S)
+        return await marks(*args, **kwargs)
+
+    marks = coverage_marks.gaps
+    monkeypatch.setattr(coverage_marks, "gaps", slowed)
+    result = await run.lib.retrieve(
+        run.ctx, story.story_id, q=_queries(run, 1)[0], viewpoint=VIEWPOINT
+    )
+    assert result.timings["total"] >= SLOWED_S * 1000, result.timings

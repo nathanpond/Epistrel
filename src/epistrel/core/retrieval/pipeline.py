@@ -1370,6 +1370,18 @@ async def retrieve(
         len(profiles),
         len(canon),
     )
+    # The gap marks answer the retrieval, so they count in its timings' total (#888).
+    gaps = tuple(
+        await coverage_marks.gaps(
+            conn,
+            story_id,
+            settings,
+            window=(
+                (turns[0] if turns else None) or 1,
+                (turns[1] if turns else None) or position[0],
+            ),
+        )
+    )
     return RetrievalResult(
         episodes=episodes,
         assessments=assessments,
@@ -1387,17 +1399,7 @@ async def retrieve(
         model_calls=model_calls,
         embedding_model_version=version,
         position=position,
-        coverage_gaps=tuple(
-            await coverage_marks.gaps(
-                conn,
-                story_id,
-                settings,
-                window=(
-                    (turns[0] if turns else None) or 1,
-                    (turns[1] if turns else None) or position[0],
-                ),
-            )
-        ),
+        coverage_gaps=gaps,
     )
 
 

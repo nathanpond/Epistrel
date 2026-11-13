@@ -76,12 +76,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import bindparam, cast, func, insert, select, text, update
+from sqlalchemy import bindparam, cast, delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import embeddings, projections, readset
+from epistrel.core.backfill import coverage
 from epistrel.core.canon import facts as canon
 from epistrel.core.enums import (
     FactCommitState,
@@ -108,8 +109,8 @@ from epistrel.core.propositions.registry import Registry, canonical
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID, STRUCTURED_M4_VERSION
 from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
+from epistrel.core.tables import capability_coverage, operations, stories
 from epistrel.core.tables import events as events_table
-from epistrel.core.tables import operations, stories
 from epistrel.core.tables import propositions as propositions_table
 from epistrel.core.tables.facts import facts as facts_table
 from epistrel.core.tables.memories import memories
@@ -724,6 +725,12 @@ async def _create(
                 engine_profile_version_pin=STRUCTURED_M4_VERSION,
             )
         )
+        # #888: the story is structured from turn 1, so its coverage is too (the coverage
+        # creation seeded is Lite's; left as it was, every turn read as a gap).
+        await conn.execute(
+            delete(capability_coverage).where(capability_coverage.c.story_id == story_id)
+        )
+        await coverage.seed_story(conn, story_id)
         for person in person_names(SUBJECTS):
             people[person] = await store.add_entity(
                 conn, story_id, "person", person, character_id=characters.get(person)

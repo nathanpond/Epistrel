@@ -49454,7 +49454,42 @@
               "null"
             ]
           },
-          "valid_span": {},
+          "valid_span": {
+            "additionalProperties": false,
+            "properties": {
+              "bounds": {
+                "enum": [
+                  "[)",
+                  "[]",
+                  "(]",
+                  "()"
+                ],
+                "type": "string"
+              },
+              "empty": {
+                "type": "boolean"
+              },
+              "lower": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "upper": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "lower",
+              "upper",
+              "bounds",
+              "empty"
+            ],
+            "type": "object"
+          },
           "valid_to": {
             "type": [
               "integer",
@@ -50850,7 +50885,42 @@
               "null"
             ]
           },
-          "valid_span": {},
+          "valid_span": {
+            "additionalProperties": false,
+            "properties": {
+              "bounds": {
+                "enum": [
+                  "[)",
+                  "[]",
+                  "(]",
+                  "()"
+                ],
+                "type": "string"
+              },
+              "empty": {
+                "type": "boolean"
+              },
+              "lower": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "upper": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "lower",
+              "upper",
+              "bounds",
+              "empty"
+            ],
+            "type": "object"
+          },
           "valid_to": {
             "type": [
               "integer",
@@ -52020,7 +52090,42 @@
               "null"
             ]
           },
-          "valid_span": {},
+          "valid_span": {
+            "additionalProperties": false,
+            "properties": {
+              "bounds": {
+                "enum": [
+                  "[)",
+                  "[]",
+                  "(]",
+                  "()"
+                ],
+                "type": "string"
+              },
+              "empty": {
+                "type": "boolean"
+              },
+              "lower": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "upper": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "lower",
+              "upper",
+              "bounds",
+              "empty"
+            ],
+            "type": "object"
+          },
           "valid_to_inner": {
             "type": [
               "integer",

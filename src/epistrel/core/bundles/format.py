@@ -9,11 +9,12 @@ OpenAPI document's ``components.schemas``.
 - ``StoryBundleRecord_<table>``: one line of ``records/<table>.jsonl`` or
   ``catalog/<table>.jsonl`` (``records/story.json`` is ``StoryBundleRecord_stories``), built
   from the table's columns: a ULID ``char(26)`` is a string of that pattern, a timestamp a
-  ``date-time`` string, ``jsonb`` unconstrained, a number or a boolean as such, every nullable
-  column ``[T, null]``, and no other property (``additionalProperties: false``); the columns a
-  bundle never carries (``COLUMNS_NOT_EXPORTED``) are left out. A column is required when the
-  row could not be written without it (``NOT NULL`` with no default); an export writes them
-  all.
+  ``date-time`` string, ``jsonb`` unconstrained, a number or a boolean as such, an
+  ``int8range`` an object of ``lower``, ``upper``, ``bounds`` and ``empty`` (#877), every
+  nullable column ``[T, null]``, and no other property (``additionalProperties: false``); the
+  columns a bundle never carries (``COLUMNS_NOT_EXPORTED``) are left out. A column is required
+  when the row could not be written without it (``NOT NULL`` with no default); an export
+  writes them all.
 
 ````validate_line`` checks one decoded line against its schema (tests and #250's import), with a
 small checker for the subset of JSON Schema these schemas use (no new dependency).
@@ -48,6 +49,22 @@ MEDIA = "StoryBundleMedia"
 RECORD = "StoryBundleRecord_{table}"
 
 
+def _range_schema() -> dict[str, Any]:
+    """#877: an ``int8range`` column's value (``bundles.RANGE_FIELDS``)."""
+    bound: dict[str, Any] = {"type": ["integer", "null"]}
+    return {
+        "type": "object",
+        "properties": {
+            "lower": bound,
+            "upper": bound,
+            "bounds": {"type": "string", "enum": ["[)", "[]", "(]", "()"]},
+            "empty": {"type": "boolean"},
+        },
+        "required": list(bundles.RANGE_FIELDS),
+        "additionalProperties": False,
+    }
+
+
 def _column_schema(column: Any) -> dict[str, Any]:
     kind = column.type
     found: dict[str, Any]
@@ -72,7 +89,7 @@ def _column_schema(column: Any) -> dict[str, Any]:
     elif isinstance(kind, ENUM | Enum):
         found = {"type": "string", "enum": sorted(str(e) for e in kind.enums)}
     elif isinstance(kind, INT8RANGE):
-        found = {}
+        found = _range_schema()
     else:
         found = {"type": "string"}
         length = getattr(kind, "length", None)

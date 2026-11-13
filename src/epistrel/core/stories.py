@@ -1098,20 +1098,28 @@ async def _active_cast_count(conn: AsyncConnection, story_id: str) -> int:
 
 
 async def _cast_full(
-    conn: AsyncConnection, story_id: str, *, already_counted: bool = False
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    already_counted: bool = False,
+    reactivation: bool = False,
 ) -> None:
     """422 ``validation_error`` (``cast_max``) when the story already holds as many full
     characters as the deployment's ``max_story_cast`` allows (FR-MULTI-12): one more would
     pass it. A story above a lowered limit is refused the same way. Benched characters do not
     count (FR-MULTI-13), but benched and unbenched full characters together never pass
     ``STORY_CAST_LIMIT_MAX`` (``limit`` 200). ``already_counted``: the request's character is
-    in the counts already (a reactivation of an unbenched ``major`` character, #845), so
-    ``actual`` is the count itself, not one more."""
+    in the active count already (a reactivation of an unbenched ``major`` character, #845), so
+    ``actual`` is the count itself, not one more. ``reactivation``: the character is already
+    in the benched-plus-unbenched total, which a reactivation never changes, so the 200
+    ceiling is not checked (#886)."""
     more = 0 if already_counted else 1
     limit = await story_cast_limit(conn)
     count = await _active_cast_count(conn, story_id)
     if count >= limit:
         raise cast_max(limit, count + more)
+    if reactivation:
+        return
     total = await _major_count(conn, story_id)
     if total >= STORY_CAST_LIMIT_MAX:
         raise cast_max(STORY_CAST_LIMIT_MAX, total + more)
@@ -1675,14 +1683,15 @@ async def _reactivation_room(
     """422 ``cast_max`` when reactivating a full (``major``) character would pass the story's
     ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts. It runs before the 409
     ``not_benched`` (#845): an unbenched ``major`` character in a full cast is 422 too, its
-    ``actual`` the count it is already part of."""
+    ``actual`` the count it is already part of. Only the active count is checked: the
+    character is in the 200 total already, benched or not (#886)."""
     weight = await conn.scalar(
         select(characters.c.weight).where(
             characters.c.story_id == story_id, characters.c.id == character_id
         )
     )
     if weight == CharacterWeight.MAJOR.value:
-        await _cast_full(conn, story_id, already_counted=not benched)
+        await _cast_full(conn, story_id, already_counted=not benched, reactivation=True)
 
 
 async def _source_event(conn: AsyncConnection, operation_id: str, type_: str) -> str:

@@ -529,6 +529,46 @@ async def test_i_31__m9_reactivate_precedence(
     assert len(await bench_rows(engine, sid)) == 1
 
 
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_reactivate_at_total_ceiling(
+    served: tuple[httpx.AsyncClient, Engine], cast_limit: SetLimit
+) -> None:
+    """#886: a reactivation never changes the benched-plus-unbenched total, so the 200 ceiling
+    (``STORY_CAST_LIMIT_MAX``) does not refuse it. A story of 200 full characters, 151 benched,
+    at ``max_story_cast`` 50 (49 active): reactivating one is 200 and the total stays 200.
+    Complement: with one benched again (49 active), adding a full character is still 422
+    ``cast_max`` with ``limit`` 200 and ``actual`` 201."""
+    client, _ = served
+    await cast_limit(200)
+    names = ["Wren", *(f"Extra {n:03d}" for n in range(199))]
+    story = await create(
+        client,
+        {"characters": [character(name, is_player=(i == 0)) for i, name in enumerate(names)]},
+    )
+    sid = story["story_id"]
+    ids = [c["id"] for c in story["characters"] if c["name"] != "Wren"]
+    for character_id in ids[:151]:
+        assert (await bench(client, sid, character_id)).status_code == 200
+    await cast_limit(50)
+    assert (await story_read(client, sid))["cast"] == {"active": 49, "benched": 151}
+
+    back = await reactivate(client, sid, ids[0])
+    assert back.status_code == 200, back.text
+    assert (await story_read(client, sid))["cast"] == {"active": 50, "benched": 150}
+
+    assert (await bench(client, sid, ids[0])).status_code == 200
+    added = await client.post(
+        f"/stories/{sid}/characters",
+        json={"name": "Dale", "definition": "A driver.", "true_age": 52},
+        headers=WRITE,
+    )
+    assert refusal(added) == (
+        422,
+        "validation_error",
+        {"field": "body", "cap": "cast_max", "limit": 200, "actual": 201},
+    )
+
+
 # -- turns ------------------------------------------------------------------------------------
 
 

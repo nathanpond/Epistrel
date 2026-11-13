@@ -29,6 +29,7 @@ pins the deployment's dimension.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -37,7 +38,10 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+import yaml
+from alembic import command
 from sqlalchemy import event, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api.routes.admin import ADMIN_PREFIX
@@ -45,6 +49,8 @@ from epistrel.core import clock, embeddings, input_versions
 from epistrel.core import fork as forking
 from epistrel.core.amendments.store import RecordPartDraft
 from epistrel.core.context import RequestContext
+from epistrel.core.db import make_engine, make_sync_engine
+from epistrel.core.ids import new_ulid
 from epistrel.core.input_versions import input_key
 from epistrel.core.memory import story_partitions
 from epistrel.core.tables.memories import memories
@@ -55,9 +61,12 @@ from epistrel.orchestrator.jobs.handlers.retirement import RECONCILE
 from epistrel.orchestrator.jobs.recurring import NoPayload
 from epistrel.orchestrator.jobs.types import ClaimedJob
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
+from epistrel.testing import postgres
 from tests import amendment_support as am
 from tests import erasure_support as e
 from tests import hot_set_support as h
+from tests.auth_support import auth_settings
+from tests.conftest import REPO_ROOT, alembic_config
 from tests.embedding_support import Scratch, embedding_db, reset, run_jobs
 from tests.respond_support import body, respond
 from tests.story_support import WRITE
@@ -552,3 +561,106 @@ async def test_story_named_paths_stay_in_the_story_s_partition(s: Scratch) -> No
         if not any(re.search(pattern, sql, re.DOTALL) for sql in shapes[path])
     }
     assert not missing, (missing, {p: [q[:200] for q in shapes[p]] for p, _ in missing})
+
+
+# -- the shipped lock table (#784 option (a), ADR-191) ---------------------------------------------
+
+SMALL_SERVER: dict[str, object] = {
+    "max_connections": 5,
+    "superuser_reserved_connections": 0,
+    "autovacuum_max_workers": 1,
+    "max_worker_processes": 0,
+    "max_parallel_workers": 0,
+    "max_wal_senders": 0,
+}
+"""A server whose lock table is ADR-188's rule scaled down: about ``max_locks_per_transaction``
+times 7 slots (5 connections, the autovacuum launcher and its one worker), so a few hundred
+partitions stand in for thousands of stories."""
+SMALL_CONNECTIONS = 5
+SMALL_STORIES = postgres.MAX_LOCKS_PER_TRANSACTION * SMALL_CONNECTIONS // postgres.LOCKS_PER_STORY
+"""The stories the shipped value covers on ``SMALL_SERVER`` by ADR-188's rule (320)."""
+
+
+def test_the_test_server_runs_the_shipped_lock_table(pg_url: str) -> None:
+    """The test database runs compose's ``max_locks_per_transaction`` (ADR-191), so the tests
+    exercise the shipped configuration. A server named by ``EPISTREL_TEST_DATABASE_URL`` needs
+    the setting too."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    command = compose["services"]["db"]["command"]
+    shipped = command[command.index("-c") + 1].split("=", 1)
+    assert shipped[0] == "max_locks_per_transaction"
+    admin = make_sync_engine(pg_url)
+    try:
+        with admin.connect() as conn:
+            running = conn.scalar(text("SHOW max_locks_per_transaction"))
+    finally:
+        admin.dispose()
+    assert running == shipped[1]
+
+
+async def _restart_with(server: Any, max_locks: int) -> str:
+    """``server`` restarted with ``max_locks_per_transaction = max_locks`` (``ALTER SYSTEM``: it
+    takes effect only at server start); its URL once it answers (Docker may map a new port)."""
+    url = server.get_connection_url()
+    admin = make_sync_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f"ALTER SYSTEM SET max_locks_per_transaction = {int(max_locks)}"))
+    finally:
+        admin.dispose()
+    await asyncio.to_thread(server.get_wrapped_container().restart)
+    await asyncio.to_thread(server._connect)  # testcontainers' own readiness wait (psql)
+    url = server.get_connection_url()
+    admin = make_sync_engine(url)
+    try:
+        with admin.connect() as conn:
+            assert conn.scalar(text("SHOW max_locks_per_transaction")) == str(max_locks)
+    finally:
+        admin.dispose()
+    return str(url)
+
+
+async def _retype(url: str) -> str | None:
+    """The first embedding pin's retype (FR-MEM-8; ``embeddings.retype``), which locks every
+    partition in one transaction, rolled back after it ran. Its error, or None."""
+    db = make_engine(auth_settings(url), pool_size=1)
+    try:
+        async with db.connect() as conn:
+            try:
+                async with conn.begin() as tx:
+                    await embeddings.retype(conn, 8)
+                    await tx.rollback()
+            except DBAPIError as exc:
+                return str(exc.orig)
+        return None
+    finally:
+        await db.dispose()
+
+
+async def test_a_deployment_wide_retype_needs_the_shipped_lock_table() -> None:
+    """ADR-188's rule at small scale (ADR-191): on a ``SMALL_SERVER`` migrated to head, with
+    the ``SMALL_STORIES`` story partitions the shipped value covers there, a retype succeeds
+    with the shipped ``max_locks_per_transaction`` and fails with ``out of shared memory`` on
+    Postgres's default 64. One server is restarted between the two, so the migration (which
+    needs more than 64 itself on so few connections) and the partitions are made once. The
+    value is set by ``ALTER SYSTEM``, since a ``-c`` flag would override it."""
+    assert SMALL_STORIES == 320
+    flags = [arg for name, value in SMALL_SERVER.items() for arg in ("-c", f"{name}={value}")]
+    server = postgres.container(command=["postgres", *flags])  # the lock table by ALTER SYSTEM
+    await asyncio.to_thread(server.start)
+    try:
+        url = await _restart_with(server, postgres.MAX_LOCKS_PER_TRANSACTION)
+        await asyncio.to_thread(command.upgrade, alembic_config(url), "head")
+        db = make_engine(auth_settings(url), pool_size=1)
+        try:
+            for _ in range(SMALL_STORIES):
+                async with db.begin() as conn:
+                    await story_partitions.create_partition(conn, new_ulid())
+        finally:
+            await db.dispose()
+        assert await _retype(url) is None
+        failed = await _retype(await _restart_with(server, 64))
+        assert failed is not None
+        assert "out of shared memory" in failed
+    finally:
+        await asyncio.to_thread(server.stop)

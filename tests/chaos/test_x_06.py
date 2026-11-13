@@ -35,6 +35,7 @@ import pytest
 from alembic import command
 
 from epistrel.core.db import make_engine
+from epistrel.testing import postgres
 from epistrel.testing.faults import EngineProcess
 from tests.auth_support import CREDENTIAL_A, auth_settings
 from tests.conftest import OVERRIDE_VAR, PG_IMAGE, alembic_config
@@ -51,10 +52,10 @@ LEASE_S = 1.0
 DOWN_FLAG = "/x06-down"
 SUPERVISOR = (
     f"while :; do if [ -e {DOWN_FLAG} ]; then sleep 0.1; "
-    "else docker-entrypoint.sh postgres; fi; done"
+    f"else docker-entrypoint.sh postgres {' '.join(postgres.server_args())}; fi; done"
 )
-"""The container's PID 1 (root): the server, run again whenever it exits unless ``DOWN_FLAG``
-is set."""
+"""The container's PID 1 (root): the server, with the shipped settings (ADR-191), run again
+whenever it exits unless ``DOWN_FLAG`` is set."""
 
 
 @contextmanager
@@ -67,9 +68,7 @@ def dedicated_postgres() -> Iterator[tuple[Any, str]]:
             f"run against {OVERRIDE_VAR}.",
             pytrace=False,
         )
-    from testcontainers.community.postgres import PostgresContainer
-
-    container = PostgresContainer(PG_IMAGE, driver="psycopg").with_command(["sh", "-c", SUPERVISOR])
+    container = postgres.container(PG_IMAGE, command=["sh", "-c", SUPERVISOR])
     container.start()
     try:
         url = container.get_connection_url()

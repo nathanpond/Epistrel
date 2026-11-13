@@ -161,13 +161,15 @@ Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already 
 - an upgrade whose migration alters `memories`;
 - `pg_dump`, which takes one lock per table (about one per story).
 
-Before any of these on a deployment of more than 500 stories, set
+Their lock count grows with the number of stories, so the server is sized by this rule:
 
-`max_locks_per_transaction ≥ 16 × stories ÷ (max_connections + max_prepared_transactions)`, rounded up to a power of two and never below 64,
+`max_locks_per_transaction ≥ 16 × stories ÷ (max_connections + max_prepared_transactions)`, rounded up to a power of two and never below 64.
 
-for example 1024 for 6,000 stories on 100 connections. Then restart Postgres (the setting takes effect only at server start). Each lock slot costs a few hundred bytes of shared memory, so 1024 on 100 connections adds about 30 MB. If the action fails with `out of shared memory` / `HINT: You might need to increase max_locks_per_transaction`, it changed nothing: raise the setting and run it again.
+**The compose default (ADR-191).** `docker-compose.yml`'s database runs `postgres -c max_locks_per_transaction=1024` with `shm_size: 128mb`. On Postgres's 100 connections and no prepared transactions, that covers **6,400 stories**: 16 × 6,400 ÷ 100 = 1,024. Each lock slot costs a few hundred bytes of shared memory, so 1024 on 100 connections adds about 30 MB. The test servers run the same value. A compose install of up to 6,400 stories needs nothing more.
 
-Postgres also keeps statistics for every partition and index in dynamic shared memory (`/dev/shm` in a container): about 0.5 KB per relation, or 8 KB per story. Docker's default `/dev/shm` of 64 MB fills at about 6,000 stories, and parallel queries then fail with `could not resize shared memory segment … No space left on device`. Give the database container `shm_size` of at least 64 MB plus 8 MB per 1,000 stories.
+**Raising it for a larger install.** The compose default does not cover a deployment of more than 6,400 stories, one with fewer connections, or one of more than 500 stories whose database was not started from the compose file. Before any of these actions on such a deployment, work out the value from the rule. For example, 12,000 stories on 100 connections need 16 × 12,000 ÷ 100 = 1,920, so 2048. On the compose stack, change the `command` line of the `db` service (`-c max_locks_per_transaction=2048`) and recreate the service with `docker compose up -d db`. Elsewhere, set it in `postgresql.conf` or with `ALTER SYSTEM SET max_locks_per_transaction = 2048`. Then restart Postgres, because the setting takes effect only at server start. If the action fails with `out of shared memory` / `HINT: You might need to increase max_locks_per_transaction`, it changed nothing: raise the setting and run it again.
+
+**/dev/shm.** Postgres also keeps statistics for every partition and index in dynamic shared memory (`/dev/shm` in a container): about 0.5 KB per relation, or 8 KB per story. Docker's default `/dev/shm` of 64 MB fills at about 6,000 stories, and parallel queries then fail with `could not resize shared memory segment … No space left on device`. Give the database container `shm_size` of at least 64 MB plus 8 MB per 1,000 stories. The compose file's 128 MB covers 8,000 stories. Raise it with the lock table, for example to 192 MB for 12,000 stories (64 + 8 × 12 = 160 MB).
 
 ## Retrieval index tuning
 

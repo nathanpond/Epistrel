@@ -1626,9 +1626,9 @@ async def database(url: str | None) -> AsyncIterator[str]:
         await asyncio.to_thread(migrate, url)
         yield url
         return
-    from testcontainers.community.postgres import PostgresContainer  # lazy: dev only
+    from epistrel.testing import postgres  # lazy: dev only
 
-    container = PostgresContainer(PG_IMAGE, driver="psycopg")
+    container = postgres.container(PG_IMAGE)
     await asyncio.to_thread(container.start)
     try:
         dsn = container.get_connection_url()

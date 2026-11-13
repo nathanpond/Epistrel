@@ -20,7 +20,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187, 188 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
 | FR-BITEMP | §3 | 189 |
-| FR-MEM | §4 | 070, 071, 072, 075, 169, 187, 188 |
+| FR-MEM | §4 | 070, 071, 072, 075, 169, 187, 188, 191 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 043, 169, 170 |
@@ -49,13 +49,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180, 189, 190 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188, 190 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188, 190, 191 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
 | NFR-PORT | §20 | 150 |
-| NFR-OPS | §20 | 127, 148, 151 |
+| NFR-OPS | §20 | 127, 148, 151, 191 |
 | NFR-MAINT | §20 | 148 |
 
 ### By ADR
@@ -251,9 +251,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
 | 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
-| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Current | — |
+| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Amended | 191 |
 | 189 | A closed fact version stores its closers, and canon reads find them by key | Current | — |
 | 190 | The engine-only latency budgets are gated on the reference host only and reported elsewhere | Current | — |
+| 191 | The compose database ships a lock table sized for 6,400 stories, and the test servers run it | Current | — |
 
 ---
 
@@ -2026,6 +2027,7 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-188 — Memories' operation key names the story, and the lock table is sized for deployment-wide changes
 **Status:** Accepted. Amends ADR-187 (the foreign key; the scale consequence).
+**Amended by:** ADR-191 — `docker-compose.yml` ships `max_locks_per_transaction = 1024` and a 128 MB `/dev/shm`, which cover 6,400 stories by this ADR's rule, and every test server runs the same value.
 **Context:** CI on #784 (run 43159822725) failed with `out of shared memory` (`HINT: You might need to increase max_locks_per_transaction`) in long integration shards and in the eval runner, where one database collects many stories. A statement that cannot prune plans over every partition and locks each one and its 14 indexes, 15 relations a story, until its transaction ends. Postgres's lock table is shared by the whole server and holds about `max_locks_per_transaction × (max_connections + max_prepared_transactions)` locks. Measured on `pgvector/pgvector:pg16` with the defaults (64, 100), one such statement held 7,516 locks at 500 stories and 10,921 at 727, and failed at 1,327. While one transaction holds that many, other transactions fail to take a single lock, so unrelated turns failed too (REST 503 `database_unavailable`). Three paths reached every partition:
 - the foreign-key check a deleted `operations` row runs (`SELECT 1 FROM memories WHERE operation_id = $1 FOR KEY SHARE`), which names no story, on every `DELETE /stories/{id}` (FR-STORE-16), prune and operation cleanup;
 - generic plans: psycopg prepares a statement it has run five times, and the plan cache, the foreign-key check's included, may then plan it generically, and a generic plan cannot prune when planned and locks every partition when run (PostgreSQL 16);
@@ -2076,6 +2078,20 @@ Tuning and its exit certification come after every milestone that may change a p
 - The runner's weekly run is green while it shows its misses in the step summary, in `docs/perf.md` (**over budget**) and in `docs/capacity.md` (Within 150 ms **no**). A budget regression on the runner is read there, not from a red run.
 - A run with `EPISTREL_TEST_PERF_HOST_CLASS=reference` gates as before. `tests/perf/test_p_01.py::test_p_01__gate_bites` checks the verdict both ways on a slowed vector arm, and that a degraded or a mostly empty result fails on either class.
 - Until a reference host runs the suite, NFR-PERF-1,2's budgets have no gate. #868 tracks meeting a measured target.
+
+### ADR-191 — The compose database ships a lock table sized for 6,400 stories, and the test servers run it
+**Status:** Accepted. Amends ADR-188 (the lock-table sizing).
+**Context:** #784, the owner's decision of 2026-11-12 (option (a)). ADR-188 left the lock table to the operator: an embedding model change or dimension retype (FR-MEM-8), a migration that alters `memories`, and `pg_dump` change or lock every story's partition in one transaction, and on Postgres's defaults (64 locks per transaction, 100 connections) they fail past about a thousand stories. ADR-188 measured this at 1,673 partitions: a whole-table `UPDATE` or `ALTER TYPE` failed, an `ADD COLUMN` took about 1,675 locks and a `CREATE INDEX` about 3,350. Nothing raised the setting, so a hobby install made with `docker compose up` (NFR-OPS-1) would meet the failure at its first model change after a thousand or so stories, and the tests ran on a server unlike the one shipped.
+**Decision:** Applied by #784's follow-up commit.
+- `docker-compose.yml`'s `db` service runs `postgres -c max_locks_per_transaction=1024` with `shm_size: 128mb`. By ADR-188's rule, on Postgres's 100 connections and no prepared transactions, 6,400 stories need 16 × 6,400 ÷ 100 = 1,024, and 64 MB + 8 MB × 6.4 = 115.2 MB of `/dev/shm` fits in 128 MB. The lock table costs about 30 MB more shared memory.
+- `epistrel.testing.postgres` holds the value, the story count it covers and the rule. Every PostgreSQL server the tests and tools start runs it through `postgres.container`, with the same `/dev/shm`: the session database (`tests/conftest.py::pg_url`, which CI's integration shards use), the erasure ledger's servers (`tests/ledger_support.dedicated_server`), X-06's supervised server, and the model-matrix and capacity tools' throwaway server (`epistrel.tools.model_matrix.database`). CI starts no Postgres service of its own.
+- A deployment beyond 6,400 stories, with fewer connections, or not started from the compose file still sizes the setting by ADR-188's rule before those actions (docs/OPERATIONS.md).
+**Alternatives considered:** Leaving the setting to the operator (option (b)) was cheapest, but the first embedding model change on a large install would fail until they raised it. Hash partitions with a fixed modulus (option (c)) would bound every lock count but bring other stories' vectors back into each graph, and one table with an exact-search fallback (option (d)) would drop the per-story search ADR-187 chose. A value sized for tens of thousands of stories would cost a hobby install hundreds of MB of shared memory that it never uses.
+**Consequences:**
+- The deployment-wide actions work out of the box on a compose install of up to 6,400 stories. `tests/test_compose.py::test_the_lock_table_is_sized_for_the_stated_story_count` fails if the compose value or `shm_size` drops below the rule for that count or drifts from the test servers' value.
+- The tests run on the shipped configuration. `tests/integration/test_memory_partition_pruning.py::test_the_test_server_runs_the_shipped_lock_table` reads `SHOW max_locks_per_transaction` on the test database, so a server named by `EPISTREL_TEST_DATABASE_URL` needs the setting too.
+- `test_a_deployment_wide_retype_needs_the_shipped_lock_table`, in the same file, scales the rule down to a server of 5 connections. A retype over the 320 partitions that 1,024 covers there succeeds, and on the default 64 it fails with `out of shared memory`.
+- The larger lock table hides an unpruned statement until about six times as many stories as before. The engine's own statements still name their story, and the pruning registry (`test_hot_statements_stay_in_the_story_s_partition` and its siblings) checks their plans, whatever the lock table's size.
 
 ---
 

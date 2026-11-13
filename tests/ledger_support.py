@@ -141,9 +141,9 @@ def dedicated_server() -> Iterator[Server]:
             pytrace=False,
         )
     try:
-        from testcontainers.community.postgres import PostgresContainer
+        from epistrel.testing import postgres
 
-        container = PostgresContainer(PG_IMAGE, driver="psycopg")
+        container = postgres.container(PG_IMAGE)
         container.start()
     except Exception as exc:
         pytest.fail(f"Docker is needed: {type(exc).__name__}: {exc}", pytrace=False)

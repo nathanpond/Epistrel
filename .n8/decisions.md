@@ -13983,6 +13983,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Hold:** PR #874. The owner chooses between options (a)–(d) on #784 (issuecomment-6819284394): partition-per-story makes operator actions that touch every partition (embedding-model change, a migration on `memories`, `pg_dump`) need `max_locks_per_transaction` sized to the story count (ADR-188). The run recommends (a): ship the setting in `docker-compose.yml` and the test Postgres. Work dependent on #784 continues on the current design. **Lifts when:** the owner answers on #784, or in the session.
   **Issue:** #784
   **Resolved:** 2026-11-12. The owner answered in the session: "Do option a". `docker-compose.yml` and the test Postgres ship a raised `max_locks_per_transaction` (and `shm_size`), sized by ADR-188's rule. The hold on PR #874 lifts once that commit is green in CI.
+  **Resolved (hold lifted):** 2026-11-13. Option (a)'s commit c6b2f41 is green in CI run 43423951876, and PR #874 was marked ready (`gh pr ready`).
 - **Decision (Rule 1):** retirement's ranking (`retirement.ranked`) names the story in its `_covered` subquery, which looks up the covering output by id. Before, that subquery correlated only on `covered_by` and planned over every story's partition. The capture test failed on it before the fix with "[retirement] 3 other partition(s)".
   **Why:** it runs on every retirement run, which is a hot path.
   **Issue:** #866
@@ -14763,3 +14764,45 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #490's local measurement and the weekly-run dispatch happen at the tail, after #892. The dispatch serves three stories at once: #868's runner median of 3, #490's runner figure, and #793's AC5 dispatch. The local 50k build waits until the owner frees Docker disk space for #502, which they asked to be told about when it is next.
   **Why:** the Docker VM had about 3 GB free, and a 50k build or restore filled it before (#868).
   **Issue:** #490, #868, #793, #502
+- **Decision (owner, 2026-11-13):** after #845, the remaining story commits are CI-gated in groups of about five, not one run per story. Groups, in commit order:
+  - G1: #421, #99, #98, #97, #793
+  - G2: #490, #868, #101, #96, #100
+  - G3: #95, #420, #782, #869, #784's option (a)
+  - G4: #872, #884, #886, #877, #873
+  - G5: #889, #885, #888, #887, #892, plus the ledger
+  Each group pushes its last commit, and one CI run there is the full-suite gate for every story in it. A red run is bisected within its group. Each story still passed its own local gate.
+  **Why:** the owner chose "Groups of ~5" when told that one run per story meant about 20 hours of CI (about 50 minutes per run) before #864 and #502. Run time is the bottleneck; every agent's work is already done.
+  **Issue:** M10 (#10)
+- **Decision (Rule 3):** the CI test matrix's `timeout-minutes` went from 50 to 75 (b323a59). `test (integration-i-z)` hit the 50-minute cap twice (runs 43342954693 on #844 and 43403860363 on #845): 34–50 minutes across M10's runs, 37–46 before M10, so runner variance and a shard already near its cap. To put the fix under every queued group, the 27 unpushed commits after 7cbb1d1 were rebased onto it. They were all local; no agent was running; the diff against the old tip is only the timeout change. Old SHAs map to new ones as follows (ledger lines written before the rebase cite the old ones):
+  - 2f112c6 → de7e709
+  - b2c0248 → 1d7da78
+  - 01d318a → 8f1614f
+  - 0b19911 → b7ed813
+  - 6e1cfdc → 7803328
+  - 870fded → f34c081
+  - 0f7280f → 243afc3
+  - 69a57e8 → 1478511
+  - f78d92e → 5bfb3c6
+  - 66cdadb → c203157
+  - 1677716 → 5aeb69d
+  - bd1bef0 → 79f034e
+  - 9414b55 → bae8f64
+  - f18f20c → cbaadf5
+  - 43955fe → 3f0bf23
+  - 67d361c → c6b2f41
+  - 5ed2c7f → 5ebae67
+  - 6e4066f → 1a8ae2b
+  - 0f48fa4 → 78ba883
+  - 6f65fd0 → 34819e1
+  - 823940b → e63be28
+  - 5a936f9 → e777e0f
+  - 64c396a → 7084198
+  - f3d1114 → 7f7157a
+  - 38b7765 → a3df93e
+  - 1329c57 → 8b39a8e
+  - d94a359 → ac1d85e
+  **Why:** a cancel is re-run once, and on recurrence it is fixed (a recurring cap is a blocker for every later run). #845's run (43403860363, attempt 1, cancelled) is not re-run: G1's run on 7803328 includes #845's commit and the fix, so it stands for #845 too.
+  **Issue:** #864, #845
+- **Decision (method):** inline pushes use `"${sha}:refs/heads/…"`. In zsh, `$sha:refs` applies the `:r` modifier and mangles the refspec ("src refspec …efs/heads/… does not match any"). That caused the failed first pushes of #843 and G1, and both were retried correctly. The helper scripts run under bash and were not affected.
+  **Why:** recorded so the two failed pushes have a cause on file.
+  **Issue:** M10 (#10)

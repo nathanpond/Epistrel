@@ -206,6 +206,13 @@ class Episodic(ProfileModel):
         default=3_000, ge=100, le=200_000
     )
     """The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7)."""
+    profile_scope: Annotated[Literal["message", "full"], BEHAVIORAL, PROSPECTIVE, RELEVANT] = (
+        "message"
+    )
+    """Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those
+    whose other end is one of the message's people (its resolved entities, the located
+    episodes' participants, and the speaker); ``full``, every current relationship of the
+    character, as the profile route answers it."""
 
 
 class Consolidation(ProfileModel):

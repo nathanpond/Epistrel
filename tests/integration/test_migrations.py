@@ -1413,3 +1413,44 @@ def test_every_prunable_guard_keeps_the_prune_exemption(scratch_database: str) -
             assert not missing, f"{target}: guards without 0126's prune exemption: {missing}"
     finally:
         engine.dispose()
+
+
+def test_the_profile_scope_joins_the_profile_defaults(scratch_database: str) -> None:
+    """0155 (#905): ``memory.episodic.profile_scope`` joins a deployment's ``profile_defaults``
+    at the schema's default, ``message``, where the document does not name it, and the rest of
+    the document is kept; a deployment that names it keeps its value; the downgrade removes it.
+
+    Complement asserted: the deployment at 0154 is made not to name the setting first, so the
+    upgrade is what adds it."""
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0154")
+    engine = make_sync_engine(scratch_database)
+
+    def defaults() -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text("SELECT profile_defaults FROM deployment_state"))
+
+    def store(document: Any) -> None:
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE deployment_state SET profile_defaults = CAST(:d AS jsonb)"),
+                {"d": json.dumps(document)},
+            )
+
+    try:
+        before = defaults()
+        before["memory"]["episodic"].pop("profile_scope", None)
+        store(before)
+        command.upgrade(cfg, "0155")
+        after = defaults()
+        assert after["memory"]["episodic"].pop("profile_scope") == "message"
+        assert after == before
+        command.downgrade(cfg, "0154")
+        assert defaults() == before
+        named = json.loads(json.dumps(before))
+        named["memory"]["episodic"]["profile_scope"] = "full"
+        store(named)
+        command.upgrade(cfg, "0155")
+        assert defaults() == named
+    finally:
+        engine.dispose()

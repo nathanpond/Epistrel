@@ -14911,3 +14911,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** Ran the pipelined-style targeted set before the PR: every test file that reads the changed modules (71 files: 1,273 passed, 5 deselected, 1 h 06 m), plus every repo gate. The full suite runs in CI.
   **Why:** `exec.full_suite` is `sequential` for this project, but the full local suite takes about 10 hours (logged 2026-11-11), so CI's sharded run on the PR is the full-suite gate, as for the rest of M10.
   **Issue:** #905, #906, #908
+- **Fix (CI attempt 1 of 3, PR #909):** `lint`, `test (rest)` and `test (eval-harness)` failed on one cause: `docs/evals/INDEX.md` was stale because the `profile_scope` default changed all four presets' fingerprints. I regenerated it. All four presets were already uncertified, so no certification status changed. A quality run at the new fingerprint is still to do.
+  **Why:** Rule 3 (blocker). The targeted test set selected files by the names of the changed modules, which missed the evals index check.
+  **Issue:** #905

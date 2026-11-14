@@ -75,3 +75,34 @@ async def test_a_cached_scale_fixture_keeps_its_player(scale_1k: ScaleRun, tmp_p
     assert restored.story == story
     assert restored.story.player == story.player
     assert list(restored.story.characters.items()) == list(story.characters.items())
+
+
+def _fake(directory: Path, name: str, version: str) -> Path:
+    path = directory / name
+    path.write_text(f"#!/bin/sh\necho '{name} (PostgreSQL) {version}'\n")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.parametrize(("version", "runs"), [("16.15", "path"), ("18.1", "docker")])
+def test_the_cache_restores_with_the_servers_major_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str, runs: str
+) -> None:
+    """The weekly run 43517905000: the runner's ``pg_dump``, newer than the test server's 16,
+    wrote a dump whose restore into PG16 failed (``unrecognized configuration parameter
+    "transaction_timeout"``). PATH's ``pg_dump``/``pg_restore`` run only at ``PG_MAJOR``;
+    otherwise the server image's own run through ``docker``.
+
+    Complement asserted: ``PG_MAJOR`` is ``PG_IMAGE``'s, so the two cannot drift apart."""
+    assert scale.PG_IMAGE.endswith(f":pg{scale.PG_MAJOR}")
+    local = {tool: _fake(tmp_path, tool, version) for tool in ("pg_dump", "pg_restore")}
+    _fake(tmp_path, "docker", "0")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    url = "postgresql+psycopg://u:p@localhost:5432/db"
+    for tool, path in local.items():
+        argv, _ = scale._pg_argv(tool, url, "--no-owner")
+        if runs == "path":
+            assert argv[0] == str(path), argv
+        else:
+            assert argv[:2] == ["docker", "run"], argv
+            assert argv[argv.index(scale.PG_IMAGE) + 1] == tool, argv

@@ -14872,3 +14872,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #902 analyses the fixture after a fresh build too, not only after a cache restore.
   **Why:** the AC's goal is that "a cache hit and a fresh build start with the same statistics"; analysing both is how they do.
   **Issue:** #902
+- **Decision:** ADR-192 and the completion comments report the built code's measurement, not the spike's. Paired A/B on the built branch (4 rounds × 300 queries, 50k fixture): total p95 234.2 → 202.8 ms (−31.8), p50 −30.7, 0 of 200 answers differ. Per change alone (2 rounds each): memo −17.3, canon −3.9, alias −1.4 (p50 −17.0), lexical −2.3 (lexical stage p95 79.5 → 53.0). The spike projected −53.8. The canon shortfall is the query mix, not the build: P-01's retrievals ask about 2 subjects at the median (max 10), and `canon_context` alone measured p95 36.0 → 28.3 ms and 4 → 2 statements. Projected runner p95 ≈ 223–333 ms: #868's target is likely still missed after these.
+  **Why:** the ADR records what the code does; the spike's figure came from a prototype pass whose per-change gains included noise.
+  **Issue:** #868, #898, #899, #900, #901

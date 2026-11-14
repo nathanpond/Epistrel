@@ -1425,7 +1425,44 @@ async def read_retrieve(
     player) just after turn ``as_of`` (default the head; 422 outside ``0..head``), for
     ``viewpoint`` resolved as every read resolves it, which must be ``omniscient`` (403
     ``omniscient_required``: the read shows ranking over records a character may not see). It
-    touches no memory's ``last_accessed_at``. 404 for an unknown story."""
+    touches no memory's ``last_accessed_at``. 404 for an unknown story.
+
+    #898: the call runs in a turn's per-call scopes (``registry.turn_cache`` and
+    ``turn_memo.scope``, as ``structured.pipeline.respond`` opens them), so it reads the story's
+    configuration, registry, merges and time basis once, not once per stage. Nothing is
+    remembered past the call; inside a caller's scope, the caller's stands."""
+    from epistrel.core import turn_memo
+    from epistrel.core.propositions.registry import turn_cache as registry_turn_cache
+
+    with registry_turn_cache(), turn_memo.scope():
+        return await _read_retrieve(
+            conn,
+            story_id,
+            q=q,
+            viewpoint=viewpoint,
+            as_of=as_of,
+            actor_character_id=actor_character_id,
+            embed=embed,
+            embed_batch=embed_batch,
+            lexical=lexical,
+            include_quarantined=include_quarantined,
+        )
+
+
+async def _read_retrieve(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    q: str,
+    viewpoint: str | None,
+    as_of: int | None,
+    actor_character_id: str | None,
+    embed: Embedder | None,
+    embed_batch: BatchEmbedder | None,
+    lexical: LexicalSearch | None,
+    include_quarantined: bool,
+) -> RetrievalResult:
+    """``read_retrieve``'s body, inside its scopes."""
     from epistrel.core.errors import StoryNotFound
     from epistrel.core.settings_schema import StorySettings
     from epistrel.core.tables import characters

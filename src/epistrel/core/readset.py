@@ -766,20 +766,21 @@ class KeyedLookup:
         ``viewpoint`` may read them (#133's ``canon_at``, its visibility filter included), up
         to ``limit`` per subject, each recorded as a retrieved row (``facts``, its ``tx_from``):
         canon a retrieval puts in a render's context (#141), never keyed. Ordered by subject
-        as given, then fact id."""
+        as given, then fact id. #899: every subject in one statement (``canon_at_each``), so
+        the count does not grow with the subjects (#451)."""
         from epistrel.core.canon import facts as canon
 
         found: dict[str, Fact] = {}
-        for subject in dict.fromkeys(subjects):
-            rows = await canon.canon_at(
-                self.conn,
-                story_id,
-                story_time=story_time,
-                through_position=through_position,
-                viewpoint=viewpoint,
-                subject=subject,
-                limit=limit,
-            )
+        each = await canon.canon_at_each(
+            self.conn,
+            story_id,
+            subjects,
+            story_time=story_time,
+            through_position=through_position,
+            viewpoint=viewpoint,
+            limit=limit,
+        )
+        for rows in each.values():
             for fact in sorted(rows, key=lambda f: f.id):
                 found.setdefault(fact.id, fact)
         for fact in found.values():

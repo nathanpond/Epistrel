@@ -172,7 +172,7 @@ async def attached(conn: AsyncConnection, table: str = PARENT) -> list[str]:
 async def count_rows(db: AsyncEngine, table: str, where: str = "TRUE") -> int:
     """The rows of public ``table`` matching the fixed SQL predicate ``where``. A partitioned
     table is counted ``PARTITIONS_PER_TRANSACTION`` partitions to a transaction: one statement
-    over ``memories`` locks every story's partition and its indexes (15 locks a story) until it
+    over ``memories`` locks every story's partition and its indexes (16 locks a story) until it
     commits, which exhausts the shared lock table on a database of a thousand stories."""
     async with db.connect() as conn:
         partitions = await attached(conn, table)

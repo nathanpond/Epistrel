@@ -35,7 +35,8 @@ COVERED_STORIES = 6400
 DEFAULT_MAX_CONNECTIONS = 100
 """Postgres's default ``max_connections``; ``max_prepared_transactions`` defaults to 0."""
 LOCKS_PER_STORY = 16
-"""ADR-188's lock slots per story: a partition and its 14 indexes, rounded up."""
+"""ADR-188's lock slots per story: a partition and its 15 indexes (ADR-192, #900: the 15th,
+``ix_memories_hot_newest``, used the slot ADR-188 rounded up to)."""
 MIN_LOCKS = 64
 SHM_BASE_MB = 64
 SHM_MB_PER_1000_STORIES = 8

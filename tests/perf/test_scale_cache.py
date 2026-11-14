@@ -1,18 +1,19 @@
 """The scale fixture's cache keeps the cast's order (#521): a fixture restored from its sidecar
 (``scale.read_cached``) has the same ``ScaleStory`` as the one built, so its ``player`` is the
 player, not the alphabetically first character, and every name map (``queries`` and
-``memory_plan`` walk them in order) comes back in the order it was built in."""
+``memory_plan`` walk them in order) comes back in the order it was built in. A restored
+fixture is analysed before it is used (#902)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from epistrel.core.tables import characters
 from epistrel.testing.fixtures import knowledge, scale
-from tests.perf.scale_support import ScaleRun
+from tests.perf.scale_support import CACHE_VAR, ScaleRun, scale_database
 
 
 def _round_trip(tmp_path: Path, fixture: scale.ScaleFixture) -> scale.ScaleFixture:
@@ -75,6 +76,33 @@ async def test_a_cached_scale_fixture_keeps_its_player(scale_1k: ScaleRun, tmp_p
     assert restored.story == story
     assert restored.story.player == story.player
     assert list(restored.story.characters.items()) == list(story.characters.items())
+
+
+@pytest.mark.perf_smoke
+async def test_a_restored_scale_fixture_is_analysed(
+    scale_1k: ScaleRun, pg_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#902: ``pg_restore`` brings back no planner statistics, so a fixture restored from the
+    cache is ``ANALYZE``d before the run starts: ``memories`` (its story partitions) and
+    ``facts`` have a ``last_analyze``. Without it the planner took the 50k story for one row."""
+    scale.write_cached(tmp_path, scale_1k.url, scale_1k.fixture)
+    monkeypatch.setenv(CACHE_VAR, str(tmp_path))
+    async with scale_database(pg_url, scale_1k.fixture.spec) as run:
+        assert run.restored
+        async with run.db.connect() as conn:
+            analysed = {
+                str(r.relname): r.last_analyze
+                for r in await conn.execute(
+                    text(
+                        "SELECT relname, last_analyze FROM pg_stat_user_tables "
+                        "WHERE relname = 'facts' OR relname LIKE 'memories%'"
+                    )
+                )
+            }
+    assert analysed.get("facts") is not None, analysed
+    partitions = {k: v for k, v in analysed.items() if k.startswith("memories_")}
+    assert partitions, analysed
+    assert all(v is not None for v in partitions.values()), analysed
 
 
 def _fake(directory: Path, name: str, version: str) -> Path:

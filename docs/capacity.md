@@ -4,11 +4,11 @@
 
 P-06's vector-scale curve (NFR-SCALE-1). Capacity is claimed **only for the measured range**: up to ~50k memories in one story, where NFR-PERF-1's p95 ≤ 150 ms applies. That budget is gated only on the reference host (ADR-190): on any other host, the GitHub-hosted runner included, the figures are reported, not gated, and the Gated column says so. The 100k point is measured and reported but never gated. Any larger figure is an unvalidated estimate until a benchmark measures it. P-10 (`python -m epistrel.tools.capacity --up-to N`, informational and run by hand) extends the curve and writes `docs/capacity-exploration.md`. The dev/hobby concurrency target (NFR-PERF-4: 10 stories in active play on the reference host) is a separate statement, not a capacity figure.
 
-**Host: github-runner (not the reference host).** Postgres 16.15, pgvector 0.8.7, `shared_buffers` 128MB, `maintenance_work_mem` 1GB and no parallel workers for each index build (4 vCPU, 15.6 GB RAM). One story, 2,000 events, 200 queries a step; the index is rebuilt at each step the way a pin builds it.
+**Host: github-runner (not the reference host).** Postgres 16.16, pgvector 0.8.7, `shared_buffers` 128MB, `maintenance_work_mem` 1GB and no parallel workers for each index build (4 vCPU, 15.6 GB RAM). One story, 2,000 events, 200 queries a step; the index is rebuilt at each step the way a pin builds it.
 
 | Memories | HNSW build (s) | Index size (MiB) | p50 (ms) | p95 (ms) | p99 (ms) | Gated | Within 150 ms |
 |---|---|---|---|---|---|---|---|
-| 1,000 | 0.2 | 3.9 | 129.1 | 157.5 | 243.2 | no (reported) | **no** |
-| 10,000 | 5.0 | 39.1 | 155.5 | 185.2 | 276.9 | no (reported) | **no** |
-| 50,000 | 43.1 | 195.3 | 227.3 | 271.9 | 365.0 | no (reported) | **no** |
-| 100,000 | 94.2 | 390.6 | 259.1 | 313.3 | 374.7 | no (reported) | **no** |
+| 1,000 | 0.4 | 3.9 | 60.4 | 85.3 | 187.9 | no (reported) | yes |
+| 10,000 | 6.9 | 39.1 | 81.5 | 109.0 | 159.8 | no (reported) | yes |
+| 50,000 | 53.2 | 195.3 | 119.7 | 161.2 | 228.7 | no (reported) | **no** |
+| 100,000 | 118.5 | 390.6 | 155.2 | 264.7 | 298.8 | no (reported) | **no** |

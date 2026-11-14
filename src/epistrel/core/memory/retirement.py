@@ -981,7 +981,7 @@ async def reconcile(conn: AsyncConnection, story_id: str) -> bool:
 async def stories_with_memories(conn: AsyncConnection) -> list[str]:
     """The stories the reconcile's fan-out considers: every story, and every story with an open
     episode. #784: one statement over every story's ``memories`` partition would lock each one
-    and its indexes (15 locks a story), which exhausts the shared lock table on a deployment
+    and its indexes (16 locks a story), which exhausts the shared lock table on a deployment
     of a thousand stories, so whether a story has a memory is asked per story, inside its own
     partition (``needs_reconcile``), in the fan-out's per-story transaction."""
     found = await conn.scalars(

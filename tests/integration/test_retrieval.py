@@ -29,7 +29,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core import embeddings
+from epistrel.core import embeddings, turn_memo
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.context import RequestContext
 from epistrel.core.embeddings import HNSW_INDEX
@@ -61,6 +61,7 @@ from epistrel.core.resolution.time import (
 from epistrel.core.resolution.types import MentionKind, ReasonCode, ResolvedTime, Uncertain
 from epistrel.core.retrieval import pipeline
 from epistrel.core.retrieval.assemble import ContextItem, Tier
+from epistrel.core.retrieval.lexical import TsvectorLexicalSearch
 from epistrel.core.retrieval.search import vector_search
 from epistrel.core.settings_schema import DEFAULT_HNSW_EF_SEARCH
 from tests import canon_support as c
@@ -752,6 +753,243 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
         assert await r.uses_index(db, plan, f"ix_memories_{index}"), plan
 
 
+async def _canon_cast(db: AsyncEngine) -> tuple[c.World, str, str]:
+    """A story for ``canon_context``'s batching (#899): Bobby, Ann, Cal and a stranger the
+    author merged into Bobby (a ``same_as`` amendment part, #481), each with two placements
+    in time and an open ``admires`` fact about every other person; one of Cal's facts only
+    Bobby may read. Answers the world, the stranger and the ``admires`` predicate."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from epistrel.core.propositions.vocabulary import SAME_AS
+    from tests import amendment_support as am
+
+    w = await c.world(db)
+    story = w.story_id
+    async with db.begin() as conn:
+        stranger = await store.add_entity(conn, story, "person", "Stranger")
+    admires = await c.auto_predicate(db, story, "admires")
+    people = [*w.people.values(), stranger]
+    places = list(w.places.values())
+    for i, who in enumerate(people):
+        await c.commit(db, story, c.at(who, places[i % 3], 0, 10))
+        await c.commit(db, story, c.at(who, places[(i + 1) % 3], 10, None))
+        for other in people:
+            if other != who:
+                await c.commit(db, story, c.at(who, other, None, None, predicate=admires))
+    await c.commit(
+        db,
+        story,
+        c.at(w.people["Cal"], places[2], None, None, predicate=admires),
+        visibility=canon_facts.Visibility(scope="characters", characters=(w.characters["Bobby"],)),
+    )
+    same = Proposition(
+        subject_id=w.people["Bobby"],
+        predicate_id=SAME_AS,
+        object_id=stranger,
+        valid_time=Interval.of(None, None),
+    )
+    await am.amend(db, story, [PropositionPartDraft(same)])
+    return w, stranger, admires
+
+
+async def _canon_each_subject(
+    db: AsyncEngine, story_id: str, subjects: Sequence[str], **kw: Any
+) -> tuple[list[canon_facts.Fact], dict[Any, Any]]:
+    """``canon_context``'s answer and retrieved rows as it read them before #899: a ``canon_at``
+    per subject."""
+    found: dict[str, canon_facts.Fact] = {}
+    async with db.connect() as conn:
+        for subject in dict.fromkeys(subjects):
+            rows = await canon_facts.canon_at(conn, story_id, subject=subject, **kw)
+            for fact in sorted(rows, key=lambda f: f.id):
+                found.setdefault(fact.id, fact)
+    retrieved = {("facts", f.id): f.tx_from.isoformat() for f in found.values()}
+    return list(found.values()), retrieved
+
+
+async def _canon_context(
+    db: AsyncEngine, story_id: str, subjects: Sequence[str], **kw: Any
+) -> tuple[list[canon_facts.Fact], dict[Any, Any], int]:
+    read_set = StructuredReadSet()
+    with r.statements(db) as seen:
+        async with db.connect() as conn:
+            found = await KeyedLookup(conn, read_set).canon_context(
+                story_id, subjects=subjects, **kw
+            )
+    retrieved = {k: v.version for k, v in read_set.retrieved.items()}
+    return found, retrieved, len(seen)
+
+
+async def test_canon_context_reads_every_subject_in_one_statement(scratch: Scratch) -> None:
+    """#899 (#451): ``canon_context`` answers what a ``canon_at`` per subject answers (the same
+    facts in the same order, the same retrieved rows), for many subjects with an author's
+    merge, a character's viewpoint and a per-subject ``limit``, in a number of statements that
+    does not grow with the subjects.
+
+    Complement asserted: the merge, the viewpoint and the limit each change the answer, so the
+    comparison sees them."""
+    db = scratch.db
+    w, stranger, _ = await _canon_cast(db)
+    story = w.story_id
+    bobby, ann, cal = w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+    subjects = [cal, bobby, ann, stranger, bobby]
+    shapes: dict[str, list[str]] = {}
+    for name, kw in (
+        ("omniscient", {"story_time": 5}),
+        ("later", {"story_time": 15}),
+        ("limited", {"story_time": 15, "limit": 2}),
+        ("as_ann", {"story_time": 15, "viewpoint": w.viewpoint("Ann")}),
+        ("as_bobby", {"story_time": 15, "viewpoint": w.viewpoint("Bobby"), "limit": 3}),
+    ):
+        expected, expected_rows = await _canon_each_subject(db, story, subjects, **kw)
+        found, found_rows, _ = await _canon_context(db, story, subjects, **kw)
+        assert [f.id for f in found] == [f.id for f in expected], name
+        assert found == expected, name
+        assert found_rows == expected_rows, name
+        shapes[name] = [f.id for f in found]
+    assert shapes["limited"] != shapes["later"]
+    assert shapes["as_ann"] != shapes["as_bobby"]
+    merged, _, _ = await _canon_context(db, story, [bobby], story_time=15)
+    assert {f.subject_id for f in merged} == {bobby, stranger}  # the merge reads as one
+    _, _, one = await _canon_context(db, story, [cal], story_time=15)
+    _, _, four = await _canon_context(db, story, [cal, ann, bobby, stranger], story_time=15)
+    assert one == four, (one, four)
+
+
+async def test_canon_context_reads_an_amended_subject_through_its_parts(
+    scratch: Scratch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#899 (#221, FR-STORE-20): read through a position, a subject whose versions an amendment
+    part wrote takes ``canon_at``'s per-subject path (the eligible-part logic), and the answer
+    is the per-subject one. An amendment placing Ann in the garden after turn 6 is out at
+    turn 4 (her own placement stands) and in at turn 8.
+
+    Complement asserted: the subjects no part wrote are read by the one statement alone."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from tests import amendment_support as am
+
+    db = scratch.db
+    w, _, _ = await _canon_cast(db)
+    story = w.story_id
+    ann, cal = w.people["Ann"], w.people["Cal"]
+    await am.play(db, story, 8, start=1)
+    bound = {"relation": "after", "turn": 6}
+    garden = c.at(ann, w.places["garden"], 10, None)
+    await am.amend(db, story, [PropositionPartDraft(garden, position_bound=bound)])
+    real = canon_facts.canon_at
+    asked: list[str | None] = []
+
+    async def spy(*a: Any, **kw: Any) -> list[canon_facts.Fact]:
+        asked.append(kw.get("subject"))
+        return await real(*a, **kw)
+
+    places: dict[int, set[str]] = {}
+    for turn in (4, 8):
+        kw = {"story_time": 15, "through_position": (turn, 0)}
+        expected, expected_rows = await _canon_each_subject(db, story, [cal, ann], **kw)
+        monkeypatch.setattr(canon_facts, "canon_at", spy)
+        asked.clear()
+        found, found_rows, _ = await _canon_context(db, story, [cal, ann], **kw)
+        monkeypatch.setattr(canon_facts, "canon_at", real)
+        assert found == expected, turn
+        assert found_rows == expected_rows, turn
+        assert asked == [ann], (turn, asked)
+        places[turn] = {
+            str(f.proposition.object_id)
+            for f in found
+            if f.subject_id == ann and f.predicate_id == c.LOCATED_AT
+        }
+    assert w.places["garden"] not in places[4]
+    assert w.places["garden"] in places[8]
+
+
+ALIAS_K = 50
+"""The alias arm's ``k`` (``Params.lexical_k``'s default)."""
+
+
+async def test_the_alias_arm_walks_the_newest_hot_memories(
+    scratch: Scratch, long_story: r.Story
+) -> None:
+    """#900 (NFR-PERF-1): when the aliases match most of the story (every filler names one of
+    the four), the alias arm's newest-first statement reads ``ix_memories_hot_newest`` under its
+    ``Limit`` and stops at ``k``, never scanning all the story's memories and sorting them. On the
+    planner's own statistics (``EXPLAIN ANALYZE``, nothing priced out).
+
+    Complement asserted: an alias held by a few memories is reached through the ``search`` GIN
+    index instead."""
+    db = scratch.db
+    story = long_story.story_id
+    async with db.begin() as conn:
+        await conn.execute(text("ANALYZE memories"))
+
+    async def plan(aliases: Sequence[str]) -> tuple[str, list[str]]:
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                found = await pipeline._alias_arm(
+                    conn, story, aliases, through=(r.TURNS + 1, 0), k=ALIAS_K
+                )
+        ((sql, params),) = seen.reading("memories")
+        async with db.connect() as conn:
+            raw = await conn.get_raw_connection()
+            cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+            await cursor.execute("EXPLAIN (ANALYZE, COSTS OFF) " + sql, params)
+            rows = await cursor.fetchall()
+            await conn.rollback()
+        return "\n".join(str(row[0]) for row in rows), found
+
+    common, found = await plan(["Bobby", "Ann", "Cal", "Dan"])
+    assert len(found) == ALIAS_K
+    assert common.lstrip().startswith("Limit"), common
+    assert await r.uses_index(db, common, "ix_memories_hot_newest"), common
+    assert "Seq Scan" not in common, common
+    rare, found = await plan(["Quillon Vexby"])
+    assert found
+    assert await r.uses_index(db, rare, "ix_memories_search"), rare
+
+
+async def test_the_lexical_statement_runs_with_four_workers(
+    scratch: Scratch, long_story: r.Story
+) -> None:
+    """#901: the lexical arm's ranked statement runs with ``max_parallel_workers_per_gather``
+    at ``PARALLEL_WORKERS`` (4), set transaction-local around it alone: after a retrieval the
+    transaction reads the value it had before (here 1, set by the caller).
+
+    Complement asserted: the setting was 4 while the ranked statement ran."""
+    from epistrel.core.retrieval.lexical import PARALLEL_WORKERS
+
+    db = scratch.db
+    story = long_story.story_id
+    during: list[str] = []
+    real = TsvectorLexicalSearch._ranked
+
+    async def ranked(self: Any, conn: Any, *a: Any, **kw: Any) -> Any:
+        during.append(
+            str(
+                await conn.scalar(text("SELECT current_setting('max_parallel_workers_per_gather')"))
+            )
+        )
+        return await real(self, conn, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(TsvectorLexicalSearch, "_ranked", ranked)
+        async with db.begin() as conn:
+            await conn.execute(text("SET LOCAL max_parallel_workers_per_gather = 1"))
+            found = await pipeline.retrieve(
+                conn,
+                story,
+                pipeline.RetrievalQuery(QUERY),
+                embed=_vector(),
+                lexical=TsvectorLexicalSearch(),
+                touch=False,
+            )
+            after = await conn.scalar(
+                text("SELECT current_setting('max_parallel_workers_per_gather')")
+            )
+    assert found.memories
+    assert during
+    assert set(during) == {str(PARALLEL_WORKERS)}, during
+    assert after == "1"
+
+
 def _index_conditions(plan: str) -> str:
     return "\n".join(line for line in plan.splitlines() if "Index Cond" in line)
 
@@ -869,6 +1107,62 @@ async def test_the_debugging_read_is_omniscient_only(scratch: Scratch) -> None:
         "/stories/01J9Z8Q4N5V6W7X8Y9Z0A1B2C9/retrieve", params=params, headers=headers
     )
     assert missing.status_code == 404
+
+
+def _answer(found: pipeline.RetrievalResult) -> tuple[Any, ...]:
+    """What a retrieval answers, without its timings: memories and their scores, episodes,
+    canon, profiles and the assembled context."""
+    return (
+        [(m.id, m.score) for m in found.memories],
+        [e.id for e in found.episodes],
+        [(f.id, f.tx_from) for f in found.canon],
+        [(p.entity.entity_id, p.relationships, p.placement, p.inventory) for p in found.profiles],
+        found.context.items,
+        found.resolution,
+    )
+
+
+async def test_the_debugging_read_runs_in_per_call_scopes(scratch: Scratch) -> None:
+    """#898: ``read_retrieve`` runs in a turn's per-call scopes (``registry.turn_cache`` and
+    ``turn_memo.scope``): it answers what the same read answers outside them (memories,
+    scores, episodes, canon, profiles, context), in fewer statements, and remembers nothing
+    past the call (no scope is open afterwards, and a second call issues them all again).
+
+    Complement asserted: the body run outside the scopes re-reads, so it issues more
+    statements."""
+    db = scratch.db
+    story = await r.build_story(db)
+    await _plant_occasion(db, story)
+    await r.set_vectors(db, story.story_id, NEAR)
+
+    async def read(body: Any) -> tuple[pipeline.RetrievalResult, int]:
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                found = await body(
+                    conn,
+                    story.story_id,
+                    q=QUERY,
+                    viewpoint="omniscient",
+                    as_of=None,
+                    actor_character_id=None,
+                    embed=_vector(),
+                    embed_batch=None,
+                    lexical=None,
+                    include_quarantined=False,
+                )
+        return found, len(seen)
+
+    scoped, scoped_n = await read(pipeline.read_retrieve)
+    assert not turn_memo.active()
+    unscoped, unscoped_n = await read(pipeline._read_retrieve)
+    assert _answer(scoped) == _answer(unscoped)
+    assert scoped.memories
+    assert scoped.canon
+    assert scoped.profiles
+    assert scoped_n < unscoped_n, (scoped_n, unscoped_n)
+    again, again_n = await read(pipeline.read_retrieve)
+    assert _answer(again) == _answer(scoped)
+    assert again_n == scoped_n
 
 
 async def test_context_sources_fill_tier_one(scratch: Scratch) -> None:

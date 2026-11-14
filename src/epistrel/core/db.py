@@ -14,7 +14,7 @@ SESSION_OPTIONS = "-c plan_cache_mode=force_custom_plan"
 a statement it has run five times, and Postgres may then plan it generically, as it may the
 cached plan of a foreign key's check: a generic plan of a statement on partitioned ``memories``
 cannot prune to the story's partition when planned, and locks every partition and its indexes
-when run (15 locks a story), which exhausts the shared lock table once a deployment holds
+when run (16 locks a story), which exhausts the shared lock table once a deployment holds
 about a thousand stories."""
 
 

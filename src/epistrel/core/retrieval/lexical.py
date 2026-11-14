@@ -104,6 +104,11 @@ class LexicalSearch(Protocol):
     ) -> list[tuple[str, float]]: ...
 
 
+PARALLEL_WORKERS = 4
+"""#901: the lexical statement's ``max_parallel_workers_per_gather``."""
+_WORKERS = "max_parallel_workers_per_gather"
+
+
 class TsvectorLexicalSearch:
     """PostgreSQL full-text search over ``memories.text`` (see the module docstring)."""
 
@@ -124,6 +129,32 @@ class TsvectorLexicalSearch:
         tiers = [tier.value for tier in filters.tiers]
         if not tiers:
             return []
+        # #901: every word of a query matches most of a story's memories, so the ranked
+        # statement is a parallel scan of the story's partition; it runs with
+        # ``PARALLEL_WORKERS`` workers a gather (Postgres's default is 2), transaction-local
+        # and its prior value restored, as ``vector_search`` sets its own. It changes how the
+        # plan runs, never its rows; the server's ``max_parallel_workers`` still caps it.
+        prior = await conn.scalar(text(f"SELECT current_setting('{_WORKERS}')"))
+        await conn.execute(
+            text(f"SELECT set_config('{_WORKERS}', :n, true)"), {"n": str(PARALLEL_WORKERS)}
+        )
+        try:
+            return await self._ranked(conn, story_id, query, k, filters, kinds, tiers)
+        finally:
+            await conn.execute(
+                text(f"SELECT set_config('{_WORKERS}', :n, true)"), {"n": str(prior)}
+            )
+
+    async def _ranked(
+        self,
+        conn: AsyncConnection,
+        story_id: str,
+        query: str,
+        k: int,
+        filters: LexicalFilters,
+        kinds: list[str] | None,
+        tiers: list[str],
+    ) -> list[tuple[str, float]]:
         found = await conn.execute(
             text(
                 "SELECT m.id, ts_rank(m.search, q) AS rank "  # noqa: S608 - fixed fragments only
@@ -174,6 +205,7 @@ def lexical_backend(name: str) -> LexicalSearch:
 __all__ = [
     "ANY_WORD_QUERY",
     "BACKENDS",
+    "PARALLEL_WORKERS",
     "TEXT_SEARCH_CONFIGURATION",
     "LexicalFilters",
     "LexicalSearch",

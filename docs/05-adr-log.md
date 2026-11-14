@@ -25,7 +25,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
-| FR-RET | §8 | 129, 167 |
+| FR-RET | §8 | 129, 167, 192 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
@@ -47,7 +47,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 017, 129, 158, 162 |
-| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190 |
+| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185 |
@@ -251,10 +251,11 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
 | 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
-| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Amended | 191 |
+| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Amended | 191, 192 |
 | 189 | A closed fact version stores its closers, and canon reads find them by key | Current | — |
 | 190 | The engine-only latency budgets are gated on the reference host only and reported elsewhere | Current | — |
 | 191 | The compose database ships a lock table sized for 6,400 stories, and the test servers run it | Current | — |
+| 192 | A retrieval reads its configuration once, its canon in one statement, and its alias arm by a newest-first index | Current | — |
 
 ---
 
@@ -2028,6 +2029,7 @@ Tuning and its exit certification come after every milestone that may change a p
 ### ADR-188 — Memories' operation key names the story, and the lock table is sized for deployment-wide changes
 **Status:** Accepted. Amends ADR-187 (the foreign key; the scale consequence).
 **Amended by:** ADR-191 — `docker-compose.yml` ships `max_locks_per_transaction = 1024` and a 128 MB `/dev/shm`, which cover 6,400 stories by this ADR's rule, and every test server runs the same value.
+**Amended by:** ADR-192 — a story's partition now has 15 indexes (`ix_memories_hot_newest`, #900), 16 relations: the rule's 16 lock slots a story still hold, with no rounding left.
 **Context:** CI on #784 (run 43159822725) failed with `out of shared memory` (`HINT: You might need to increase max_locks_per_transaction`) in long integration shards and in the eval runner, where one database collects many stories. A statement that cannot prune plans over every partition and locks each one and its 14 indexes, 15 relations a story, until its transaction ends. Postgres's lock table is shared by the whole server and holds about `max_locks_per_transaction × (max_connections + max_prepared_transactions)` locks. Measured on `pgvector/pgvector:pg16` with the defaults (64, 100), one such statement held 7,516 locks at 500 stories and 10,921 at 727, and failed at 1,327. While one transaction holds that many, other transactions fail to take a single lock, so unrelated turns failed too (REST 503 `database_unavailable`). Three paths reached every partition:
 - the foreign-key check a deleted `operations` row runs (`SELECT 1 FROM memories WHERE operation_id = $1 FOR KEY SHARE`), which names no story, on every `DELETE /stories/{id}` (FR-STORE-16), prune and operation cleanup;
 - generic plans: psycopg prepares a statement it has run five times, and the plan cache, the foreign-key check's included, may then plan it generically, and a generic plan cannot prune when planned and locks every partition when run (PostgreSQL 16);
@@ -2092,6 +2094,22 @@ Tuning and its exit certification come after every milestone that may change a p
 - The tests run on the shipped configuration. `tests/integration/test_memory_partition_pruning.py::test_the_test_server_runs_the_shipped_lock_table` reads `SHOW max_locks_per_transaction` on the test database, so a server named by `EPISTREL_TEST_DATABASE_URL` needs the setting too.
 - `test_a_deployment_wide_retype_needs_the_shipped_lock_table`, in the same file, scales the rule down to a server of 5 connections. A retype over the 320 partitions that 1,024 covers there succeeds, and on the default 64 it fails with `out of shared memory`.
 - The larger lock table hides an unpruned statement until about six times as many stories as before. The engine's own statements still name their story, and the pruning registry (`test_hot_statements_stay_in_the_story_s_partition` and its siblings) checks their plans, whatever the lock table's size.
+
+### ADR-192 — A retrieval reads its configuration once, its canon in one statement, and its alias arm by a newest-first index
+**Status:** Accepted. Amends ADR-188 (the lock slots a story).
+**Context:** #868 set a runner target for P-01 (NFR-PERF-1, FR-RET-2), total p95 ≤ 200 ms at 50k memories on `github-runner`, against measured runs of 260 and 352 ms (43483176343, 43535514855) after M10's merge. Spike #897 found no single regression. In the slowest decile of local queries the time was spread over the lexical arm, the profiles, assembly, fusion and the canon. It measured each candidate change in paired rounds within one process on the cached 50k fixture, so machine drift cancelled, and kept those that cut the p95 with every answer unchanged (200 queries compared on memories, scores, canon, profiles and episodes). #868's acceptance criteria let `test_retrieval_cost_is_fixed_and_indexed`'s statement count change only through an ADR.
+**Decision:** Applied by #898–#902.
+- **The debugging read runs in a turn's per-call scopes** (#898). `core.retrieval.pipeline.read_retrieve` (`GET /stories/{id}/retrieve`, `Engine.retrieve`, which P-01 measures) opens `registry.turn_cache()` and `turn_memo.scope()` for the one call, as a structured turn already does around its retrieval. The story's configuration (about five reads a retrieval), the predicate registry, the merges and the time basis are read once a call. Nothing is remembered past the call, and inside a caller's scope the caller's stands. On `test_retrieval.py`'s small story the read issues 62 statements where it issued 80.
+- **`canon_context` reads every subject in one statement** (#899, #451's rule). `core.canon.facts.canon_at_each` is a `UNION ALL` of each subject's `canon_at` selection, with its own `ORDER BY valid_from, id` and `LIMIT`, tagged with the subject's index. The viewpoint is checked once and the merges read once (`merged_classes`). A subject whose versions an amendment part wrote, read through a position, is read again by `canon_at`, so #221's eligible-part logic is unchanged. A retrieval of 10 subjects issued 20–30 canon statements and now issues one, whatever the number of subjects.
+- **The alias arm reads a newest-first index** (#900, migration 0154). `ix_memories_hot_newest` on `memories (story_id, narrative_turn DESC NULLS LAST, beat DESC NULLS LAST) WHERE retrieval_tier = 'hot' AND membership = 'active'`, one per story partition. When the aliases match most of the story, the plan walks the story's hot memories newest first, with an incremental sort of each turn's beats, and stops at `k`: 0.07–0.17 ms where a parallel scan and sort took 19–21 ms. For a rare alias the planner still takes the `search` GIN index. The statement is unchanged.
+- **The lexical arm's ranked statement runs with 4 parallel workers a gather** (#901, `core.retrieval.lexical.PARALLEL_WORKERS`), transaction-local and restored after it, as `vector_search` sets its own settings: about 30 ms → 23 ms at 50k. It changes how the plan runs, never its rows, and the server's `max_parallel_workers` still caps it. #868's ban on scan-setting changes protects the vector arm's recall, which nothing here touches.
+- **A scale fixture is analysed before it is measured** (#902). `tests.perf.scale_support.scale_database` runs `ANALYZE` after it restores the fixture from the cache (and after a fresh build), because `pg_restore` brings back no planner statistics. A cache hit and a fresh build start from the same statistics.
+- A story's partition now has 15 indexes, 16 relations with the table. ADR-188's rule counts 16 lock slots a story (`epistrel.testing.postgres.LOCKS_PER_STORY`), so the rule and ADR-191's 6,400 stories hold, with the rounding slack used. `test_a_deployment_wide_retype_needs_the_shipped_lock_table` passes on the migrated schema. A 16th index amends ADR-188's rule.
+**Alternatives considered:** Raising GC thresholds cut the p95 by about 5 ms, inside the noise. Skipping the per-row visibility check for an omniscient read, and bounding the profile read's rows in SQL, made the p95 no better or worse. A faster JSON decoder for psycopg (orjson) would be a new runtime dependency and needs the owner's approval; it is a candidate if the runner still misses. `ef_search` and the vector arm's scan settings stay as they are (#868).
+**Consequences:**
+- In the spike's paired rounds, the four engine changes together cut P-01's local total p95 from 235.8 to 180.2 ms and the p50 by 39.6 ms, with answers identical on 200 queries. Projected onto the runner (local-to-runner ratios of 1.10–1.64 so far), that is about 198–296 ms. #868 is measured again with weekly dispatches once these land.
+- A retrieval's statements still do not grow with the story's size or its subjects. `test_retrieval_cost_is_fixed_and_indexed` checks the first and `test_canon_context_reads_every_subject_in_one_statement` the second. `test_the_debugging_read_runs_in_per_call_scopes` compares the scoped read with the unscoped one, `test_the_alias_arm_walks_the_newest_hot_memories` reads the new plan, and `test_the_lexical_statement_runs_with_four_workers` checks the setting is restored.
+- Each hot memory insert maintains one more b-tree index.
 
 ---
 

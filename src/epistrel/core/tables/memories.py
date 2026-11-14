@@ -367,6 +367,15 @@ Index(
     ),
 )
 
+# #900 (migration 0154): the alias arm's newest-first read of the hot memories, stopping at k.
+Index(
+    "ix_memories_hot_newest",
+    memories.c.story_id,
+    memories.c.narrative_turn.desc().nulls_last(),
+    memories.c.beat.desc().nulls_last(),
+    postgresql_where=text(f"retrieval_tier = 'hot' AND {active_only_predicate()}"),
+)
+
 MEMORIES = register_derived(DerivedTable(memories))
 """``memories`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap,
 regenerate and fork move its rows with their operations. A memory has a narrative position but

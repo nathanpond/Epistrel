@@ -77,6 +77,7 @@ from sqlalchemy import (
     select,
     text,
     tuple_,
+    union_all,
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, JSONB, Range, array
@@ -1757,6 +1758,76 @@ async def canon_at(
     )
 
 
+async def canon_at_each(
+    conn: AsyncConnection,
+    story_id: str,
+    subjects: Sequence[str],
+    *,
+    story_time: int,
+    through_position: Position | None = None,
+    viewpoint: str = OMNISCIENT,
+    limit: int | None = None,
+) -> dict[str, list[Fact]]:
+    """#899: ``canon_at(subject=s, limit=limit)`` for each of ``subjects`` (merged entities read
+    as one, #481), in one statement whatever their number (#451): a ``UNION ALL`` of each
+    subject's selection, with its own order and ``limit``. The viewpoint is checked once and
+    the merges read once. A subject whose versions an amendment part wrote, read through a
+    position, is read again by ``canon_at`` (#221's eligible-part path). Each subject's facts
+    are in ``canon_at``'s order."""
+    wanted = list(dict.fromkeys(subjects))
+    if not wanted:
+        return {}
+    await check_viewpoint(conn, story_id, viewpoint)
+    classes = await merged_classes(conn, story_id, wanted)
+    f = _CANON
+    branches = []
+    for i, subject in enumerate(wanted):
+        members = classes[subject]
+        where = _canon_where(
+            f,
+            story_id,
+            story_time=story_time,
+            through_position=through_position,
+            viewpoint=viewpoint,
+            subject=subject,
+            subjects=members if len(members) > 1 else None,
+        )
+        query = (
+            _select(f)
+            .add_columns(literal(i).label(_SUBJECT_INDEX))
+            .where(*where)
+            .order_by(f.c.valid_from.nulls_first(), f.c.id)
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        branches.append(select(query.subquery()))
+    rows = list(await conn.execute(branches[0] if len(branches) == 1 else union_all(*branches)))
+    by_subject: dict[int, list[Any]] = {i: [] for i in range(len(wanted))}
+    for row in rows:
+        by_subject[int(row._mapping[_SUBJECT_INDEX])].append(row)
+    found: dict[str, list[Fact]] = {}
+    for i, subject in enumerate(wanted):
+        mine = by_subject[i]
+        if through_position is not None and any(r.amendment_part_id is not None for r in mine):
+            found[subject] = await canon_at(
+                conn,
+                story_id,
+                story_time=story_time,
+                through_position=through_position,
+                viewpoint=viewpoint,
+                subject=subject,
+                limit=limit,
+            )
+            continue
+        mine.sort(key=lambda r: (r.valid_from is not None, r.valid_from or 0, r.id))
+        found[subject] = [_fact_of(r) for r in mine]
+    return found
+
+
+_SUBJECT_INDEX = "subject_index_"
+"""``canon_at_each``'s tag on each row: the index of the subject whose branch read it."""
+
+
 async def canon_as_recorded(
     conn: AsyncConnection,
     story_id: str,
@@ -1853,6 +1924,7 @@ __all__ = [
     "canon",
     "canon_as_recorded",
     "canon_at",
+    "canon_at_each",
     "canon_links",
     "canon_refs",
     "check_viewpoint",

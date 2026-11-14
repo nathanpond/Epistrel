@@ -14830,3 +14830,45 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 3):** the scale fixture's cache dumps and restores with PATH's `pg_dump`/`pg_restore` only when they are the test server's major version (`scale.PG_MAJOR`, 16). Otherwise it uses `pgvector/pgvector:pg16`'s own tools through `docker run`.
   **Why:** the weekly run 43517905000 (`suite: weekly` on main @ 026d0f6, #868's second measurement) failed before measuring anything. Run 43483176343 had dumped the new cache entry with the runner's client, which is newer than 16, and restoring that dump into PG16 failed with `unrecognized configuration parameter "transaction_timeout"`. Every weekly run that hit that cache key would fail the same way. Editing scale.py moves `fixture_version()`, so the bad entry's key is abandoned and the next run rebuilds the cache.
   **Issue:** #868, #490, #793
+- **Decision:** #868's runner target (200 ms P-01 p95, median of 3) is not met after M10's merge: 260.2 and 352.0 ms. There is no profiles regression: locally, M9's profiles stage was slower than main's. The owner asked for a spike, iterated locally in small batches, before any more runner runs. Spike #897 decided on #898 (the debugging read in the turn's memo scopes), #899 (batched `canon_context`), #900 (an alias newest-first index), #901 (lexical with 4 parallel workers) and #902 (`ANALYZE` after a cache restore). Paired local A/B: total p95 235.8 → 180.2 ms, answers identical on 200 queries. Projected runner p95: about 198–296 ms. The five stories are in M10, and #868 is re-measured once they land.
+  **Why:** owner, 2026-11-14: "Create a spike to work this. Test in smaller batches so we aren't taking the hour hit until we think we have some real gains to work with. But spend time coming up with a really good solution."
+  **Issue:** #868, #897, #898, #899, #900, #901, #902
+- **Decision:** #490's local build measured 1,030 s (17.2 min) on main, against the owner's under-15-minute target. It ran while another container was restart-looping, so it is re-measured on an idle machine before it is reported as a miss.
+  **Why:** the measurement's host was loaded; recorded so the figure isn't read as final.
+  **Issue:** #490
+
+## /n8-exec M10 (P-01 stories #898–#902) — 2026-11-14
+
+- **Decision (method):** #898–#902 land on `milestone/m10-p01-perf` (the w868 worktree's branch, renamed), off `origin/main` at 2b3f64f, and merge as their own PR. M10's milestone PR #874 already merged; #895 and #896 set the post-merge pattern.
+  **Why:** M10 stays open until #868 is re-measured; these stories are what it is re-measured on.
+  **Issue:** #898, #899, #900, #901, #902
+- **Decision (method):** as in this milestone's first run, the full-suite gate is CI's sharded run on the PR. Locally: every test module that reads a changed file (`test_retrieval.py`, `test_canon_closing_marker.py`, `test_memory_partition_pruning.py`, `test_scale_cache.py`, the readset, canon and migration tests), Q-01/Q-03, ruff, format, mypy, lint-imports and the gates.
+  **Why:** the full local suite takes about 10 hours (logged 2026-11-11).
+  **Issue:** #898–#902
+- **Decision:** #898–#901 share one commit. They share `tests/integration/test_retrieval.py`'s new tests and ADR-192, which records all four (and #902). #902's harness change is its own commit.
+  **Why:** the skill allows one commit carrying several `Refs` when two stories change the same file inseparably.
+  **Issue:** #898, #899, #900, #901
+- **Decision:** #898's scopes are opened in `core.retrieval.pipeline.read_retrieve`, not `Engine.retrieve`, so the REST route and the library read both get them. The body moved to `_read_retrieve`, which the equivalence test calls as the unscoped read.
+  **Why:** the AC allows either; the core function is the one both callers go through.
+  **Issue:** #898
+- **Decision:** No ADR stated a literal retrieval statement count: `test_retrieval_cost_is_fixed_and_indexed` asserts a small and a large story issue the same count, which still holds. ADR-192 is a new ADR that records the new counts (62 statements where 80 were, on the test's small story; one canon statement whatever the number of subjects) and amends ADR-188 for the lock slots.
+  **Why:** #898's and #899's AC ask for "an ADR amendment" stating the new count; there was no count to amend, so the count is stated in the new ADR.
+  **Issue:** #898, #899
+- **Decision:** #899's amendment-part fallback re-reads only the subjects whose rows carry an `amendment_part_id` (with `through_position` given) through `canon_at`, not the whole batch as the spike's prototype did.
+  **Why:** the AC says "those subjects take the existing per-subject path"; a whole-batch fallback would cost every subject's statements on any story with one amendment.
+  **Issue:** #899
+- **Decision:** #899's tests make a real author merge (a `same_as` amendment part, as #481 writes it), not merges injected through the turn memo.
+  **Why:** the read under test then sees the merge exactly as a story holds it.
+  **Issue:** #899
+- **Decision:** #900's index brings each story partition to 15 indexes, 16 relations: exactly ADR-188's `LOCKS_PER_STORY = 16`, which had one slot of rounding. The lock rule and ADR-191's 6,400 stories still hold, and `test_a_deployment_wide_retype_needs_the_shipped_lock_table` (320 partitions on a 5-connection server with 1,024 locks) passes on the migrated schema. ADR-192 amends ADR-188 to say so; the "15 locks a story" prose in `core.db`, `memory.retirement`, `memory.story_partitions` and docs/OPERATIONS.md now says 16.
+  **Why:** the new index is in the story's AC. A 16th index would move the rule (17 slots → 2,048 locks for 6,400 stories), which is an owner decision; this one does not.
+  **Issue:** #900
+- **Decision:** #901 reads the prior `max_parallel_workers_per_gather` and restores it, as `vector_search` does (three statements), rather than hard-coding a restore to 2 as the prototype did.
+  **Why:** a caller or a server with its own setting keeps it; the AC's test sets 1 and reads 1 back.
+  **Issue:** #901
+- **Decision:** #901 is in scope despite #868's Discretion clause "Not allowed: `ef_search` or scan-setting changes". That clause's reason is the vector arm's recall, which Q-01/Q-03 cannot guard. A parallel-worker count on the lexical statement changes no rows and does not touch the vector arm, and spike #897's decision named it.
+  **Why:** low cost if wrong (one setting to remove); recorded so the owner can say otherwise.
+  **Issue:** #901, #868
+- **Decision:** #902 analyses the fixture after a fresh build too, not only after a cache restore.
+  **Why:** the AC's goal is that "a cache hit and a fresh build start with the same statistics"; analysing both is how they do.
+  **Issue:** #902

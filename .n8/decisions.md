@@ -14909,5 +14909,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** Once #905 had cut relationships to about 16 per retrieval, about 700 placement rows per heavy profile read became the largest cost, decoded only to be discarded. It is an optimisation that keeps the answers the same, a different change from #905's behaviour change, so it gets its own story and acceptance criteria. Local paired A/B, 4 rounds × 300 queries: P-01 p95 181.4 (before) / 176.1 (#905) / 169.8 (#905 + #908); profiles stage p95 76.2 → 59.7.
   **Issue:** #908
 - **Decision:** Ran the pipelined-style targeted set before the PR: every test file that reads the changed modules (71 files: 1,273 passed, 5 deselected, 1 h 06 m), plus every repo gate. The full suite runs in CI.
-  **Why:** `exec.full_suite` is `sequential` for this project, but a local full run takes more than 3 h on this machine; CI's full matrix is the merge gate.
+  **Why:** `exec.full_suite` is `sequential` for this project, but the full local suite takes about 10 hours (logged 2026-11-11), so CI's sharded run on the PR is the full-suite gate, as for the rest of M10.
   **Issue:** #905, #906, #908

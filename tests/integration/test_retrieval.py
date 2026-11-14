@@ -376,7 +376,8 @@ async def test_retrieval_scopes_profiles_to_the_message(scratch: Scratch) -> Non
     """#905 (FR-RET-6): under ``memory.episodic.profile_scope: message`` (the default) a
     retrieved profile carries only its relationships to the message's people (the entities it
     resolves to, the located episodes' participants and the speaker); under ``full`` each
-    profile is what the profile route answers, as retrieval answered before #905.
+    profile is what the profile route answers, as retrieval answered before #905, over queries
+    naming different people.
 
     Complement asserted: Bobby's full profile holds a relationship to Quillon, whom the message
     never names, so the default's answer differs."""
@@ -396,33 +397,40 @@ async def test_retrieval_scopes_profiles_to_the_message(scratch: Scratch) -> Non
     people = story.people
     settings = await _settings(db, story.story_id)
     assert settings.memory.episodic.profile_scope == "message"
-    scoped = await _retrieve(db, story.story_id, QUERY)
-    full = await _retrieve(
-        db,
-        story.story_id,
+    as_full = await _settings(db, story.story_id, profile_scope="full")
+    queries = (
         QUERY,
-        settings=await _settings(db, story.story_id, profile_scope="full"),
+        "You were there with Bobby's sister.",
+        "Did Quillon ever meet Bobby?",
+        "Ann and Dan at the game.",
+        "What does Bobby think of Ann?",
     )
-    ids = [p.entity.entity_id for p in full.profiles]
-    assert ids == [p.entity.entity_id for p in scoped.profiles] != []
-    seen_as, as_of = full.profiles[0].viewpoint, full.profiles[0].as_of
-    async with db.connect() as conn:
-        route = {
-            e: await structured.profile_view(
-                conn, story.story_id, e, as_of=as_of, viewpoint=seen_as
-            )
-            for e in ids
-        }
-    assert {p.entity.entity_id: p for p in full.profiles} == route
-    scope = {*scoped.resolution.entities, *scoped.participants, people["Cal"]}
-    for mine, whole in zip(scoped.profiles, full.profiles, strict=True):
-        assert mine.relationships == tuple(
-            v for v in whole.relationships if v.other.entity_id in scope
-        )
-        assert (mine.placement, mine.inventory) == (whole.placement, whole.inventory)
-    bobby = next(p for p in full.profiles if p.entity.entity_id == people["Bobby"])
-    assert people["Quillon"] in {v.other.entity_id for v in bobby.relationships}
-    assert scoped.profiles != full.profiles
+    profiled = 0
+    for said in queries:
+        scoped = await _retrieve(db, story.story_id, said)
+        full = await _retrieve(db, story.story_id, said, settings=as_full)
+        ids = [p.entity.entity_id for p in full.profiles]
+        assert ids == [p.entity.entity_id for p in scoped.profiles], said
+        profiled += len(ids)
+        async with db.connect() as conn:
+            route = {
+                p.entity.entity_id: await structured.profile_view(
+                    conn, story.story_id, p.entity.entity_id, as_of=p.as_of, viewpoint=p.viewpoint
+                )
+                for p in full.profiles
+            }
+        assert {p.entity.entity_id: p for p in full.profiles} == route, said
+        scope = {*scoped.resolution.entities, *scoped.participants, people["Cal"]}
+        for mine, whole in zip(scoped.profiles, full.profiles, strict=True):
+            assert mine.relationships == tuple(
+                v for v in whole.relationships if v.other.entity_id in scope
+            ), said
+            assert (mine.placement, mine.inventory) == (whole.placement, whole.inventory), said
+        if said == QUERY:
+            bobby = next(p for p in full.profiles if p.entity.entity_id == people["Bobby"])
+            assert people["Quillon"] in {v.other.entity_id for v in bobby.relationships}
+            assert scoped.profiles != full.profiles
+    assert profiled >= len(queries)
 
 
 async def test_the_profile_read_leaves_past_placements_unread(

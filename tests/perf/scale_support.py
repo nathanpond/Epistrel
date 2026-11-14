@@ -5,6 +5,8 @@ embedding dimension, a schema change the shared database must never see). It res
 fixture from the dump cache when ``EPISTREL_TEST_PERF_CACHE_DIR`` names one that holds this
 spec's key (``epistrel.testing.fixtures.scale.cache_key``). Otherwise it migrates the database
 and builds the fixture, then dumps it there for the next run when a cache directory is named.
+Either way it ``ANALYZE``s the database before yielding it (#902: a restore has no planner
+statistics).
 It yields the fixture with the library Engine over that database, on the stub adapters with the
 fixture's embedding dimension. The database is dropped afterwards.
 
@@ -135,6 +137,7 @@ async def scale_database(
                 await builder.dispose()
             if directory is not None:
                 scale.write_cached(directory, url, fixture)
+        analyse(url)
         prepare_s = time.perf_counter() - started
         db = make_engine(settings)
         lib = Engine(settings, db=db)
@@ -152,6 +155,19 @@ async def scale_database(
             conn.execute(drop)
         admin.dispose()
         forget_ledger(url)
+
+
+def analyse(url: str) -> None:
+    """#902: ``ANALYZE`` the database at ``url`` before the run times anything. ``pg_restore``
+    restores no planner statistics, so until autovacuum reached a restored fixture the planner
+    took its 50k-memory story for one row; a built fixture is analysed the same way, so a cache
+    hit and a fresh build start from the same statistics."""
+    engine = make_sync_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ANALYZE"))
+    finally:
+        engine.dispose()
 
 
 # -- retrieval -------------------------------------------------------------------------------------

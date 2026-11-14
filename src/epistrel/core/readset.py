@@ -817,16 +817,18 @@ class KeyedLookup:
         *,
         as_of: int | None = None,
         viewpoint: str = OMNISCIENT,
+        among: Sequence[str] | None = None,
     ) -> list[ProfileView]:
         """The standing profiles of ``entity_ids`` (#137's ``profile_views``: each exactly what
-        ``profile`` answers), in their order, in a number of statements that does not grow with
-        their number (#451). Each is recorded as ``profile`` records it (``profile:<entity>``,
-        versioned by the facts behind it), as context, never keyed. An id that is not one of
-        the story's entities is left out."""
+        ``profile`` answers, or with ``among`` only the relationships among those people, #905),
+        in their order, in a number of statements that does not grow with their number (#451).
+        Each is recorded as ``profile`` records it (``profile:<entity>``, versioned by the facts
+        behind it), as context, never keyed. An id that is not one of the story's entities is
+        left out."""
         from epistrel.core.projections.structured import profile_views
 
         found = await profile_views(
-            self.conn, story_id, entity_ids, as_of=as_of, viewpoint=viewpoint
+            self.conn, story_id, entity_ids, as_of=as_of, viewpoint=viewpoint, among=among
         )
         views: list[ProfileView] = []
         for entity_id in dict.fromkeys(entity_ids):

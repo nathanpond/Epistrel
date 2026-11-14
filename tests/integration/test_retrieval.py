@@ -276,6 +276,200 @@ def _ids(found: Sequence[pipeline.RetrievedMemory]) -> list[str]:
     return [m.id for m in found]
 
 
+def test_the_profile_scope_is_message_or_full() -> None:
+    """#905: ``memory.episodic.profile_scope`` takes ``message`` (its default) or ``full``, and
+    refuses anything else."""
+    from pydantic import ValidationError
+
+    from epistrel.core.profiles.schema import Episodic
+
+    assert Episodic().profile_scope == "message"
+    assert Episodic(profile_scope="full").profile_scope == "full"
+    for wrong in ("all", "", None, True):
+        with pytest.raises(ValidationError):
+            Episodic(profile_scope=wrong)
+
+
+async def _knows_cast(db: AsyncEngine) -> tuple[c.World, str]:
+    """A story for #905's profile scope: Bobby, Ann, Cal and a stranger the author merged into
+    Bobby (a ``same_as`` amendment part, #481), each of whom ``knows`` every other. Answers the
+    world and the stranger."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from epistrel.core.propositions.vocabulary import SAME_AS
+    from tests import amendment_support as am
+
+    w = await c.world(db)
+    story = w.story_id
+    async with db.begin() as conn:
+        stranger = await store.add_entity(conn, story, "person", "Stranger")
+    people = [*w.people.values(), stranger]
+    for who in people:
+        for other in people:
+            if other != who:
+                knows = Proposition(
+                    subject_id=who,
+                    predicate_id=CORE_BY_NAME["knows"].id,
+                    object_id=other,
+                    valid_time=Interval.of(None, None),
+                )
+                await c.commit(db, story, knows)
+    same = Proposition(
+        subject_id=w.people["Bobby"],
+        predicate_id=SAME_AS,
+        object_id=stranger,
+        valid_time=Interval.of(None, None),
+    )
+    await am.amend(db, story, [PropositionPartDraft(same)])
+    return w, stranger
+
+
+async def test_a_scoped_profile_keeps_the_relationships_among_its_people(scratch: Scratch) -> None:
+    """#905 (FR-RET-6): ``profile_views`` with ``among`` keeps exactly the relationships whose
+    other end is among the profiled people and ``among``, in both directions, an author's merge
+    counting its members (on the profiled side and on ``among``'s), and the relationships
+    statement reads only those rows. Placement and inventory are as without it, and without
+    ``among`` the batch answers what the profile route answers.
+
+    Complement asserted: the full profile holds relationships to people outside each scope, so
+    each scope leaves something out."""
+    db = scratch.db
+    w, stranger = await _knows_cast(db)
+    story = w.story_id
+    bobby, ann, cal = w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+
+    async def scoped(ids: list[str], among: list[str] | None) -> tuple[Any, int]:
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                found = await structured.profile_views(
+                    conn, story, ids, viewpoint="omniscient", among=among
+                )
+        return found, seen.rows_reading("relationships")
+
+    full = {e: (await scoped([e], None))[0][e] for e in (ann, bobby)}
+    full_rows = (await scoped([ann], None))[1]
+    async with db.connect() as conn:
+        for e in (ann, bobby):
+            assert full[e] == await structured.profile_view(conn, story, e, viewpoint="omniscient")
+
+    def kept(view: structured.ProfileView, scope: set[str]) -> tuple[Any, ...]:
+        return tuple(v for v in view.relationships if v.other.entity_id in scope)
+
+    assert {v.other.entity_id for v in full[ann].relationships} >= {bobby, cal, stranger}
+    with_cal, rows = await scoped([ann], [cal])
+    assert with_cal[ann].relationships == kept(full[ann], {cal})
+    assert {v.direction for v in with_cal[ann].relationships} == {"in", "out"}
+    assert rows == len(with_cal[ann].relationships) < full_rows
+    with_stranger, _ = await scoped([ann], [stranger])
+    assert with_stranger[ann].relationships == kept(full[ann], {bobby, stranger})
+    merged, _ = await scoped([bobby], [ann])
+    assert merged[bobby].relationships == kept(full[bobby], {ann})
+    assert len(merged[bobby].relationships) > 2  # Bobby's own and the stranger's, both ways
+    alone, rows = await scoped([ann], [])
+    assert alone[ann].relationships == ()
+    assert rows == 0
+    for found in (with_cal, with_stranger, alone):
+        assert found[ann].placement == full[ann].placement
+        assert found[ann].inventory == full[ann].inventory
+
+
+async def test_retrieval_scopes_profiles_to_the_message(scratch: Scratch) -> None:
+    """#905 (FR-RET-6): under ``memory.episodic.profile_scope: message`` (the default) a
+    retrieved profile carries only its relationships to the message's people (the entities it
+    resolves to, the located episodes' participants and the speaker); under ``full`` each
+    profile is what the profile route answers, as retrieval answered before #905.
+
+    Complement asserted: Bobby's full profile holds a relationship to Quillon, whom the message
+    never names, so the default's answer differs."""
+    db = scratch.db
+
+    async def quillon_knows_bobby(engine: AsyncEngine, built: r.Story) -> None:
+        knows = Proposition(
+            subject_id=built.people["Quillon"],
+            predicate_id=CORE_BY_NAME["knows"].id,
+            object_id=built.people["Bobby"],
+            valid_time=Interval.of(None, None),
+        )
+        await c.commit(engine, built.story_id, knows)
+
+    story = await r.build_story(db, before_head=quillon_knows_bobby)
+    await _plant_occasion(db, story)
+    people = story.people
+    settings = await _settings(db, story.story_id)
+    assert settings.memory.episodic.profile_scope == "message"
+    scoped = await _retrieve(db, story.story_id, QUERY)
+    full = await _retrieve(
+        db,
+        story.story_id,
+        QUERY,
+        settings=await _settings(db, story.story_id, profile_scope="full"),
+    )
+    ids = [p.entity.entity_id for p in full.profiles]
+    assert ids == [p.entity.entity_id for p in scoped.profiles] != []
+    seen_as, as_of = full.profiles[0].viewpoint, full.profiles[0].as_of
+    async with db.connect() as conn:
+        route = {
+            e: await structured.profile_view(
+                conn, story.story_id, e, as_of=as_of, viewpoint=seen_as
+            )
+            for e in ids
+        }
+    assert {p.entity.entity_id: p for p in full.profiles} == route
+    scope = {*scoped.resolution.entities, *scoped.participants, people["Cal"]}
+    for mine, whole in zip(scoped.profiles, full.profiles, strict=True):
+        assert mine.relationships == tuple(
+            v for v in whole.relationships if v.other.entity_id in scope
+        )
+        assert (mine.placement, mine.inventory) == (whole.placement, whole.inventory)
+    bobby = next(p for p in full.profiles if p.entity.entity_id == people["Bobby"])
+    assert people["Quillon"] in {v.other.entity_id for v in bobby.relationships}
+    assert scoped.profiles != full.profiles
+
+
+async def test_the_profile_read_leaves_past_placements_unread(
+    scratch: Scratch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#908: the profile read's placement statement carries ``current``'s record and validity
+    test, so a character who moved through many windows reads only the placement rows in
+    force, and every profile, at every turn and viewpoint, is exactly what it was with the
+    statement unfiltered.
+
+    Complement asserted: unfiltered, the same read takes every window's row, so the filter is
+    what leaves them unread."""
+    db = scratch.db
+    w = await c.world(db)
+    story = w.story_id
+    places = list(w.places.values())
+    ann, bobby = w.people["Ann"], w.people["Bobby"]
+    for j in range(30):
+        await c.commit(db, story, c.at(ann, places[j % 3], j * 10, j * 10 + 5))
+    await c.commit(db, story, c.at(ann, places[0], 300, None))
+    await c.commit(db, story, c.at(bobby, places[1], 0, None))
+    head = await _head_of(db, story)
+    ids = [ann, bobby]
+    turns = sorted({*range(0, head + 1, 5), head})
+
+    async def read() -> tuple[list[Any], int]:
+        answers = []
+        with r.statements(db) as seen:
+            async with db.connect() as conn:
+                for turn in turns:
+                    for viewpoint in ("omniscient", w.viewpoint("Ann")):
+                        answers.append(
+                            await structured.profile_views(
+                                conn, story, ids, as_of=turn, viewpoint=viewpoint
+                            )
+                        )
+        return answers, seen.rows_reading("placement")
+
+    filtered, few = await read()
+    monkeypatch.setattr(structured, "_in_force_clause", lambda *_: [])
+    unfiltered, many = await read()
+    assert filtered == unfiltered
+    assert any(v.placement is not None for a in filtered for v in a.values())
+    reads = 2 * len(turns)
+    assert few <= 2 * reads < many
+
+
 @pytest.mark.part("M4", "FR-RET-2,3,6")
 async def test_i_05(scratch: Scratch) -> None:
     """ "Those guys a month ago at the game: you were there with Bobby's sister." resolves the

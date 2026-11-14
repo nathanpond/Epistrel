@@ -244,6 +244,26 @@ def covers(row: Mapping[str, Any], now: int) -> bool:
     return (lo is None or lo <= now) and (hi is None or now < hi)
 
 
+def _in_force_clause(table: Table, position: Position, now: int) -> list[ColumnElement[bool]]:
+    """``through(row, position) and covers(row, now)`` as SQL over ``table``'s structured
+    columns (#908): a read can leave the rows outside them unread, with the Python check kept."""
+    turn, slot = _turn_slot(position)
+    c = table.c
+    at = tuple_(turn, slot)
+    return [
+        or_(c.since_turn.is_(None), tuple_(c.since_turn, func.coalesce(c.since_slot, 0)) <= at),
+        or_(
+            c.closed_by_fact_id.is_(None),
+            and_(
+                c.closed_turn.is_not(None),
+                tuple_(c.closed_turn, func.coalesce(c.closed_slot, 0)) > at,
+            ),
+        ),
+        or_(c.valid_from.is_(None), c.valid_from <= now),
+        or_(c.valid_to.is_(None), c.valid_to > now),
+    ]
+
+
 def _latest(rows: Iterable[Row]) -> Row | None:
     return max(
         rows,
@@ -1266,19 +1286,26 @@ async def profile_views(
     *,
     as_of: int | None = None,
     viewpoint: str | None = None,
+    among: Sequence[str] | None = None,
 ) -> dict[str, ProfileView]:
     """The standing profile of each of ``entity_ids`` that is one of the story's, exactly as
     ``profile_view`` answers it, in a number of statements that does not grow with the number
     of entities (#451): the read context, the entities, the registry once, one keyed read each
     of the ``relationships`` and ``placement`` rows touching any of them, the containing places
     of each distinct location (``WITHIN_DEPTH`` canon reads at most), and the entity refs. An
-    id that is not the story's entity is left out (``profile_view`` answers 404 for it)."""
+    id that is not the story's entity is left out (``profile_view`` answers 404 for it).
+
+    ``among`` (#905, retrieval's ``profile_scope: message``) keeps only the relationships whose
+    two ends are both among ``entity_ids`` and ``among`` (an author's merge counting its
+    members as the entity), read so in the statement; ``None`` keeps every one."""
     ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
     wanted = list(dict.fromkeys(entity_ids))
     if not wanted:
         return {}
     known = await _refs(conn, story_id, wanted)
-    return await _profiles(conn, story_id, ctx, turn, {e: known[e] for e in wanted if e in known})
+    return await _profiles(
+        conn, story_id, ctx, turn, {e: known[e] for e in wanted if e in known}, among=among
+    )
 
 
 async def _profiles(
@@ -1287,9 +1314,12 @@ async def _profiles(
     ctx: _ReadContext,
     turn: int,
     entities_by_id: Mapping[str, EntityRef],
+    *,
+    among: Sequence[str] | None = None,
 ) -> dict[str, ProfileView]:
     """The profiles of ``entities_by_id`` (known entities) as of ``turn`` for ``ctx``: the one
-    builder ``profile_view`` and ``profile_views`` share, so both answer identical views."""
+    builder ``profile_view`` and ``profile_views`` share, so both answer identical views.
+    ``among``: ``profile_views``'."""
     from epistrel.core.canon.facts import merged_classes
     from epistrel.core.propositions.registry import load
 
@@ -1301,11 +1331,19 @@ async def _profiles(
     current = _current(registry, ctx, turn)
     # #713 (FR-PROP-7): a profile answers for the entity and every entity an author's merge
     # made one with it; their rows read as the profiled entity's.
+    others = [] if among is None else [e for e in dict.fromkeys(among) if e not in wanted]
+    classes = await merged_classes(conn, story_id, [*wanted, *others])
     one_of: dict[str, str] = {}
-    for e, members_of in (await merged_classes(conn, story_id, wanted)).items():
-        for member in members_of:
+    for e in wanted:
+        for member in classes[e]:
             one_of.setdefault(member, e)
     members = list(one_of)
+    # #905: under a scope, both ends of a relationship are among the profiled and ``among``.
+    scope = (
+        []
+        if among is None
+        else list(dict.fromkeys([*members, *(m for e in others for m in classes[e])]))
+    )
 
     def through(row: dict[str, Any], *columns: str) -> dict[str, Any]:
         return {
@@ -1326,6 +1364,14 @@ async def _profiles(
                     relationships.c.subject_id.in_(members),
                     relationships.c.object_id.in_(members),
                 ),
+                *(
+                    ()
+                    if among is None
+                    else (
+                        relationships.c.subject_id.in_(scope),
+                        relationships.c.object_id.in_(scope),
+                    )
+                ),
             )
         )
     ]
@@ -1340,6 +1386,9 @@ async def _profiles(
             select(placement).where(
                 placement.c.story_id == story_id,
                 or_(placement.c.entity_id.in_(members), placement.c.container_id.in_(members)),
+                # #908: only the rows ``current`` keeps (a placement has no predicate, so its
+                # validity always applies); the check below still runs.
+                *_in_force_clause(placement, turn_position(turn), ctx.now),
             )
         )
     ]

@@ -498,6 +498,7 @@ class Params:
     rehydrate_max: int
     ef_search: int
     importance_half_life: int
+    profile_scope: str
 
     @classmethod
     def of(cls, settings: ProfileSettings, document: Mapping[str, Any] | None) -> Params:
@@ -517,6 +518,7 @@ class Params:
             importance_half_life=section(
                 MemorySettings, document
             ).memory_importance_half_life_turns,
+            profile_scope=e.profile_scope,
         )
 
 
@@ -1276,7 +1278,16 @@ async def retrieve(
     as_of = min(max(now_turn, 0), head)
     profiled = [e for e in subjects if (entry := index.get(e)) is not None and entry.character_id]
     if head >= 0 and profiled:
-        profiles = await lookup.profiles(story_id, profiled, as_of=as_of, viewpoint=viewpoint)
+        # #905: under ``message``, a profile carries only its relationships to the message's
+        # people (its subjects and the speaker); ``full`` carries every one.
+        among = (
+            None
+            if params.profile_scope == "full"
+            else [*subjects, *([] if speaker_entity is None else [speaker_entity])]
+        )
+        profiles = await lookup.profiles(
+            story_id, profiled, as_of=as_of, viewpoint=viewpoint, among=among
+        )
     canon: list[Fact] = []
     if subjects:
         canon = await lookup.canon_context(

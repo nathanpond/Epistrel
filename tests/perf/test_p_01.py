@@ -17,7 +17,11 @@ either. The test is ``perf_weekly``: deselected unless ``-m`` names the marker, 
 weekly ``perf.yml`` on the GitHub-hosted runner, labelled as such (host class ``other``). Its
 figures go to ``build/perf/p_01.json`` and from there to ``docs/perf.md``, with the owner's
 200 ms target for that runner (``P01_RUNNER_TARGET_MS``, #868) as a note row beside the budget,
-reported against the last attempt's p95 and never gated.
+reported against the last attempt's p95 and never gated. The same queries then run once more
+as a character's message (#906): the viewpoint and the speaker are the cast's first character
+after the player, as a render retrieves for it. That pass is recorded under ``character`` and
+reported beside the budget, never gated; its errors, degradations and empty results fail as
+the omniscient pass's do.
 
 ``test_p_01__smoke`` is PR CI's ``perf_smoke`` run. It runs the same plumbing on the 1k fixture
 with no timing bound, because a timing bound in the PR gate fails under host load (#430,
@@ -67,6 +71,7 @@ from tests.perf.scale_support import (
     percentiles,
     record,
     server_info,
+    speaker_of,
     stage_percentiles,
 )
 from tests.retrieval_support import index_names, statements
@@ -110,6 +115,19 @@ async def _summary(run: ScaleRun, found: Retrievals, attempts: Sequence[float]) 
     }
 
 
+def _character_pass(run: ScaleRun, found: Retrievals, speaker: str) -> dict[str, Any]:
+    """#906: the character pass's figures, beside the omniscient ones (reported, not gated)."""
+    return {
+        "viewpoint": f"character:{speaker}",
+        "speaker": next(n for n, c in run.fixture.story.characters.items() if c == speaker),
+        "queries": len(found.timings),
+        "total_ms": percentiles(found.totals),
+        "stages_ms": stage_percentiles(found.timings),
+        "degraded": found.degraded,
+        "empty_results": found.empty,
+    }
+
+
 def _plumbing(found: Retrievals, n: int) -> None:
     """Every query was answered with every stage timed, the vector arm ran, and most queries
     found something."""
@@ -134,8 +152,12 @@ async def test_p_01(scale_50k: ScaleRun) -> None:
         found = await measure_retrieval(scale_50k, queries)
         attempts.append(percentiles(found.totals)["p95"])
     summary = await _summary(scale_50k, found, attempts)
+    speaker = speaker_of(scale_50k)
+    as_character = await measure_retrieval(scale_50k, queries, warmup=WARMUP, character=speaker)
+    summary["character"] = _character_pass(scale_50k, as_character, speaker)
     record("p_01", summary)
     _plumbing(found, QUERIES)
+    _plumbing(as_character, QUERIES)
     assert not budget_verdict(attempts[-1], BUDGET_MS, host_class()).fail, summary
 
 
@@ -143,16 +165,25 @@ async def test_p_01(scale_50k: ScaleRun) -> None:
 @pytest.mark.part("M4", "NFR-PERF-1")
 async def test_p_01__smoke(scale_1k: ScaleRun) -> None:
     """PR CI's subset: 50 retrievals over the 1k fixture through the same measurement and
-    summary, with no timing bound.
+    summary, omniscient and as a character's message (#906), with no timing bound.
 
     Complement asserted: the summary carries every stage's percentiles, the host it ran on and
-    #868's runner target, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max."""
-    found = await measure_retrieval(
-        scale_1k, _queries(scale_1k, SMOKE_QUERIES), warmup=SMOKE_WARMUP
-    )
+    #868's runner target, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max; the character pass is that
+    character's (its viewpoint, not the player's) with every stage timed."""
+    queries = _queries(scale_1k, SMOKE_QUERIES)
+    found = await measure_retrieval(scale_1k, queries, warmup=SMOKE_WARMUP)
     _plumbing(found, SMOKE_QUERIES)
+    speaker = speaker_of(scale_1k)
+    as_character = await measure_retrieval(
+        scale_1k, queries, warmup=SMOKE_WARMUP, character=speaker
+    )
+    _plumbing(as_character, SMOKE_QUERIES)
     summary = await _summary(scale_1k, found, [percentiles(found.totals)["p95"]])
+    summary["character"] = _character_pass(scale_1k, as_character, speaker)
     record("p_01_smoke", summary)
+    assert summary["character"]["viewpoint"] == f"character:{speaker}"
+    assert speaker != scale_1k.fixture.story.player
+    assert set(summary["character"]["stages_ms"]) == {*STAGES, "total"}
     assert set(summary["stages_ms"]) == {*STAGES, "total"}
     assert summary["runner_target_p95_ms"] == P01_RUNNER_TARGET_MS  # #868's note row
     total = summary["total_ms"]

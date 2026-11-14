@@ -68,6 +68,8 @@ HISTORY_HEADER = (
     "|---|---|---|---|---|---|---|---|---|---|"
 )
 NOT_MEASURED = "*not measured in this run*"
+CHARACTER_KEY = "character"
+"""P-01's summary key for its character pass (#906; ``tests/perf/test_p_01.py``)."""
 RUNNER_TARGET_KEY = "runner_target_p95_ms"
 """P-01's summary key for #868's runner target (``tests/perf/test_p_01.py``'s
 ``P01_RUNNER_TARGET_MS``), shown as a note row under the budgets table."""
@@ -279,6 +281,39 @@ def history_row(found: Mapping[str, Mapping[str, Any]]) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
+def _character_row(run: Mapping[str, Any], label: str) -> str:
+    """#906's row under P-01's budget: the same queries as a character's message, reported
+    and never gated (NFR-PERF-1's gate is the omniscient pass's)."""
+    measured = run.get("total_ms", {}).get("p95")
+    return (
+        f"| P-01 retrieval, as {run.get('speaker')}'s message (#906) | NFR-PERF-1 | "
+        f"reported, not gated | {_ms(measured)} ms | reported | {label} |"
+    )
+
+
+def _character_lines(run: Mapping[str, Any], label: str) -> list[str]:
+    """#906: the character pass's stage table, under the omniscient one."""
+    lines = [
+        "",
+        "### As a character's message (#906)",
+        "",
+        f"The same {run.get('queries')} queries as {run.get('speaker')}'s message "
+        f"(`{run.get('viewpoint')}`, {run.get('speaker')} the speaker), as a render retrieves "
+        f"for the character. Reported, not gated. Host: {label}.",
+        "",
+        "| Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |",
+        "|---|---|---|---|---|",
+    ]
+    for stage, q in dict(run.get("stages_ms") or {}).items():
+        lines.append(
+            f"| {stage} | {_ms(q.get('p50'))} | {_ms(q.get('p95'))} | {_ms(q.get('p99'))} "
+            f"| {_ms(q.get('max'))} |"
+        )
+    if run.get("degraded"):
+        lines += ["", f"Degraded queries: {json.dumps(run['degraded'], sort_keys=True)}."]
+    return lines
+
+
 def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str:
     """``docs/perf.md`` for the run's results, keeping ``existing``'s history rows."""
     host = _host_of(found)
@@ -318,6 +353,8 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
         )
         if test == "P-01 retrieval" and p01 and p01.get(RUNNER_TARGET_KEY) is not None:
             lines.append(_runner_target_row(p01, label))
+        if test == "P-01 retrieval" and p01 and p01.get(CHARACTER_KEY):
+            lines.append(_character_row(p01[CHARACTER_KEY], label))
     lines += ["", "## P-01: retrieval latency by stage (NFR-PERF-1)", ""]
     if p01:
         lines += [
@@ -335,6 +372,8 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
             )
         if p01.get("degraded"):
             lines += ["", f"Degraded queries: {json.dumps(p01['degraded'], sort_keys=True)}."]
+        if p01.get(CHARACTER_KEY):
+            lines += _character_lines(p01[CHARACTER_KEY], label)
     else:
         lines.append(NOT_MEASURED)
     lines += ["", "## P-02: deterministic verify latency (NFR-PERF-2)", ""]

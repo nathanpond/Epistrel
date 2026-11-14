@@ -417,6 +417,14 @@ RETRIEVAL_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 yet."""
 
 
+PROFILE_SCOPE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {"memory": {"episodic": {"profile_scope": "message"}}}
+)
+"""Which relationships a retrieved profile carries (#905), at the schema's default: migration
+``0155_profile_scope`` adds it to a deployment's ``profile_defaults`` that does not name it yet.
+The default narrows what existing stories retrieve (the owner's decision on #868; ADR-193)."""
+
+
 HOT_SET_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
     {
         "memory": {
@@ -505,13 +513,15 @@ def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
     ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
     ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS``, ``HOT_SET_DEFAULTS``,
-    ``RENDER_DEFAULTS``, ``M5_PROFILE_DEFAULTS``, ``M6_PROFILE_DEFAULTS`` and
-    ``M7_PROFILE_DEFAULTS`` under them (a complete document of every delivered setting)."""
+    ``RENDER_DEFAULTS``, ``M5_PROFILE_DEFAULTS``, ``M6_PROFILE_DEFAULTS``,
+    ``M7_PROFILE_DEFAULTS`` and ``PROFILE_SCOPE_DEFAULTS`` under them (a complete document of
+    every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
     base = _merged(_merged(base, IMPLICATION_DEFAULTS), HOT_SET_DEFAULTS)
     base = _merged(_merged(base, RENDER_DEFAULTS), M5_PROFILE_DEFAULTS)
     base = _merged(_merged(base, M6_PROFILE_DEFAULTS), M7_PROFILE_DEFAULTS)
+    base = _merged(base, PROFILE_SCOPE_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
@@ -539,6 +549,7 @@ __all__ = [
     "MAX_SETTINGS",
     "MAX_STRONGEST_PURPOSES",
     "PREVIOUS_ENTAILMENT_GATE",
+    "PROFILE_SCOPE_DEFAULTS",
     "RENDER_DEFAULTS",
     "RETRIEVAL_DEFAULTS",
     "SEED_PRINCIPAL",

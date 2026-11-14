@@ -9037,6 +9037,16 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
+                      },
                       "recency_half_life_turns": {
                         "default": 100,
                         "description": "The turns over which a memory's recency halves.",
@@ -9789,6 +9799,16 @@
                         "minimum": 1.0,
                         "title": "K",
                         "type": "integer"
+                      },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
                       },
                       "recency_half_life_turns": {
                         "default": 100,
@@ -10825,6 +10845,16 @@
                         "minimum": 1.0,
                         "title": "K",
                         "type": "integer"
+                      },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
                       },
                       "recency_half_life_turns": {
                         "default": 100,
@@ -17951,6 +17981,23 @@
                                       }
                                     ]
                                   },
+                                  "profile_scope": {
+                                    "anyOf": [
+                                      {
+                                        "default": "message",
+                                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                                        "enum": [
+                                          "message",
+                                          "full"
+                                        ],
+                                        "title": "Profile Scope",
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "recency_half_life_turns": {
                                     "anyOf": [
                                       {
@@ -20722,6 +20769,16 @@
                         "minimum": 1.0,
                         "title": "K",
                         "type": "integer"
+                      },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
                       },
                       "recency_half_life_turns": {
                         "default": 100,
@@ -25345,6 +25402,16 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
+                      },
                       "recency_half_life_turns": {
                         "default": 100,
                         "description": "The turns over which a memory's recency halves.",
@@ -28327,6 +28394,16 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
+                      },
                       "recency_half_life_turns": {
                         "default": 100,
                         "description": "The turns over which a memory's recency halves.",
@@ -29193,6 +29270,16 @@
                         "minimum": 1.0,
                         "title": "K",
                         "type": "integer"
+                      },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
                       },
                       "recency_half_life_turns": {
                         "default": 100,
@@ -30322,6 +30409,23 @@
                                     "minimum": 1.0,
                                     "title": "K",
                                     "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "profile_scope": {
+                                "anyOf": [
+                                  {
+                                    "default": "message",
+                                    "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                                    "enum": [
+                                      "message",
+                                      "full"
+                                    ],
+                                    "title": "Profile Scope",
+                                    "type": "string"
                                   },
                                   {
                                     "type": "null"
@@ -31635,6 +31739,16 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
+                      },
                       "recency_half_life_turns": {
                         "default": 100,
                         "description": "The turns over which a memory's recency halves.",
@@ -32452,6 +32566,16 @@
                             "minimum": 1.0,
                             "title": "K",
                             "type": "integer"
+                          },
+                          "profile_scope": {
+                            "default": "message",
+                            "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                            "enum": [
+                              "message",
+                              "full"
+                            ],
+                            "title": "Profile Scope",
+                            "type": "string"
                           },
                           "recency_half_life_turns": {
                             "default": 100,
@@ -43816,6 +43940,16 @@
                         "title": "K",
                         "type": "integer"
                       },
+                      "profile_scope": {
+                        "default": "message",
+                        "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                        "enum": [
+                          "message",
+                          "full"
+                        ],
+                        "title": "Profile Scope",
+                        "type": "string"
+                      },
                       "recency_half_life_turns": {
                         "default": 100,
                         "description": "The turns over which a memory's recency halves.",
@@ -45658,6 +45792,16 @@
                             "minimum": 1.0,
                             "title": "K",
                             "type": "integer"
+                          },
+                          "profile_scope": {
+                            "default": "message",
+                            "description": "Which relationships a retrieved profile carries (FR-RET-6, #905): ``message``, only those\nwhose other end is one of the message's people (its resolved entities, the located\nepisodes' participants, and the speaker); ``full``, every current relationship of the\ncharacter, as the profile route answers it.",
+                            "enum": [
+                              "message",
+                              "full"
+                            ],
+                            "title": "Profile Scope",
+                            "type": "string"
                           },
                           "recency_half_life_turns": {
                             "default": 100,
@@ -59944,6 +60088,7 @@
                           "profile_defaults.memory.episodic.enabled",
                           "profile_defaults.memory.episodic.hybrid_search",
                           "profile_defaults.memory.episodic.k",
+                          "profile_defaults.memory.episodic.profile_scope",
                           "profile_defaults.memory.episodic.recency_half_life_turns",
                           "profile_defaults.memory.episodic.reranking",
                           "profile_defaults.memory.episodic.retrieval_token_budget",
@@ -90216,6 +90361,7 @@
                           "profile_overrides.memory.episodic.enabled",
                           "profile_overrides.memory.episodic.hybrid_search",
                           "profile_overrides.memory.episodic.k",
+                          "profile_overrides.memory.episodic.profile_scope",
                           "profile_overrides.memory.episodic.recency_half_life_turns",
                           "profile_overrides.memory.episodic.reranking",
                           "profile_overrides.memory.episodic.retrieval_token_budget",

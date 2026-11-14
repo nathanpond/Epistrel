@@ -186,17 +186,50 @@ class Retrievals:
         return [t["total"] for t in self.timings]
 
 
+def speaker_of(run: ScaleRun) -> str:
+    """The character a character pass speaks as (#906): the cast's first character after the
+    player, since a render retrieves for a character the engine plays, never the player's."""
+    return list(run.fixture.story.characters.values())[1]
+
+
 async def measure_retrieval(
-    run: ScaleRun, queries: Sequence[str], *, warmup: int = 0
+    run: ScaleRun, queries: Sequence[str], *, warmup: int = 0, character: str | None = None
 ) -> Retrievals:
     """``Engine.retrieve`` for each query at the head, omniscient, after ``warmup`` untimed
-    ones (the first queries again)."""
+    ones (the first queries again). With ``character`` (#906), each is that character's
+    message instead, retrieved as a render retrieves it (``core.epistemic.context``): its
+    viewpoint, it the speaker, in a turn's per-call scopes, touching nothing. Both the debugging
+    route and the pipeline's read answer ``omniscient`` only, so the pass calls the pipeline
+    with ``Engine.retrieve``'s embedder and lexical search."""
+    from epistrel.core import turn_memo
+    from epistrel.core.propositions.registry import turn_cache
+    from epistrel.core.retrieval import lexical_backend, pipeline
+    from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
+
     story = run.fixture.story.story_id
+
+    async def ask(q: str) -> pipeline.RetrievalResult:
+        if character is None:
+            return await run.lib.retrieve(run.ctx, story, q=q, viewpoint=VIEWPOINT)
+        embedder = run.lib.models.embeddings
+        async with run.db.connect() as conn:
+            with turn_cache(), turn_memo.scope():
+                return await pipeline.retrieve(
+                    conn,
+                    story,
+                    pipeline.RetrievalQuery(q, actor=character),
+                    viewpoint=f"{CHARACTER_VIEWPOINT_PREFIX}{character}",
+                    embed=embedder.query_embedder(),
+                    embed_batch=embedder.batch_embedder(),
+                    lexical=lexical_backend(run.lib.settings.lexical_backend),
+                    touch=False,
+                )
+
     for q in [*queries][:warmup]:
-        await run.lib.retrieve(run.ctx, story, q=q, viewpoint=VIEWPOINT)
+        await ask(q)
     found = Retrievals()
     for q in queries:
-        result = await run.lib.retrieve(run.ctx, story, q=q, viewpoint=VIEWPOINT)
+        result = await ask(q)
         found.timings.append(dict(result.timings))
         for reason in result.degradation:
             found.degraded[reason] = found.degraded.get(reason, 0) + 1
@@ -335,5 +368,6 @@ __all__ = [
     "record",
     "scale_database",
     "server_info",
+    "speaker_of",
     "stage_percentiles",
 ]

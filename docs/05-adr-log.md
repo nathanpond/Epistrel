@@ -21,11 +21,11 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 122, 144, 169, 174, 175 |
 | FR-BITEMP | §3 | 189 |
 | FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
-| FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174 |
+| FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174, 193 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
-| FR-RET | §8 | 129, 167, 192 |
+| FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
@@ -256,6 +256,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 190 | The engine-only latency budgets are gated on the reference host only and reported elsewhere | Current | — |
 | 191 | The compose database ships a lock table sized for 6,400 stories, and the test servers run it | Current | — |
 | 192 | A retrieval reads its configuration once, its canon in one statement, and its alias arm by a newest-first index | Current | — |
+| 193 | A retrieved profile carries the relationships among the message's people, by default | Current | — |
 
 ---
 
@@ -2110,6 +2111,22 @@ Tuning and its exit certification come after every milestone that may change a p
 - Measured as built, in the spike's paired method (each round turns the four engine changes off and on in one process on the 50k fixture, 4 rounds of 300 queries), P-01's local total p95 fell from 234.2 to 202.8 ms (−31.8, each round −30.6 to −33.1) and the p50 by 30.7 ms, with answers identical on 200 queries. Alone, the memo scopes gave −17.3 ms, the batched canon −3.9, the alias index −1.4 (p50 −17.0) and the lexical workers −2.3 (the lexical stage's own p95 79.5 → 53.0). The spike's prototype pass had measured −53.8 ms together. Its −23.1 ms for the batched canon did not hold: P-01's queries name 2 canon subjects at the median, and `canon_context` alone went from a 36.0 to a 28.3 ms p95. Projected onto the runner (local-to-runner ratios of 1.10–1.64 so far), 202.8 ms is about 223–333 ms, so #868's 200 ms target is likely still missed. #868 is measured again with weekly dispatches once these land, and the profile read's client cost (#897's next candidate) is what remains.
 - A retrieval's statements still do not grow with the story's size or its subjects. `test_retrieval_cost_is_fixed_and_indexed` checks the first and `test_canon_context_reads_every_subject_in_one_statement` the second. `test_the_debugging_read_runs_in_per_call_scopes` compares the scoped read with the unscoped one, `test_the_alias_arm_walks_the_newest_hot_memories` reads the new plan, and `test_the_lexical_statement_runs_with_four_workers` checks the setting is restored.
 - Each hot memory insert maintains one more b-tree index.
+
+### ADR-193 — A retrieved profile carries the relationships among the message's people, by default
+**Status:** Accepted.
+**Context:** FR-RET-6's standing profiles were, in retrieval, exactly what the profile route answers: every current relationship touching each character the message mentions, in both directions. On the 50k scale fixture a character carries about 160 relationships, mostly `knows` of people no message names. The profiles-stage spike on #868 (2026-11-14) found that P-01's p95 is set by queries naming 7–10 characters, which read about 1,400 relationships and spend about 30 ms building the profile views, most of it Python, not the database. The same long lines spend retrieval's token budget (FR-RET-7) on relationships irrelevant to the message. The owner decided (#868): make it configurable between today's behaviour and scoping to the message, with the message scope the default, and leave a wrong claim the narrower context lets through to fact-checking.
+**Decision:** Applied by #905 (migration 0155) and #908.
+- A story setting `memory.episodic.profile_scope`: `message` (the default) or `full` (`BEHAVIORAL`, `PROSPECTIVE`, `RELEVANT`, like the other retrieval dials).
+- Under `message`, a retrieved profile keeps a relationship only when its other end is one of the message's people: the profiles stage's subjects (the entities the message resolves to and the located episodes' participants) or the speaker. The speaker is `actor_character_id`'s entity, or the story's player when there is none, as retrieval already defines it. An author's merge (#713) counts its members as the entity. The filter is in the relationships statement (`structured.profile_views(…, among=…)`), so the rows outside the scope are not read. Placement and inventory are unchanged.
+- Under `full`, a retrieved profile is the profile route's answer, as before.
+- The profile route (`GET …/profile`) and `relationships_views` are unchanged under either value.
+- The profile read's placement statement carries `current`'s record and validity test in SQL (#908, `structured._in_force_clause`), so a character who moved through many windows reads only the rows in force; the Python check still runs, so no answer changes. On the 50k fixture a character has about 120 `located_at` windows, and a 10-character profile read decoded and discarded about 700 placement rows after the message scope had removed most relationships.
+- Migration 0155 adds `profile_scope: "message"` to a deployment's `profile_defaults` where it is not named, writing no `config_changes` row. Unlike 0056's dials, the seeded default is not the previous behaviour: from the next retrieval, a story whose profile does not name the setting reads the narrower profiles.
+**Alternatives considered:** Keeping every relationship and making the read faster (one decode and visibility check per distinct value, the placement rows filtered in SQL) measured −5.4 ms of local P-01 p95. A cap on relationships per profile would choose arbitrarily among them. Filtering by a character's knowledge would not change this fixture's reads: its facts are `objective`, which every viewpoint sees (FR-EPI-5). `gc.freeze()` at start-up removes the ~190 ms full-collection pauses behind the p99 spikes; the owner accepted those for now.
+**Consequences:**
+- Measured in paired rounds on the 50k fixture (4 rounds of 300 queries, one process, omniscient): relationships in a retrieval's profiles went from 357 to 16 on average (1,613 to 99 at most). P-01's local total p95 went from 181.4 ms to 176.1 with the message scope alone and to 169.8 with #908's placement filter too (each round −10.2 to −14.0), the profiles stage's p95 from 76.2 to 59.7, and the p99 from 270.7 to 192.8. The p50 rose by 3–5 ms in both A/Bs, not explained yet (the shorter profile lines leave assembly more room for memories). On the runner's ratio to these local runs that is about 204 ms against #868's 200 ms target. What remains in the stage for many-character queries is the canon (about 30 ms for 9–10 subjects at `CANON_PER_ENTITY` facts each).
+- What a character's render sees narrows to the relationships among the people in play. A claim about a relationship it no longer sees is checked by verification as any claim is. A quality comparison of the two values runs per story by setting `profile_scope` and has not been run.
+- `test_a_scoped_profile_keeps_the_relationships_among_its_people` and `test_retrieval_scopes_profiles_to_the_message` pin the rule and that `full` is the route's answer; `test_the_profile_scope_joins_the_profile_defaults` covers 0155.
 
 ---
 

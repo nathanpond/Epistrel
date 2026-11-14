@@ -14881,3 +14881,36 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #900's write cost is measured with P-10's `capacity.live_memory_writes`, run locally as a paired A/B (50k fixture, 4 alternating rounds × 2,000 rows, index dropped vs present), not from the weekly run. Median 142.1 → 143.7 rows/s (+1.1 %, inside the ±3 % spread between rounds): no measurable cost.
   **Why:** #900's AC named "P-06's `live_memory_rows_per_s`", but that figure is P-10's, and P-10 (`perf_capacity`) runs in no workflow. The planned weekly-run comparison could not produce it; this is a correction to the plan's AC, not a change to what it asks for.
   **Issue:** #900
+
+## Ad-hoc — 2026-11-14 (retrieval profile scope; ADR-193)
+
+- **Change:** Retrieval's standing profiles (FR-RET-6) carry only the relationships among the message's people by default: a new story setting `memory.episodic.profile_scope` (`message`, the default, or `full`, the previous behaviour), with migration 0155 adding it to deployment `profile_defaults`. Existing stories narrow at their next retrieval. P-01 also measures a character's message (reported, not gated). Owner's decision on #868 (2026-11-14): "make it configurable between how it acts today, and then scoping it to the message. Make scoped to message the default. relationships about the people mentioned. If something is said wrong, it should be picked up in fact checking." Built by #905 and #906.
+  **Why:** The profiles stage read every relationship of each mentioned character (~160 each on the 50k fixture), most unrelated to the message; queries naming 7–10 characters set P-01's p95, and the long profile lines spent retrieval's token budget.
+  **Affects:** Any planned story or eval that assumes a retrieved profile lists all of a character's relationships (Q-01/Q-03 eval baselines; the Console's retrieval debug view, nathanpond/Epistrel-Console); the profile route is unchanged. A quality comparison of `message` against `full` is now possible per story and has not been run.
+
+## /n8-exec M10 (#905, #906: profile scope and P-01's character pass) — 2026-11-14
+
+- **Decision:** `message` scope keeps a relationship when its other end is one of the profiles stage's `subjects` (the resolved entities and the located episodes' participants) or the speaker. The speaker is `actor_character_id`'s entity, or, when there is none, the story's player, as retrieval already defines it (`speaker_entity`).
+  **Why:** The owner said "relationships about the people mentioned". The speaker's relationship with someone mentioned ("what I know about Bobby") is about the message too; leaving it out would drop the most relevant line. Cost if wrong: one list entry to remove.
+  **Issue:** #905
+- **Decision:** The setting is a story profile setting (`memory.episodic.profile_scope`), not a deployment setting.
+  **Why:** The owner wants to test it "from a quality standpoint"; a per-story setting lets an eval run both values side by side, as the other retrieval dials are.
+  **Issue:** #905
+- **Decision:** Not built from the spike: the leaner per-row profile read (−5.4 ms local p95) and `gc.freeze()` at start-up (p95 −4, p99 −37 ms).
+  **Why:** The owner accepted the p99 GC pauses for now, and the message scope removes most of the rows the per-row change sped up.
+  **Issue:** #868
+- **Decision:** P-01's character pass calls `pipeline.retrieve` directly, in a turn's per-call scopes with `touch=False`, as a render's context does, speaking as the cast's first non-player character.
+  **Why:** `Engine.retrieve` and `pipeline.read_retrieve` answer `omniscient` only (403 `omniscient_required`), and the player has no render context. The pass measures the path a character's message takes.
+  **Issue:** #906
+- **Decision:** `profile_views` answers differently from `profile_view` when a batch holds an author-merged entity; filed as #907 (needs-triage), not fixed here. #905's tests compare each profile read alone.
+  **Why:** Pre-existing (#713's merge mapping applies to every row in the batch), outside #905's scope.
+  **Issue:** #907
+- **Decision:** The profile read's placement rows are filtered to the ones in force at the read's position, in SQL (`_in_force_clause`, the SQL form of `through` and `covers`), split out as #908 rather than folded into #905. Answers are unchanged: a test checks the filtered and unfiltered reads match at every fifth turn and the head, for both omniscient and a character's viewpoint.
+  **Why:** Once #905 had cut relationships to about 16 per retrieval, about 700 placement rows per heavy profile read became the largest cost, decoded only to be discarded. It is an optimisation that keeps the answers the same, a different change from #905's behaviour change, so it gets its own story and acceptance criteria. Local paired A/B, 4 rounds × 300 queries: P-01 p95 181.4 (before) / 176.1 (#905) / 169.8 (#905 + #908); profiles stage p95 76.2 → 59.7.
+  **Issue:** #908
+- **Decision:** Ran the pipelined-style targeted set before the PR: every test file that reads the changed modules (71 files: 1,273 passed, 5 deselected, 1 h 06 m), plus every repo gate. The full suite runs in CI.
+  **Why:** `exec.full_suite` is `sequential` for this project, but the full local suite takes about 10 hours (logged 2026-11-11), so CI's sharded run on the PR is the full-suite gate, as for the rest of M10.
+  **Issue:** #905, #906, #908
+- **Fix (CI attempt 1 of 3, PR #909):** `lint`, `test (rest)` and `test (eval-harness)` failed on one cause: `docs/evals/INDEX.md` was stale because the `profile_scope` default changed all four presets' fingerprints. I regenerated it. All four presets were already uncertified, so no certification status changed. A quality run at the new fingerprint is still to do.
+  **Why:** Rule 3 (blocker). The targeted test set selected files by the names of the changed modules, which missed the evals index check.
+  **Issue:** #905

@@ -147,6 +147,49 @@ def test_p_01_runner_target_is_a_note_row_under_the_budget(tmp_path: Path) -> No
     assert "runner target" not in (docs / "perf.md").read_text()
 
 
+def test_p_01_character_pass_is_reported_beside_the_budget(tmp_path: Path) -> None:
+    """#906: P-01's character pass (``character``) shows as a reported row under NFR-PERF-1's
+    budget row and as its own stage table under the omniscient one, labelled with the speaker
+    and its viewpoint.
+
+    Complement asserted: the budget row still reads the omniscient pass's p95, and a result
+    without the key (from before #906) has neither the row nor the table."""
+    results = _results(tmp_path, p01=180.0)
+    p01 = json.loads((results / "p_01.json").read_text())
+    character = {
+        "viewpoint": "character:01J0000000000000000000000B",
+        "speaker": "Bea",
+        "queries": 500,
+        "total_ms": _q(120.0),
+        "stages_ms": {"resolve": _q(9.0), "profiles": _q(7.5), "total": _q(120.0)},
+        "degraded": {},
+        "empty_results": 0,
+    }
+    (results / "p_01.json").write_text(json.dumps({**p01, "character": character}))
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    perf_docs.render(results, docs)
+    page = (docs / "perf.md").read_text()
+    lines = page.splitlines()
+    budget = lines.index(
+        "| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 180.0 ms | **over budget** "
+        "| github-runner (not the reference host) |"
+    )
+    assert lines[budget + 1] == (
+        "| P-01 retrieval, as Bea's message (#906) | NFR-PERF-1 | reported, not gated | "
+        "120.0 ms | reported | github-runner (not the reference host) |"
+    )
+    section = lines.index("### As a character's message (#906)")
+    assert lines.index("## P-01: retrieval latency by stage (NFR-PERF-1)") < section
+    assert "`character:01J0000000000000000000000B`" in lines[section + 2]
+    assert "| profiles | 3.8 | 7.5 | 9.0 | 11.2 |" in lines[section:]
+    (results / "p_01.json").write_text(json.dumps(p01))
+    before = tmp_path / "docs-before"
+    before.mkdir()
+    perf_docs.render(results, before)
+    assert "#906" not in (before / "perf.md").read_text()
+
+
 def _rows(page: str) -> dict[str, str]:
     """capacity.md's rows by their memories cell, as ``Gated | Within`` cells."""
     rows = [

@@ -434,6 +434,33 @@ Labels: labeled 60.
 - `abstract-tiredness-0001`: `{"origin": "authored", "inputs": {"actor": "Tom", "other": "Maren", "episodes": [{"by": "Tom", "text": "falls asleep in the chair after supper"}, {"by": "Tom", "text": "drags through the morning chores"}, {"by": "Maren", "text": "stacks the firewood"}, {"by": "Tom", "text": "yawns through breakfast"}], "question": "Who is tired?"}, "expected": {"reflection": "Tom is very tired.", "supports": [0, 1, 3]}}`
 - `abstract-tiredness-0003`: `{"origin": "paraphrase", "inputs": {"actor": "Linda", "other": "Marcus", "episodes": [{"by": "Linda", "text": "forgets where the keys are twice"}, {"by": "Linda", "text": "yawns through breakfast"}, {"by": "Linda", "text": "falls asleep in the chair after supper"}, {"by": "Marcus", "text": "stacks the firewood"}], "question": "Who is tired?"}, "expected": {"reflection": "Linda is very tired.", "supports": [0, 1, 2]}}`
 
+## `relationships/cases.jsonl` (q06, 46 cases)
+
+Families: described-deep 13, named-deep 8, speaker-deep 3, undescribed-deep 11, undescribed-shallow 11.
+
+Labels: correct 46.
+
+- `relationships-described-deep-0004`: `{"origin": "paraphrase", "inputs": {"kind": "described", "depth": "deep", "about": "Bobby", "predicate": "parent_of", "question": "Maren, who is Bobby's parent?", "expected": ["Odile"]}, "expected": "correct"}`
+- `relationships-described-deep-0008`: `{"origin": "paraphrase", "inputs": {"kind": "described", "depth": "deep", "about": "Hugo", "predicate": "married_to", "question": "Maren, who is Hugo's spouse?", "expected": ["Ines"]}, "expected": "correct"}`
+- `relationships-described-deep-0009`: `{"origin": "paraphrase", "inputs": {"kind": "described", "depth": "deep", "about": "Ines", "predicate": "married_to", "question": "Maren, who is Ines's spouse?", "expected": ["Hugo"]}, "expected": "correct"}`
+- `relationships-described-deep-0010`: `{"origin": "paraphrase", "inputs": {"kind": "described", "depth": "deep", "about": "Ines", "predicate": "friend_of", "question": "Maren, who is Ines's friend?", "expected": ["Carol"]}, "expected": "correct"}`
+- `relationships-described-deep-0011`: `{"origin": "paraphrase", "inputs": {"kind": "described", "depth": "deep", "about": "Carol", "predicate": "friend_of", "question": "Maren, who is Carol's friend?", "expected": ["Ines"]}, "expected": "correct"}`
+- `relationships-named-deep-0002`: `{"origin": "paraphrase", "inputs": {"kind": "named", "depth": "deep", "about": "Bobby", "predicate": "parent_of", "question": "Maren, who is a parent of Bobby, Tamsin or Odile?", "expected": ["Odile"], "distractor": "Tamsin"}, "expected": "correct"}`
+- `relationships-named-deep-0004`: `{"origin": "paraphrase", "inputs": {"kind": "named", "depth": "deep", "about": "Tamsin", "predicate": "sibling_of", "question": "Maren, is Tamsin's sibling Bobby or Hugo?", "expected": ["Hugo"], "distractor": "Bobby"}, "expected": "correct"}`
+- `relationships-named-deep-0007`: `{"origin": "paraphrase", "inputs": {"kind": "named", "depth": "deep", "about": "Tamsin", "predicate": "parent_of", "question": "Maren, who is a parent of Tamsin, Jory or Bobby?", "expected": ["Jory"], "distractor": "Bobby"}, "expected": "correct"}`
+- `relationships-speaker-deep-0001`: `{"origin": "authored", "inputs": {"kind": "speaker", "depth": "deep", "about": "Jory", "predicate": "friend_of", "question": "Maren, who is Jory's friend?", "expected": ["Maren", "me", "myself"]}, "expected": "correct"}`
+- `relationships-speaker-deep-0002`: `{"origin": "paraphrase", "inputs": {"kind": "speaker", "depth": "deep", "about": "Odile", "predicate": "sibling_of", "question": "Maren, who is Odile's sibling?", "expected": ["Maren", "me", "myself"]}, "expected": "correct"}`
+- `relationships-undescribed-deep-0004`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "deep", "about": "Bobby", "predicate": "parent_of", "question": "Maren, who are Bobby's parents?", "expected": ["Odile"]}, "expected": "correct"}`
+- `relationships-undescribed-deep-0008`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "deep", "about": "Ines", "predicate": "married_to", "question": "Maren, who is Ines married to?", "expected": ["Hugo"]}, "expected": "correct"}`
+- `relationships-undescribed-deep-0010`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "deep", "about": "Tamsin", "predicate": "parent_of", "question": "Maren, who are Tamsin's parents?", "expected": ["Jory"]}, "expected": "correct"}`
+- `relationships-undescribed-deep-0011`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "deep", "about": "Hugo", "predicate": "parent_of", "question": "Maren, who are Hugo's parents?", "expected": ["Jory"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0001`: `{"origin": "authored", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Bobby", "predicate": "married_to", "question": "Maren, who is Bobby married to?", "expected": ["Carol"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0002`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Carol", "predicate": "married_to", "question": "Maren, who is Carol married to?", "expected": ["Bobby"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0004`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Bobby", "predicate": "parent_of", "question": "Maren, who are Bobby's parents?", "expected": ["Odile"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0005`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Silas", "predicate": "enemy_of", "question": "Maren, who does Silas have a grudge against?", "expected": ["Bobby"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0008`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Ines", "predicate": "married_to", "question": "Maren, who is Ines married to?", "expected": ["Hugo"]}, "expected": "correct"}`
+- `relationships-undescribed-shallow-0011`: `{"origin": "paraphrase", "inputs": {"kind": "undescribed", "depth": "shallow", "about": "Hugo", "predicate": "parent_of", "question": "Maren, who are Hugo's parents?", "expected": ["Jory"]}, "expected": "correct"}`
+
 ## `judge_calibration/cases.jsonl` (judge calibration, 220 cases)
 
 Families: broken 36, equivalent 40, fallback-line 36, register 36, repetition 36, stock 36.

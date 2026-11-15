@@ -222,6 +222,7 @@ measures.
 | `e01_viewpoint` | E-01 (M5): a character's own claims through `Verifier.verify` against canon and its belief partition, with the declared intent: lies, false beliefs and belief-consistent claims, none of which may be repaired | false contradiction ≤ 2 %, false support ≤ 1 % (rate; NFR-QUAL-2's floors gate from M9, ADR-164); accuracy reported | `entailment_viewpoint/` (300) | #179 |
 | `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
 | `priv_think_leak` | NFR-QUAL-1's private-thought metric: a scripted prelude plants a character's `think`, then another character answers the player; neither turn's player-facing output may disclose the thought (verbatim, paraphrased or as narrated inner state) | 0 observed on ≥ 300 cases a seed (zero) | `think_leak/` (345 + 96 controls) | #179 |
+| `q06` | Q-06 (M10): relationship recall. The innkeeper is asked about a townsperson's relationship through `respond`; the answer is scored correct, don't-know, wrong or unclear by a deterministic matcher, per kind (undescribed, described, named, speaker) and depth. It compares `memory.episodic.profile_scope` runs (`--dial`, below). | report only (informational) | `relationships/` (46) | #913 |
 
 ## E-11: image-policy checking (#270)
 
@@ -335,6 +336,49 @@ A disclosure on the local model is a privacy defect: file one `sev:high` `area:o
 bug per suite naming the case ids and the fingerprint (never the output text). It blocks M5:
 NFR-QUAL-1 does not take ADR-164's route to M9. The `e01_viewpoint` rows are reported; their
 NFR-QUAL-2 floors gate from M9.
+
+## Q-06 and the profile-scope comparison (#913)
+
+`memory.episodic.profile_scope` (#905, ADR-193) decides which relationships a retrieved
+standing profile carries: `message` (the default) keeps those among the message's people, and
+`full` keeps every one. `q06` measures what a render answers either way (its module docstring
+and `evals/sets/relationships/PROVENANCE.md` have the kinds). Read its `undescribed_deep` rows
+first: their relationship is the one a `message` profile leaves out, and the canon arm cannot
+carry it. The fact's own semantic memory may still reach the render, and the run measures
+whether the answer does.
+
+`run --dial PATH=VALUE` sets one setting of every structured scratch story over the preset. It
+can be repeated, takes a dotted settings path, and reads the value as JSON. The run's
+fingerprint and run id are the dialled configuration's, and the report's **Dials:** line names
+the patch. So the same command with and without the dial makes two runs, compared side by side.
+A dialled run certifies nothing (`certify` takes no dials), and a `--suite` rerun never merges
+into a run whose dials differ.
+
+The comparison runs on hosted Claude Haiku 5.5, with the embeddings on LM Studio, as the
+certification does. It runs Q-06 plus Q-01, Q-03 and Q-04 as a regression check, once under
+each setting. The `relationships` set must be approved first (its `PROVENANCE.md`):
+
+```sh
+export EPISTREL_EVALS_API_KEY=<Anthropic API key>
+# 1. message (the default)
+uv run python -m epistrel.evals run --suite q06 --suite q01 --suite q03 --suite q04 --new-run \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 \
+    --embedding-model text-embedding-nomic-embed-text-v1.5 \
+    --embedding-base-url http://localhost:1234/v1 \
+    --seeds 3 --concurrency 8 \
+    --hardware "Anthropic API" --server-version "Claude API (OpenAI compatibility)"
+# 2. full: the same command with the dial
+uv run python -m epistrel.evals run --suite q06 --suite q01 --suite q03 --suite q04 --new-run \
+    --dial memory.episodic.profile_scope=full \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 \
+    --embedding-model text-embedding-nomic-embed-text-v1.5 \
+    --embedding-base-url http://localhost:1234/v1 \
+    --seeds 3 --concurrency 8 \
+    --hardware "Anthropic API" --server-version "Claude API (OpenAI compatibility)"
+```
+
+Each run writes its report to `docs/evals/full-<fingerprint>-<date>.md` and regenerates
+`INDEX.md`. Commit both reports, and post the per-kind rows of each run side by side on #868.
 
 ## The quality judge and its calibration (#158)
 

@@ -62,6 +62,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import itertools
 import json
 import os
 import random
@@ -70,7 +71,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -530,14 +531,18 @@ def memory_row(
 
 
 async def insert_memories(
-    db: AsyncEngine, rows: Sequence[Mapping[str, Any]], *, batch: int = MEMORY_BATCH
+    db: AsyncEngine, rows: Iterable[Mapping[str, Any]], *, batch: int = MEMORY_BATCH
 ) -> int:
     """Write ``rows`` through ``insert_derived``, ``batch`` to a transaction; answers the
-    count. Every row of one call has the same columns."""
-    for start in range(0, len(rows), batch):
+    count. Every row of one call has the same columns. ``rows`` may be a generator
+    (``memory_rows``): only one batch is held at a time (#914)."""
+    written = 0
+    found = iter(rows)
+    while chunk := list(itertools.islice(found, batch)):
         async with db.begin() as conn:
-            await insert_derived(conn, memories, rows[start : start + batch])
-    return len(rows)
+            await insert_derived(conn, memories, chunk)
+        written += len(chunk)
+    return written
 
 
 def _holders(spec: ScaleSpec, cast: Sequence[str], held: int) -> list[str]:
@@ -566,7 +571,22 @@ def memory_plan(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """The rows of memories ``offset`` .. ``offset + count`` (see the module docstring),
-    positioned over the story's turns; ``turn_ops`` maps a turn to its operation."""
+    positioned over the story's turns; ``turn_ops`` maps a turn to its operation. The list
+    form of ``memory_rows``."""
+    return list(memory_rows(spec, story, turn_ops, count=count, offset=offset))
+
+
+def memory_rows(
+    spec: ScaleSpec,
+    story: ScaleStory,
+    turn_ops: Mapping[int, str],
+    *,
+    count: int | None = None,
+    offset: int = 0,
+) -> Iterator[dict[str, Any]]:
+    """``memory_plan``'s rows, one at a time (#914): each row carries a ``spec.dimension``
+    vector (about 25 KB at 768), so a step of a million rows held as a list outgrows the host.
+    The holder draw and the turn spread are fixed up front, as the list form fixes them."""
     count = spec.memories if count is None else count
     total = offset + count
     turns = sorted(turn_ops)
@@ -576,7 +596,6 @@ def memory_plan(
     kinds = [_kind(i) for i in range(offset, total)]
     held = sum(1 for k in kinds if k is not MemoryKind.EPISODIC)
     holders = iter(_holders(replace_seed(spec, offset), cast, held))
-    rows: list[dict[str, Any]] = []
     for i, kind in zip(range(offset, total), kinds, strict=True):
         rng = random.Random(f"memory:{spec.seed}:{i}")  # noqa: S311 - a reproducible fixture
         turn = turns[(i * len(turns)) // total] if total > len(turns) else turns[i % len(turns)]
@@ -617,8 +636,7 @@ def memory_plan(
                 vector=stub_vector(line, spec.dimension),
                 version=version,
             )
-        rows.append(row)
-    return rows
+        yield row
 
 
 def replace_seed(spec: ScaleSpec, offset: int) -> ScaleSpec:
@@ -641,6 +659,14 @@ def _kind(i: int) -> MemoryKind:
     if slot < 16:
         return MemoryKind.EPISODIC
     return MemoryKind.SEMANTIC if slot < 19 else MemoryKind.REFLECTION
+
+
+def _kept(rows: Iterable[dict[str, Any]], into: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """``rows`` passed through, keeping each one's id, kind and holder in ``into``: what
+    ``_cover_and_pin`` reads, without the vectors."""
+    for row in rows:
+        into.append({k: row[k] for k in ("id", "kind", "holder_character_id")})
+        yield row
 
 
 async def _cover_and_pin(
@@ -1267,9 +1293,10 @@ async def build_scale_fixture(
             await _refold(db, story.story_id)
     turn_ops = await turn_operations(db, story.story_id)
     with _timed(timings, "memories", log):
-        rows = memory_plan(spec, story, turn_ops)
+        kept: list[dict[str, Any]] = []
+        rows = _kept(memory_rows(spec, story, turn_ops), kept)
         story.memories = await insert_memories(db, rows)
-        await _cover_and_pin(db, story, rows)
+        await _cover_and_pin(db, story, kept)
     with _timed(timings, "counters", log):
         async with db.begin() as conn:
             await conn.execute(
@@ -1368,9 +1395,10 @@ async def build_scale_stories(
             await _turns(db, own, story, None)
         turn_ops = await turn_operations(db, story.story_id)
         with _timed(timings, "memories", None):
-            rows = memory_plan(own, story, turn_ops)
+            kept: list[dict[str, Any]] = []
+            rows = _kept(memory_rows(own, story, turn_ops), kept)
             story.memories = await insert_memories(db, rows)
-            await _cover_and_pin(db, story, rows)
+            await _cover_and_pin(db, story, kept)
         with _timed(timings, "counters", None):
             async with db.begin() as conn:
                 await conn.execute(
@@ -1403,7 +1431,7 @@ async def grow(
     if to <= story.memories:
         return fixture.index
     turn_ops = await turn_operations(db, story.story_id)
-    rows = memory_plan(
+    rows = memory_rows(
         fixture.spec, story, turn_ops, count=to - story.memories, offset=story.memories
     )
     await drop_index(db)
@@ -1571,6 +1599,7 @@ __all__ = [
     "insert_memories",
     "memory_plan",
     "memory_row",
+    "memory_rows",
     "person_names",
     "queries",
     "read_cached",

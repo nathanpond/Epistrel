@@ -14992,3 +14992,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Hold:** PR #917 (#913). A new labeled set must be approved by the owner (`approved by owner YYYY-MM-DD` in `evals/sets/relationships/PROVENANCE.md`, in a commit of their own). `--check-sets` fails on `main` (`EPISTREL_REQUIRE_APPROVED_SETS=1`) while it reads `pending`, so merging before the approval would turn `main` red. The PR stays a draft until that commit lands.
   **Resolution (2026-11-15):** hold lifted. The owner's own commit a99cb2d ("evals: owner approves the relationships set (#913)") sets `approved by owner 2026-11-15`, and the PR is marked ready.
   **Issue:** #913
+
+## /n8-exec M10 (#868 runner runs 2–3, Q-06 profile-scope A/B) — 2026-11-15
+
+- **Decision:** I'm counting the Sunday scheduled weekly run 43702386621 @ f3620e7 (P-01 total p95 166.3 ms) as run 2 of 3 and the dispatched run 43749208792 @ f3620e7 (144.6 ms) as run 3. The median of the three is 149.1 ms, within the 200 ms runner target, so #868's second criterion is ticked. Per-stage before/after is on #868: the profiles stage p95 went from 95.3 to about 45–53 ms.
+  **Why:** #868's AC is the median of 3 weekly runs on github-runner. A scheduled weekly runs the same job as a dispatch, so it counts.
+  **Issue:** #868
+- **Decision:** I'm keeping `memory.episodic.profile_scope=message` as the default. On hosted Claude Haiku 5.5 (3 seeds), Q-06's `undescribed_deep.correct` was 78.8% under `message` vs 66.7% under `full`, and the other kinds were within noise. q03 and q04 matched 2026-11-06. Reports: `docs/evals/full-c8c88895af7a-2026-11-15.md` (message) and `docs/evals/full-a7ac39828994-2026-11-15.md` (full, dialled).
+  **Why:** `full` costs about 50 ms of profiles p95 on the runner and bought no recall in this run. ADR-193 stands.
+  **Issue:** #868, #913
+- **Decision:** I filed #918 (bug, needs-triage) and didn't fix it here. In both A/B runs q01 played no cases, because story setup was refused by the guardrail ("a minor is involved or present"), so NFR-QUAL-6 reads n=0.
+  **Why:** It has the #759 symptom, and #762 fixed that. The cause (a budget regression or a new model verdict) needs a content-debug repro, which is outside #868's scope.
+  **Issue:** #918
+- **Decision:** The owner tabled #915 (story-count capacity) to the v2 milestone and declined the 5M capacity step (noted on #502).
+  **Why:** Hobby deployments sit far under the ~6,400-story lock sizing (ADR-191); 1M stays the largest measured point (NFR-SCALE-1).
+  **Issue:** #915, #502

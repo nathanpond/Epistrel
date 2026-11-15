@@ -14933,6 +14933,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** `profile_views` is documented as identical to `profile_view` per entity (#451). The single read is the public route's answer, so the batch matches it. Choosing the other reading would change the route, which is an API answer.
   **Issue:** #907
 
+## /n8-exec M10 (#914) — 2026-11-14
+
+- **Decision:** #914 joins M10 on the owner's go (2026-11-14: "go on new stories"), part of #502. It fixes the capacity tool's memory before the 5M step's go/no-go is asked again.
+  **Why:** #502's 5M projection (about 114 GiB resident) came from `scale.grow` holding a whole step's rows as one list (25.2 KiB a row at 768 dimensions, measured), not from the Engine.
+  **Issue:** #914, #502
+- **Decision:** `memory_rows` is a generator with `memory_plan`'s body, and `memory_plan` is kept as `list(memory_rows(...))`. `insert_memories` takes any iterable and holds one `MEMORY_BATCH` at a time. The bulk build and `build_scale_stories` keep only each row's id, kind and holder for `_cover_and_pin`. `capacity.live_memory_writes` keeps the list form.
+  **Why:** That function builds its 2,000 rows before starting its timer. Streaming them would move row generation into the timed section and change P-10's live-write figure.
+  **Issue:** #914
+- **Decision (AC correction):** "`fixture_version()` is unchanged" can't be met by any change to `scale.py`, because `fixture_version()` is a hash of that file's own source. The fixture's content is shown unchanged instead: a test pins digests of the rows the list form wrote on `origin/main` @ 896a8bc, for the first build and for a grow at an offset, and the old and new modules give the same digests. Every ULID `id` is drawn fresh in both forms, so the digests leave it out.
+  **Why:** The criterion was there to protect the cached fixture's content. The cost is one cache miss: the next weekly perf run rebuilds the 50k fixture (about 16 min on the runner), with the same rows.
+  **Issue:** #914
+
 ## /n8-exec M10 (#913) — 2026-11-14
 
 - **Decision:** #913, the Q-06 relationship-recall eval plus a run-level `--dial` flag, joins M10 on the owner's go (2026-11-14, "go on new stories"). It prepares the `profile_scope` quality comparison the owner asked for before M10 closes, on hosted `claude-haiku-5-5`.

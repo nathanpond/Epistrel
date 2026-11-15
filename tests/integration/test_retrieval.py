@@ -372,6 +372,50 @@ async def test_a_scoped_profile_keeps_the_relationships_among_its_people(scratch
         assert found[ann].inventory == full[ann].inventory
 
 
+async def test_a_batch_with_a_merge_answers_each_profile_alone(scratch: Scratch) -> None:
+    """#907 (FR-RET-6, FR-PROP-7): ``profile_views`` over a batch holding an author-merged
+    entity, its member and the people and items related to them answers, at every turn and
+    from both omniscient and a character's viewpoint, exactly what ``profile_view`` answers for
+    each entity alone: a merge reads its members as the profiled entity only in that entity's
+    own profile.
+
+    Complement asserted: Ann's profile names the stranger and the lamp's holder is the
+    stranger, rows that read as Bobby's only in Bobby's profile."""
+    db = scratch.db
+    w, stranger = await _knows_cast(db)
+    story = w.story_id
+    ann, bobby, cal = w.people["Ann"], w.people["Bobby"], w.people["Cal"]
+    async with db.begin() as conn:
+        lamp = await store.add_entity(conn, story, "item", "lamp")
+    holds = Proposition(
+        subject_id=stranger,
+        predicate_id=CORE_BY_NAME["holds"].id,
+        object_id=lamp,
+        valid_time=Interval.of(None, None),
+    )
+    await c.commit(db, story, holds)
+    ids = [ann, bobby, cal, stranger, lamp]
+    head = await _head_of(db, story)
+    async with db.connect() as conn:
+        for turn in range(head + 1):
+            for viewpoint in ("omniscient", w.viewpoint("Ann")):
+                batched = await structured.profile_views(
+                    conn, story, ids, as_of=turn, viewpoint=viewpoint
+                )
+                alone = {
+                    e: await structured.profile_view(
+                        conn, story, e, as_of=turn, viewpoint=viewpoint
+                    )
+                    for e in ids
+                }
+                assert batched == alone, (turn, viewpoint)
+    assert stranger in {v.other.entity_id for v in batched[ann].relationships}
+    held = batched[lamp].placement
+    assert held is not None
+    assert held.container is not None
+    assert held.container.entity_id == stranger
+
+
 async def test_retrieval_scopes_profiles_to_the_message(scratch: Scratch) -> None:
     """#905 (FR-RET-6): under ``memory.episodic.profile_scope: message`` (the default) a
     retrieved profile carries only its relationships to the message's people (the entities it

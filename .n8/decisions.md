@@ -14923,3 +14923,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** Added a follow-up test PR, #910 (ae523bd), before ticking #905's first criterion.
   **Why:** The merged test checked `full` against the route for one query, and the criterion asks for many. I didn't tick that box until the five-query version merged with CI passing.
   **Issue:** #905
+
+## /n8-exec M10 (#907: batched profiles with an author's merge) — 2026-11-14
+
+- **Decision:** The owner triaged #907 into M10 on 2026-11-14 ("Fix it in M10 now"), so I moved it from `needs-triage` to `bug` in M10. Acceptance criteria were added to the issue body; this repo has no `story` label, and M10's stories carry type and area labels.
+  **Why:** The owner's answer to the triage question in this session.
+  **Issue:** #907
+- **Decision:** `_profiles` builds each profile from the rows with an end in that entity's own merge class, mapping only those ends to it. Before, one map across the whole batch rewrote every row. Rows are read and checked with `current` once and indexed by end, so the cost stays linear in rows. The answer the issue left open ("should Ann's profile show the stranger as Bobby?") follows the single read, which is the route's: Ann sees the stranger. #713's merge applies within the merged entity's own profile.
+  **Why:** `profile_views` is documented as identical to `profile_view` per entity (#451). The single read is the public route's answer, so the batch matches it. Choosing the other reading would change the route, which is an API answer.
+  **Issue:** #907

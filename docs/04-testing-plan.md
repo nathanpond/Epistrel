@@ -340,6 +340,13 @@ Evals are run and reported **per configuration fingerprint** (NFR-QUAL-11, FR-PR
 - **[Q-03] Abstract-query recall (FR-MEM-3):** reflections make abstract questions retrievable; compare recall with/without the reflection tier.
 - **[Q-04] Knowledge-asymmetry correctness (differentiator metric; FR-EPI-1,5, NFR-QUAL-1):** for a given character, questions whose correct answer requires *not* knowing another character's private facts. Metric: asymmetry-violation rate; target zero on the labeled set (behavioral backstop to the PRIV property test).
 - **[Q-05] External benchmark alignment** *(informational)*: adapted LongMemEval / LoCoMo for comparability, plus a RoleThink-style character/ToM set. Tracked, not the primary gate (the custom asymmetry eval is the differentiator gate).
+- **[Q-06] Relationship recall (FR-RET-6)** *(informational; never a gate)*: a character is asked about another person's relationship (spouse, parent, child, sibling, friend, enemy) in a world whose people are tied by objective relationships, and the player-facing answer is scored correct, don't-know, wrong or unclear by a deterministic matcher, per kind:
+  - *undescribed*: the answer is neither named nor described by a relation noun, so a `message`-scoped standing profile leaves the relationship out;
+  - *described*: a relation noun the resolve stage resolves;
+  - *named*: both people are named;
+  - *speaker*: the answer is the speaker.
+
+  Each kind runs at two depths; in a *deep* case the canon arm is filled with acquaintances. Run with and without `--dial memory.episodic.profile_scope=full` to compare the two profile scopes (#905, ADR-193; #913).
 
 ---
 
@@ -773,7 +780,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | FR-RET-3 | M | M4 | I-05 (M4), S-THOSEGUYS (M4), Q-02 (M4) |
 | FR-RET-4 | M | M4 | I-06 (M4) |
 | FR-RET-5 | M | M4 | U-10 (M4) |
-| FR-RET-6 | M | M4 | I-05 (M4), S-THOSEGUYS (M4) |
+| FR-RET-6 | M | M4 | I-05 (M4), S-THOSEGUYS (M4), Q-06 (M10) |
 | FR-RET-7 | S | M4 | U-31 (M5) |
 | FR-REWRITE-1 | M | M7 | I-13 (M7), S-LITE-REWRITE (M7) |
 | FR-REWRITE-2 | M | M7 | I-13 (M7) |

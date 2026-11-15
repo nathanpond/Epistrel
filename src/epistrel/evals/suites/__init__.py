@@ -259,6 +259,7 @@ from epistrel.evals.suites import q01_recall as _q01  # noqa: E402, F401
 from epistrel.evals.suites import q02_resolution as _q02  # noqa: E402, F401
 from epistrel.evals.suites import q03_abstract as _q03  # noqa: E402, F401
 from epistrel.evals.suites import q04_asymmetry as _q04  # noqa: E402, F401
+from epistrel.evals.suites import q06_relationships as _q06  # noqa: E402, F401
 from epistrel.evals.suites import smoke as _smoke  # noqa: E402, F401
 
 __all__ = [

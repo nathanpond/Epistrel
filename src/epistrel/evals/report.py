@@ -274,6 +274,9 @@ class Report(BaseModel):
     resumed: Resumed | None = None
     """Set when some of the run's cases came from its results journal (#730); ``None``: every
     case was played in this run."""
+    dials: dict[str, Any] | None = None
+    """The run's own settings merge patch over its preset (#913: ``run --dial``), which its
+    fingerprint names; ``None``: the preset as it is (every report before #913)."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -467,6 +470,19 @@ def summary(report: Report) -> dict[str, Any]:
     }
 
 
+def dial_leaves(patch: Mapping[str, Any] | None, prefix: str = "") -> list[tuple[str, Any]]:
+    """A settings merge patch as its dotted leaf paths and values, in key order (#913)."""
+    found: list[tuple[str, Any]] = []
+    for key in sorted(patch or {}):
+        value = (patch or {})[key]
+        path = f"{prefix}{key}"
+        if isinstance(value, Mapping) and value:
+            found += dial_leaves(value, f"{path}.")
+        else:
+            found.append((path, value))
+    return found
+
+
 LEGACY_PRESET = "structured"
 """The INDEX ``preset`` of a report written before #227: it ran the seeded ``Structured``
 profile."""
@@ -580,6 +596,17 @@ def render_markdown(report: Report) -> str:
                 + " on the model; every other purpose on the stub's default answers"
             ]
             if report.real_purposes is not None
+            else []
+        ),
+        *(
+            [
+                "- **Dials:** "
+                + ", ".join(
+                    f"`{path} = {json.dumps(value)}`" for path, value in dial_leaves(report.dials)
+                )
+                + " over the preset (a run-level settings patch; this run certifies nothing)"
+            ]
+            if report.dials
             else []
         ),
         f"- **Host:** {'; '.join(host_bits)}",

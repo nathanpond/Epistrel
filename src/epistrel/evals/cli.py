@@ -24,6 +24,8 @@
     uv run python -m epistrel.evals run --suite q04 --suite priv_think_leak \\
         --suite e01_viewpoint --run-id <id> --base-url … --model … \\
         --real-purpose generation --concurrency 2       # #179: NFR-QUAL-1's exit evidence
+    uv run python -m epistrel.evals run --suite q06 \
+        --dial memory.episodic.profile_scope=full …     # #913: a run-level settings patch
 
 ``run`` needs PostgreSQL: ``--database-url`` (a scratch database; the run writes the endpoint
 into its model configuration and plays its turns there), else a throwaway one started through
@@ -56,6 +58,16 @@ second model: E-03's entailment judgement, E-12/E-13's ``quality_judge`` and the
 stored under the judge model. ``--judge-base-url`` and ``--judge-api-key`` default to
 ``--base-url`` and ``--api-key``. Every engine call keeps ``--model``. Without it the run model
 judges, and the report says the judged suites were self-judged.
+
+``--dial PATH=VALUE`` (#913; ``run`` only, repeatable) sets one setting of every structured
+scratch story over the run's preset: ``PATH`` is a dotted settings path
+(``memory.episodic.profile_scope``) and ``VALUE`` is read as JSON, else taken as a string. The
+dials form one merge patch, checked against the preset's settings before anything runs (an
+unknown path or a bad value exits 2), under each suite's own dials. The run's fingerprint, and
+so its run id and file name, is the dialled configuration's, and the report names the dials:
+the same command with and without them makes two runs that can be compared, and never one run.
+A ``--suite`` rerun refuses to merge into a run whose dials differ, and ``certify`` takes no
+dials: a dialled run certifies nothing.
 """
 
 from __future__ import annotations
@@ -68,14 +80,17 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from epistrel.core.errors import InvalidRequest
 from epistrel.evals import authoring
 from epistrel.evals import check as checks
 from epistrel.evals import report as reports
 from epistrel.evals import sets as labeled_sets
 from epistrel.evals.gate import Verdict
-from epistrel.evals.presets import DEFAULT_PRESET, PRESET_NAMES
+from epistrel.evals.presets import DEFAULT_PRESET, PRESET_NAMES, PRESETS
 from epistrel.evals.runner import (
     BUILD_DIR,
     DEFAULT_SEED_BASE,
@@ -110,6 +125,46 @@ def stub_markdown(preset: str) -> Path:
     """Where a stub run's Markdown goes by default: ``build/evals/stub-report-<preset>.md``
     (#227: CI runs the stub once per preset)."""
     return BUILD_DIR / f"stub-report-{preset}.md"
+
+
+class DialInvalid(ValueError):
+    """A ``--dial`` that is not ``PATH=VALUE`` or that the preset's settings refuse (#913)."""
+
+
+def dial_patch(dials: Sequence[str]) -> dict[str, Any]:
+    """``--dial PATH=VALUE`` flags as one settings merge patch (#913): ``PATH`` dotted,
+    ``VALUE`` JSON, else the string as written; a later flag for the same path wins."""
+    patch: dict[str, Any] = {}
+    for dial in dials:
+        path, sep, raw = dial.partition("=")
+        keys = path.strip().split(".")
+        if not sep or not all(k.strip() for k in keys):
+            raise DialInvalid(f"--dial {dial!r}: expected PATH=VALUE (a dotted settings path)")
+        try:
+            value: Any = json.loads(raw)
+        except ValueError:
+            value = raw
+        node = patch
+        for key in keys[:-1]:
+            child = node.get(key.strip())
+            if not isinstance(child, dict):
+                child = node[key.strip()] = {}
+            node = child
+        node[keys[-1].strip()] = value
+    return patch
+
+
+def checked_dials(dials: Sequence[str], preset: str) -> dict[str, Any] | None:
+    """The run's dial patch, refused (``DialInvalid``) when ``preset``'s settings with it do not
+    validate (an unknown path, a value out of range); ``None`` without dials."""
+    if not dials:
+        return None
+    patch = dial_patch(dials)
+    try:
+        PRESETS[preset].effective(patch)  # type: ignore[index]
+    except (InvalidRequest, ValidationError, ValueError, TypeError) as exc:
+        raise DialInvalid(f"--dial: the {preset} preset's settings refuse {patch}: {exc}") from exc
+    return patch
 
 
 def _positive(value: str) -> int:
@@ -220,6 +275,17 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="e11 only (#271): send one synthetic PNG through the image checker, print its "
         "latency and the run's estimated time, and exit (non-zero when no verdict came back)",
+    )
+    run.add_argument(
+        "--dial",
+        action="append",
+        default=[],
+        dest="dials",
+        metavar="PATH=VALUE",
+        help="set one setting of every structured scratch story over the preset (repeatable; "
+        "#913): a dotted settings path and a JSON value, e.g. "
+        "memory.episodic.profile_scope=full; the run's fingerprint names the dialled "
+        "configuration",
     )
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
@@ -364,12 +430,20 @@ async def _run(args: argparse.Namespace) -> int:
         if len(set(args.suite)) > 1:
             print("error: e11 runs on its own (`run --suite e11`)", file=sys.stderr)
             return EX_USAGE
+        if args.dials:
+            print("error: --dial is for engine suites; e11 checks images", file=sys.stderr)
+            return EX_USAGE
         return await _run_e11(args, adapter)
     if args.floors is not None:
         print("error: --floors is e11's (`run --suite e11 --floors …`)", file=sys.stderr)
         return EX_USAGE
     if args.preflight:
         print("error: --preflight is e11's (`run --suite e11 --preflight`)", file=sys.stderr)
+        return EX_USAGE
+    try:
+        dials = checked_dials(args.dials, args.preset)
+    except DialInvalid as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return EX_USAGE
     if args.seeds is None:
         args.seeds = DEFAULT_SEEDS
@@ -380,12 +454,20 @@ async def _run(args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     fingerprint_value = run_fingerprint(
         config.model_name,
+        dials,
         judge=config.judge_model,
         real_purposes=routed_purposes(config),
         preset=config.preset,
     )
     run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now, config.preset))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
+    if prior is not None and (prior.dials or None) != dials:
+        print(
+            f"error: run {run_id} ran with dials {prior.dials or 'none'}, this one with "
+            f"{dials or 'none'}: a dialled run never merges with another (#913)",
+            file=sys.stderr,
+        )
+        return EX_USAGE
     json_path = args.json_dir / f"{run_id}.json"
     failures = args.json_dir / f"{run_id}-failures.jsonl"
 
@@ -421,6 +503,7 @@ async def _run(args: argparse.Namespace) -> int:
             now=now,
             calibrate=bool(args.all),
             calibration_file=args.calibration_file,
+            dials=dials,
         )
     except (EndpointUnavailable, CalibrationMissing) as exc:
         print(f"error: {exc}", file=sys.stderr)

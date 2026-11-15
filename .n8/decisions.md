@@ -14932,3 +14932,50 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `_profiles` builds each profile from the rows with an end in that entity's own merge class, mapping only those ends to it. Before, one map across the whole batch rewrote every row. Rows are read and checked with `current` once and indexed by end, so the cost stays linear in rows. The answer the issue left open ("should Ann's profile show the stranger as Bobby?") follows the single read, which is the route's: Ann sees the stranger. #713's merge applies within the merged entity's own profile.
   **Why:** `profile_views` is documented as identical to `profile_view` per entity (#451). The single read is the public route's answer, so the batch matches it. Choosing the other reading would change the route, which is an API answer.
   **Issue:** #907
+
+## /n8-exec M10 (#913) — 2026-11-14
+
+- **Decision:** #913, the Q-06 relationship-recall eval plus a run-level `--dial` flag, joins M10 on the owner's go (2026-11-14, "go on new stories"). It prepares the `profile_scope` quality comparison the owner asked for before M10 closes, on hosted `claude-haiku-5-5`.
+  **Why:** The owner's decision in this session. No existing suite can tell `message` from `full` (Q-01/Q-03 score rankings, and the render suites have casts of two or three).
+  **Issue:** #913
+- **Decision:** The dials reach the scratch stories as the run preset's story overrides (`Preset.overrides`, applied by `scenes.structured`), under each suite's own `Suite.dials`. `run_suites(dials=...)` takes them, and the CLI flag is `run --dial PATH=VALUE`: a dotted path, the value read as JSON or else as a string, and the whole patch checked against the preset before the run.
+  - Without dials, nothing changes: the fingerprint, the report and the summary are the same.
+  - With dials, `run_fingerprint` gets the patch (so the run id differs), the report gains `Report.dials` and a **Dials:** line, and the per-suite fingerprint is the merged patch's.
+  - A certification run (`profile=`) refuses dials, `certify` has no flag, a `--suite` rerun refuses to merge into a run with different dials, and `e11` refuses the flag.
+  - The INDEX summary is unchanged (it doesn't carry dials), so `GET /admin/evals/runs` is unaffected. The fingerprint already tells the two runs apart.
+  **Why:** `Preset.overrides` is the existing route by which a certification run plays a story's own overrides (#233), so the patch reaches every structured scratch story through the same code. The per-suite fingerprint feeds the results journal's key, so a resumed journal can't mix configurations.
+  **Issue:** #913
+- **Decision (finding):** A relationship reaches a render by three routes, and `profile_scope` governs only one:
+  - the asked person's **standing profile**, which the setting governs;
+  - the **canon arm**, which carries the person's current canon as a subject, at most 20 facts (`CANON_PER_ENTITY`);
+  - the fact's own **semantic memory**: every author fact is one, and the alias and lexical arms find it by the person's name and the question's words.
+
+  Retrieval's resolve stage also resolves relation nouns of `core/resolution/lexicon.json` ("Bobby's spouse", "Tamsin's sibling", "Silas's enemy", singular only), and the resolved person joins the message's people, so `message` keeps that relationship. It does not resolve verbs ("married to"), plurals ("parents", "children") or a description with two answers (Jory's two children).
+
+  So Q-06 splits its cases by kind:
+  - *undescribed*: the profile drops the relationship;
+  - *described*, *named* and *speaker*: controls the profile keeps.
+
+  In a *deep* case the canon arm is filled with 24 `knows` facts.
+
+  `test_q_06__splits_the_profile_scope` checks, on the rendered character's prompt, that each kind behaves as labeled. Locally it passed on every deep case: 35 cases, both settings. The committed test runs 15 cases to bound CI time.
+  **Why:** This was found while probing the design, and it changes what the comparison can show. Under `message` the answer can still reach the render through its semantic memory, so Q-06 measures answers end to end and doesn't assume the profile is the only route. The owner should read the live comparison with this in mind.
+  **Issue:** #913, #868
+- **Decision (Discretion):** The scorer is deterministic, with no judge fallback. Its order:
+  1. an expected name → correct;
+  2. a don't-know phrase → don't-know;
+  3. a speaker case's self-reference → correct;
+  4. another cast name → wrong;
+  5. otherwise unclear, reported as `q06.unclear`.
+
+  A named case's answer that names both its answer and its distractor counts as unclear. The speaker's own name doesn't count, because every composed message carries it ("Maren: …").
+  **Why:** The issue allowed a judge fallback. A deterministic `unclear` row makes the two settings' runs comparable without a judge's own variance, and shows how much the matcher couldn't place.
+  **Issue:** #913
+- **Decision (Discretion):** The world is the Gull, Gullhaven's inn: the player Wren and the innkeeper Maren, who renders and is asked, plus 8 townspeople with 8 objective relationships and 3 of Maren's own. No character definition states a relationship. The set has 46 cases: undescribed 11 × 2 depths, described 13, named 8, speaker 3.
+  **Why:** That's within the issue's 30–60. Every relationship predicate in the projection appears (`married_to`, `parent_of`, `sibling_of`, `friend_of`, `enemy_of`).
+  **Issue:** #913
+- **Decision (gate):** The targeted set is the 29 test files that read the eval harness's changed modules: CLI, runner, report, sets, authoring, the index and docs checks, `tests/evals`, `tests/eval/test_q_06.py` and `test_sets.py`. Locally that's 197 passed plus `test_sets.py` 5 passed after its fix; one failure, `SIZES` needing `q06`, was fixed in the story. Also run: ruff, format, mypy, lint-imports, check-parts, check-traceability, check-lexicon, check-assignment, check-deps, check-licenses, openapi, and the evals checks `--check`, `index --check` and `--check-sets`. The suite-playing tests (`tests/eval/test_e_*`, `test_q_01`–`test_q_04`, `tests/evals/test_e_08.py`, conformance, redteam) run in CI's shards.
+  **Why:** The full grep set (47 files) reached 5 % in 30 minutes locally, a pace of about 10 hours. Those suites play the harness with no dials, through code paths whose behaviour without dials is unchanged, and CI's eval shards run them in parallel.
+  **Issue:** #913
+- **Hold:** PR for #913. A new labeled set must be approved by the owner (`approved by owner YYYY-MM-DD` in `evals/sets/relationships/PROVENANCE.md`, in a commit of their own). `--check-sets` fails on `main` (`EPISTREL_REQUIRE_APPROVED_SETS=1`) while it reads `pending`, so merging before the approval would turn `main` red. The PR stays a draft until that commit lands.
+  **Issue:** #913

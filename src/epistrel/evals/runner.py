@@ -120,6 +120,7 @@ from epistrel.core.memory.story_partitions import count_rows, not_a_partition
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds import profiles as seeded_profiles
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
@@ -750,6 +751,9 @@ class SuiteRun:
     progress: Progress = field(default_factory=Progress)
     model_version: str | None = None
     """The version the run model's endpoint reported, journalled with each case."""
+    dials: Mapping[str, Any] | None = None
+    """The run's own settings merge patch (#913: ``run --dial``), under each suite's
+    ``Suite.dials``; ``None``: the preset as it is."""
 
 
 def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
@@ -880,7 +884,7 @@ async def _play_seeds(
     collected into ``every``, for ``Suite.summarize``; per seed, the cases a model error ended
     counted in ``lost``)."""
 
-    own_fingerprint = suite_fingerprint(suite, job.config)
+    own_fingerprint = suite_fingerprint(suite, job.config, job.dials)
     sha = model_matrix.engine_sha() if job.journal is not None else ""
 
     async def bounded(case: CaseModel, seed: int) -> _Played | None:
@@ -1038,18 +1042,32 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         calibration=calibration,
         judge=suite_judge(suite, job),
         profile=suite.profile_label,
-        fingerprint=suite_fingerprint(suite, job.config),
+        fingerprint=suite_fingerprint(suite, job.config, job.dials),
     )
 
 
-def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
+def suite_dials(
+    suite: Suite, run_dials: Mapping[str, Any] | None = None
+) -> Mapping[str, Any] | None:
+    """The settings merge patch ``suite``'s stories run under: the run's (#913: ``run
+    --dial``) with the suite's own (``Suite.dials``, #179) on top; ``None`` when neither is set."""
+    if suite.dials is None and not run_dials:
+        return None
+    return merge_patch(dict(run_dials or {}), dict(suite.dials or {}))
+
+
+def suite_fingerprint(
+    suite: Suite, config: AdapterConfig, run_dials: Mapping[str, Any] | None = None
+) -> str | None:
     """The fingerprint of the configuration ``suite``'s stories ran under, when it is not the
-    seeded profile's (``Suite.dials``, #179); ``None`` otherwise (the run's fingerprint)."""
-    if suite.dials is None:
+    seeded profile's (``Suite.dials``, #179; a run's ``--dial``, #913); ``None`` otherwise (the
+    run's fingerprint)."""
+    dials = suite_dials(suite, run_dials)
+    if dials is None:
         return None
     return run_fingerprint(
         config.model_name,
-        suite.dials,
+        dials,
         judge=config.judge_model,
         real_purposes=routed_purposes(config),
         preset=config.preset,
@@ -1057,16 +1075,21 @@ def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
 
 
 def not_applicable(
-    suite: Suite, config: AdapterConfig, seeds: Sequence[int], preset: Preset | None = None
+    suite: Suite,
+    config: AdapterConfig,
+    seeds: Sequence[int],
+    preset: Preset | None = None,
+    run_dials: Mapping[str, Any] | None = None,
 ) -> SuiteResult | None:
     """``suite``'s ``not_applicable`` result when the run's preset (``preset``, else the
-    config's) lacks what it needs (``presets.needs``; #227), else ``None`` (it runs)."""
+    config's), with the run's and the suite's dials, lacks what it needs (``presets.needs``;
+    #227), else ``None`` (it runs)."""
     chosen = preset or PRESETS[config.preset]
     missing = needs(
         chosen,
         requires=suite.requires,
         guarantees=suite.guarantees,
-        dials=suite.dials,
+        dials=suite_dials(suite, run_dials),
         structured=suite.structured,
     )
     if not missing:
@@ -1147,9 +1170,16 @@ async def run_suites(
     journal: Journal | None = None,
     stop: asyncio.Event | None = None,
     progress: Progress | None = None,
+    dials: Mapping[str, Any] | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
+
+    ``dials`` (#913: ``run --dial``) is a settings merge patch every structured scratch story
+    takes over the run's preset, as its story overrides (``scenes.structured``), with a suite's
+    own ``Suite.dials`` on top. The run's fingerprint is the dialled configuration's (so its run
+    id differs from the preset's), and the report names the patch (``Report.dials``). A
+    certification run (``profile``) refuses it: a dialled run never certifies a preset.
 
     **The judge calibration** (#158): with ``calibrate`` the judge is calibrated first, on the
     same engine, and stored in ``calibration_file`` (default ``calibration_path``); otherwise a
@@ -1180,9 +1210,14 @@ async def run_suites(
                 f"no judge calibration for {config.judge_name!r} in {store}: run "
                 "`calibrate-judge` (or `run --all`) first"
             )
+    if dials and profile is not None:
+        raise ValueError("a certification run takes no --dial: it plays the profile as it is")
     chosen = profile or PRESETS[config.preset]
+    if dials:
+        chosen = replace(chosen, overrides=merge_patch(dict(chosen.overrides), dict(dials)))
     fingerprint_value = fingerprint_value or run_fingerprint(
         config.model_name,
+        dials or None,
         judge=config.judge_model,
         real_purposes=routed_purposes(config),
         preset=config.preset,
@@ -1200,6 +1235,7 @@ async def run_suites(
         seed_base=seed_base,
         seeds=list(seeds),
         real_purposes=routed_purposes(config),
+        dials=dict(dials) if dials else None,
     )
     async with (
         engine_for(config, engine) as live,
@@ -1253,11 +1289,12 @@ async def run_suites(
                 stop=stop,
                 progress=progress or Progress(),
                 model_version=report.model_version,
+                dials=dict(dials) if dials else None,
             )
             preset_token = RUN_PRESET.set(chosen)
             try:
                 for suite in suites:
-                    skipped = not_applicable(suite, config, seeds, chosen)
+                    skipped = not_applicable(suite, config, seeds, chosen, job.dials)
                     report.merge(skipped if skipped is not None else await run_suite(suite, job))
                     if on_suite is not None:
                         pending = on_suite(report)

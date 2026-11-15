@@ -1,5 +1,5 @@
 """#157's set authoring (and #158's judge calibration pairs and intervention scenarios, and
-#179's zero-leak and viewpoint sets, and #201's time-estimation set): the
+#179's zero-leak and viewpoint sets, #201's time-estimation set and #913's relationship set): the
 labeled sets of the NFR-QUAL suites, generated deterministically
 from hand-written templates (no model), one module per set.
 
@@ -26,6 +26,7 @@ from epistrel.evals.authoring import (
     entailment_viewpoint,
     importance,
     judge_calibration,
+    relationships,
     retrieval,
     salience,
     scenarios,
@@ -52,6 +53,7 @@ GENERATORS: Mapping[str, Callable[[], list[dict[str, Any]]]] = MappingProxyType(
         "think_leak/cases.jsonl": think_leak.cases,
         "entailment_viewpoint/cases.jsonl": entailment_viewpoint.cases,
         "time_estimation/cases.jsonl": time_estimation.cases,
+        "relationships/cases.jsonl": relationships.cases,
     }
 )
 """Each generated set's path under ``evals/sets`` and the function that authors it."""

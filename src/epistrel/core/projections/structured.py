@@ -1330,14 +1330,12 @@ async def _profiles(
     omniscient = ctx.viewpoint == OMNISCIENT
     current = _current(registry, ctx, turn)
     # #713 (FR-PROP-7): a profile answers for the entity and every entity an author's merge
-    # made one with it; their rows read as the profiled entity's.
+    # made one with it; their rows read as the profiled entity's. #907: only in that entity's
+    # own profile, so a batch answers each profile as it answers alone.
     others = [] if among is None else [e for e in dict.fromkeys(among) if e not in wanted]
     classes = await merged_classes(conn, story_id, [*wanted, *others])
-    one_of: dict[str, str] = {}
-    for e in wanted:
-        for member in classes[e]:
-            one_of.setdefault(member, e)
-    members = list(one_of)
+    class_of = {e: frozenset(classes[e]) for e in wanted}
+    members = list(dict.fromkeys(m for e in wanted for m in classes[e]))
     # #905: under a scope, both ends of a relationship are among the profiled and ``among``.
     scope = (
         []
@@ -1345,18 +1343,21 @@ async def _profiles(
         else list(dict.fromkeys([*members, *(m for e in others for m in classes[e])]))
     )
 
-    def through(row: dict[str, Any], *columns: str) -> dict[str, Any]:
+    def rows_of(e: str, rows: list[dict[str, Any]], *columns: str) -> list[dict[str, Any]]:
+        """The rows with an end among ``e``'s members, in ``rows``' order, read as ``e``'s."""
+        hits: set[int] = set()
+        for member in class_of[e]:
+            hits.update(by_end[columns].get(member, ()))
+        return [through(e, rows[i], *columns) for i in sorted(hits)]
+
+    def through(e: str, row: Mapping[str, Any], *columns: str) -> dict[str, Any]:
         return {
             **row,
-            **{
-                c: one_of[str(row[c])]
-                for c in columns
-                if row[c] is not None and str(row[c]) in one_of
-            },
+            **{c: e for c in columns if row[c] is not None and str(row[c]) in class_of[e]},
         }
 
     rel_rows = [
-        through(dict(r._mapping), "subject_id", "object_id")
+        dict(r._mapping)
         for r in await conn.execute(
             select(relationships).where(
                 relationships.c.story_id == story_id,
@@ -1375,13 +1376,9 @@ async def _profiles(
             )
         )
     ]
-    rel_rows = [
-        r
-        for r in rel_rows
-        if current(r, str(r["predicate_id"])) and r["subject_id"] != r["object_id"]
-    ]
+    rel_rows = [r for r in rel_rows if current(r, str(r["predicate_id"]))]
     place_rows = [
-        through(dict(r._mapping), "entity_id", "container_id")
+        dict(r._mapping)
         for r in await conn.execute(
             select(placement).where(
                 placement.c.story_id == story_id,
@@ -1393,25 +1390,34 @@ async def _profiles(
         )
     ]
     place_rows = [r for r in place_rows if current(r, None)]
-    touching: dict[str, list[dict[str, Any]]] = {e: [] for e in wanted}
-    for row in rel_rows:
-        for end in dict.fromkeys((str(row["subject_id"]), str(row["object_id"]))):
-            if end in touching:
-                touching[end].append(row)
-    own: dict[str, Row | None] = {
-        e: _latest(r for r in place_rows if str(r["entity_id"]) == e) for e in wanted
-    }
-    held = {
-        e: sorted(
+    by_end: dict[tuple[str, ...], dict[str, list[int]]] = {}
+    for columns, rows in (
+        (("subject_id", "object_id"), rel_rows),
+        (("entity_id", "container_id"), place_rows),
+    ):
+        index = by_end[columns] = {}
+        for i, row in enumerate(rows):
+            for end in {str(row[c]) for c in columns if row[c] is not None}:
+                index.setdefault(end, []).append(i)
+    touching: dict[str, list[dict[str, Any]]] = {}
+    own: dict[str, Row | None] = {}
+    held: dict[str, list[dict[str, Any]]] = {}
+    for e in wanted:
+        touching[e] = [
+            r
+            for r in rows_of(e, rel_rows, "subject_id", "object_id")
+            if r["subject_id"] != r["object_id"]
+        ]
+        placed_rows = rows_of(e, place_rows, "entity_id", "container_id")
+        own[e] = _latest(r for r in placed_rows if str(r["entity_id"]) == e)
+        held[e] = sorted(
             (
                 r
-                for r in place_rows
+                for r in placed_rows
                 if r["container_id"] is not None and str(r["container_id"]) == e
             ),
             key=lambda r: (str(r["entity_id"]), str(r["source_fact_id"])),
         )
-        for e in wanted
-    }
     within_of: dict[str, list[str]] = {}
     for found in own.values():
         if found is not None and found["location_id"] is not None:

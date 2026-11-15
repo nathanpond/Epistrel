@@ -14914,3 +14914,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Fix (CI attempt 1 of 3, PR #909):** `lint`, `test (rest)` and `test (eval-harness)` failed on one cause: `docs/evals/INDEX.md` was stale because the `profile_scope` default changed all four presets' fingerprints. I regenerated it. All four presets were already uncertified, so no certification status changed. A quality run at the new fingerprint is still to do.
   **Why:** Rule 3 (blocker). The targeted test set selected files by the names of the changed modules, which missed the evals index check.
   **Issue:** #905
+
+## /n8-exec M10 (#868 runner run 1 after #909) — 2026-11-14
+
+- **Decision:** I'm counting weekly run 43638054659 @ 1c75ea8 as run 1 of the three #868 is judged on. P-01 total p95 was 149.1 ms (one attempt, fixture built fresh), within the 200 ms runner target, with the profiles stage p95 at 46.1. The character pass (reported only) gave p95 151.7. Posted on #868.
+  **Why:** #868's AC is the median of 3 weekly runs on github-runner. My earlier projection (about 204 ms, from local × 1.2) was wrong: this run came in below the local figure, so the ratio isn't stable and the other two runs decide.
+  **Issue:** #868
+- **Decision:** Added a follow-up test PR, #910 (ae523bd), before ticking #905's first criterion.
+  **Why:** The merged test checked `full` against the route for one query, and the criterion asks for many. I didn't tick that box until the five-query version merged with CI passing.
+  **Issue:** #905

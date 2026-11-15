@@ -8,10 +8,11 @@
 
 | Test | Requirement | Budget | Measured p95 | Result | Host |
 |---|---|---|---|---|---|
-| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 290.3 ms | **over budget** | github-runner (not the reference host) |
-| P-01 retrieval, runner target (note, #868) | not a requirement | p95 ≤ 200 ms on github-runner | 290.3 ms | **over target** | github-runner (not the reference host) |
-| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 18.7 ms | within budget | github-runner (not the reference host) |
-| P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 24.4 ms | within budget | github-runner (not the reference host) |
+| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 144.6 ms | within budget | github-runner (not the reference host) |
+| P-01 retrieval, runner target (note, #868) | not a requirement | p95 ≤ 200 ms on github-runner | 144.6 ms | within target | github-runner (not the reference host) |
+| P-01 retrieval, as Ada Ashdown's message (#906) | NFR-PERF-1 | reported, not gated | 157.2 ms | reported | github-runner (not the reference host) |
+| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 48.2 ms | within budget | github-runner (not the reference host) |
+| P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 68.1 ms | **over budget** | github-runner (not the reference host) |
 
 ## P-01: retrieval latency by stage (NFR-PERF-1)
 
@@ -19,15 +20,31 @@
 
 | Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| assemble | 8.4 | 11.5 | 101.8 | 118.5 |
+| assemble | 9.2 | 11.9 | 106.6 | 476.6 |
 | beliefs | 0.0 | 0.0 | 0.0 | 0.0 |
-| fuse | 5.1 | 5.8 | 9.0 | 34.7 |
-| lexical | 57.5 | 108.2 | 142.5 | 194.4 |
-| occasion | 0.0 | 10.1 | 39.5 | 102.2 |
-| profiles | 6.3 | 73.9 | 115.2 | 188.5 |
-| resolve | 17.0 | 20.8 | 31.5 | 54.3 |
-| total | 229.1 | 290.3 | 343.1 | 404.8 |
-| vector | 103.3 | 113.5 | 144.7 | 167.6 |
+| fuse | 5.6 | 6.1 | 6.3 | 8.7 |
+| lexical | 39.5 | 57.2 | 60.3 | 383.4 |
+| occasion | 0.0 | 13.2 | 15.0 | 91.7 |
+| profiles | 12.5 | 44.9 | 71.2 | 438.6 |
+| resolve | 21.0 | 27.2 | 30.1 | 33.6 |
+| total | 114.3 | 144.6 | 449.1 | 594.0 |
+| vector | 12.3 | 13.9 | 16.5 | 24.6 |
+
+### As a character's message (#906)
+
+The same 500 queries as Ada Ashdown's message (`character:01M7FAQYYA98A2P1J24F87BH0F`, Ada Ashdown the speaker), as a render retrieves for the character. Reported, not gated. Host: github-runner (not the reference host).
+
+| Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
+|---|---|---|---|---|
+| assemble | 9.4 | 12.2 | 120.4 | 499.0 |
+| beliefs | 0.0 | 0.0 | 0.0 | 0.0 |
+| fuse | 5.7 | 6.2 | 6.9 | 512.2 |
+| lexical | 39.3 | 57.6 | 61.6 | 143.7 |
+| occasion | 0.0 | 13.4 | 15.5 | 20.1 |
+| profiles | 13.7 | 48.7 | 85.6 | 488.2 |
+| resolve | 22.2 | 27.4 | 30.6 | 36.3 |
+| total | 117.1 | 157.2 | 575.4 | 617.8 |
+| vector | 12.5 | 14.2 | 18.6 | 20.2 |
 
 ## P-02: deterministic verify latency (NFR-PERF-2)
 
@@ -35,7 +52,7 @@
 
 | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|
-| 8.0 | 18.7 | 23.6 | 464.2 |
+| 32.2 | 48.2 | 55.8 | 459.4 |
 
 Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, supported->supported 800, uncertain->uncertain 200.
 
@@ -45,11 +62,11 @@ Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, su
 
 | Path | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| all | 6.7 | 24.4 | 38.5 | 195.2 |
-| believed | 3.7 | 4.0 | 4.4 | 4.5 |
-| canon | 5.2 | 6.5 | 10.0 | 17.1 |
-| exposed | 22.9 | 36.4 | 118.8 | 195.2 |
-| no_path | 7.5 | 8.6 | 10.5 | 11.8 |
+| all | 15.0 | 68.1 | 74.6 | 170.8 |
+| believed | 5.6 | 6.6 | 7.5 | 13.0 |
+| canon | 13.4 | 16.0 | 19.6 | 19.7 |
+| exposed | 63.6 | 73.8 | 116.5 | 170.8 |
+| no_path | 16.7 | 18.7 | 19.4 | 20.4 |
 
 ## The forced-retirement spike (#147, FR-MEM-8)
 
@@ -57,55 +74,55 @@ This is the commit in which an overflow episode reaches its deadline. It ranks e
 
 | Vectors ranked | Ranking (ms) | Forced run (ms) | Retired | vs 250 ms | vs 2 s |
 |---|---|---|---|---|---|
-| 49,760 | 123.0 | 169.9 | {"covered": 177, "floor": 323} | under | under |
+| 49,760 | 164.1 | 271.5 | {"covered": 177, "floor": 323} | over | under |
 
 ## P-04: the structured reference workload (NFR-PERF-4, M4)
 
-**FAIL** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `8c648ba9898f`, started 2026-11-11 15:47 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+**PASS** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `f3620e76a1bc`, started 2026-11-15 18:53 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
 
 | Criterion | Measured | Bound | Result |
 |---|---|---|---|
-| turn commit p95 (server commit stage) | 47.0% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
+| turn commit p95 (server commit stage) | 98.2% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | PASS |
 | failed requests | 0 | 0 | PASS |
 | lost or duplicated turns | 0 lost, 0 duplicated | 0 | PASS |
-| retrieval p95 (server retrieve stage) | 0.0% of 281 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
-| deterministic verify p95 (server verify stage) | 98.2% of 56 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | PASS |
+| retrieval p95 (server retrieve stage) | 96.4% of 281 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | PASS |
+| deterministic verify p95 (server verify stage) | 100.0% of 45 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | PASS |
 
 Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 10 of 10 stories pass.
 
 | Stage | Observations | p50 | p95 | p99 |
 |---|---|---|---|---|
-| commit | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 500 ms |
-| retrieve | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 1000 ms |
-| verify | 56 | ≤ 20 ms | ≤ 50 ms | ≤ 500 ms |
-| front_to_first_call | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 500 ms |
+| commit | 281 | ≤ 150 ms | ≤ 200 ms | ≤ 500 ms |
+| retrieve | 281 | ≤ 100 ms | ≤ 150 ms | ≤ 250 ms |
+| verify | 45 | ≤ 20 ms | ≤ 20 ms | ≤ 50 ms |
+| front_to_first_call | 281 | ≤ 200 ms | ≤ 500 ms | ≤ 1000 ms |
 
 ## P-04: the multi-character reference workload (NFR-PERF-4, M5)
 
-**FAIL** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `8c648ba9898f`, started 2026-11-11 17:23 UTC. 10 structured stories with per-character knowledge of 10,000 memories and 20,000 events, one two-character sequential turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+**FAIL** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `f3620e76a1bc`, started 2026-11-15 19:28 UTC. 10 structured stories with per-character knowledge of 10,000 memories and 20,000 events, one two-character sequential turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
 
 | Criterion | Measured | Bound | Result |
 |---|---|---|---|
 | turn commit p95 (server commit stage) | 0.0% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
 | failed requests | 0 | 0 | PASS |
 | lost or duplicated turns | 0 lost, 0 duplicated | 0 | PASS |
-| retrieval p95 (server retrieve stage) | 0.0% of 562 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
-| deterministic verify p95 (server verify stage) | 8.9% of 561 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | **FAIL** |
+| retrieval p95 (server retrieve stage) | 89.3% of 562 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
+| deterministic verify p95 (server verify stage) | 98.0% of 562 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | PASS |
 | both primaries' beats in every committed turn | 281/281 in the results, 0 incomplete in history | all | PASS |
 | reduced, deferred or escalation-deferred characters | reduced_characters 0, deferred_characters 0, escalation_deferred 0 | 0 | PASS |
 | per-character stages observed (context_ms, compose_ms) | both | both | PASS |
 | degradation steps beyond the stub's composition fallback | lazy_resolution_capped 10, testimony_defaulted 10 | none (gated on the reference host only) | PASS |
 
-Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 0 of 10 stories pass.
+Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 6 of 10 stories pass.
 
 | Stage | Observations | p50 | p95 | p99 |
 |---|---|---|---|---|
-| commit | 281 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
-| retrieve | 562 | ≤ 1000 ms | ≤ 2000 ms | ≤ 2000 ms |
-| verify | 561 | ≤ 100 ms | ≤ 250 ms | ≤ 500 ms |
-| context | 562 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
-| compose | 281 | ≤ 5000 ms | ≤ 10000 ms | ≤ 10000 ms |
-| front_to_first_call | 281 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
+| commit | 281 | ≤ 500 ms | ≤ 2000 ms | ≤ 2000 ms |
+| retrieve | 562 | ≤ 150 ms | ≤ 250 ms | ≤ 500 ms |
+| verify | 562 | ≤ 50 ms | ≤ 50 ms | ≤ 100 ms |
+| context | 562 | ≤ 500 ms | ≤ 1000 ms | ≤ 10000 ms |
+| compose | 281 | ≤ 1000 ms | ≤ 2000 ms | ≤ 2000 ms |
+| front_to_first_call | 281 | ≤ 500 ms | ≤ 2000 ms | ≤ 2000 ms |
 
 Profile `Full v4`, perception `full`. Degradation steps: `lazy_resolution_capped` 10, `testimony_defaulted` 10.
 
@@ -121,4 +138,5 @@ One row per run, oldest first.
 | 2026-10-20 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 119.0 | 37.5 | 185.6 |
 | 2026-10-27 | ad7368b1a209 | github-runner (not the reference host) | ubuntu24 20261023.334.3 | 16.15 | 0.8.7 | 4 / 15.6 GB | 261.9 | 74.8 | 277.5 |
 | 2026-11-11 | 8c648ba9898f | github-runner (not the reference host) | ubuntu26 20261101.186.1 | 16.15 | 0.8.7 | 4 / 15.6 GB | 290.3 | 18.7 | 169.9 |
+| 2026-11-15 | f3620e76a1bc | github-runner (not the reference host) | ubuntu26 20261111.196.1 | 16.16 | 0.8.7 | 4 / 15.6 GB | 144.6 | 48.2 | 271.5 |
 <!-- history:end -->

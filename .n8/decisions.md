@@ -15007,3 +15007,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The owner tabled #915 (story-count capacity) to the v2 milestone and declined the 5M capacity step (noted on #502).
   **Why:** Hobby deployments sit far under the ~6,400-story lock sizing (ADR-191); 1M stays the largest measured point (NFR-SCALE-1).
   **Issue:** #915, #502
+- **Decision (owner, 2026-11-15):** #490's local build-time AC is relaxed from "under 15 minutes locally" to reported, not gated, as the runner's already was (2026-11-13). Both AC lines in #490's body carry an *[amended by the owner, 2026-11-15]* note. Recorded figures: 1,081 s (18.0 min) locally on an idle M3 Max at f3620e7 (`turns_and_canon` 927 s, about 37 ms per engine turn commit in Docker Desktop's VM), and 903–1,062 s on the runner (posted on #153, whose AC1 is amended and ticked the same way).
+  **Why:** The re-measure on an idle machine missed the target (1,030 s while busy on 11-13, 1,081 s idle). Reaching 15 minutes would need fewer per-turn commits, which changes what the fixture exercises. The build time only affects CI and dev wall-clock on weeks the cache misses, never a running instance.
+  **Issue:** #490, #153
+- **Decision:** #793's AC5 completion comment cites the green weekly run 43483176343 (026d0f6), which lists the misses without failing. P-01's `vector` stage p95 was 116.6 ms (11-08), 113.5 ms (11-11) and 14.9 ms (11-13), so #706's cap didn't regress the vector arm, and the drop came from #784's per-story partitions. AC4 names ADR-189, but the ADR it means is ADR-190, as the comment notes.
+  **Why:** #793's AC5.
+  **Issue:** #793

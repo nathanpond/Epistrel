@@ -23,4 +23,4 @@
 - **Not covered:** relationships among more than a handful of people, relationships that changed over time, beliefs about relationships (a character's private view), and the narrator's view.
 - **Review:** the owner reviews the digest (`docs/evals/sets-digest.md`, the `relationships/cases.jsonl` section) and records approval by replacing the line below with `approved by owner YYYY-MM-DD` in a commit of their own. Until then `--check-sets` passes on a branch and fails where approval is required (`EPISTREL_REQUIRE_APPROVED_SETS=1`). A content change after approval resets the line to pending. The set is approved before a live run's report counts.
 
-approved by owner: pending
+approved by owner 2026-11-15

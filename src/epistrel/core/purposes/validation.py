@@ -62,6 +62,14 @@ or mapping such a name without calling it stays accepted, because it reads the k
 exists. The alias is one level deep: an alias of an alias or a macro argument is not followed,
 and such a call fails cleanly when it is made.
 
+#923: an alias counts only where it is certain, Jinja's scoping followed (``_alias_calls``). A
+``{% with %}`` body and a ``{% for %}`` body are scopes of their own: what they bind ends with
+them, and a loop target (and ``loop``) shadows a name. A ``{% set %}`` in an ``{% if %}`` reaches
+the enclosing scope, so after the ``if`` a name is an alias only when every branch (a missing
+``else`` included) leaves it one. A tuple target rebinds each of its names. So
+``{% with p = inputs['pop'] %}{{ p }}{% endwith %}{{ p() }}`` calls the outer ``p`` and is
+accepted; a call that fails anyway fails cleanly at call time.
+
 #858: what fails on every render, whatever the inputs, is refused too. Every ``{% set x.y %}``
 target (``'x' is not a namespace``: no ``namespace`` exists here), so ``{% set inputs._y = 1 %}``
 is refused as well; a slice step of the constant ``0`` (``-0`` and ``+0`` included);
@@ -415,16 +423,92 @@ def _mutating_access(expr: nodes.Node) -> str | None:
     return None
 
 
-def _bind(aliases: dict[str, str], target: nodes.Node, value: nodes.Node) -> None:
-    """Record (or clear) simple name ``target`` as an alias of a mutating-name access (#857).
+Aliases = dict[str, str | None]
+"""#857/#923: each name bound in scope, mapped to the mutating method it certainly aliases, or
+``None`` when it holds something else (a binding that shadows an outer alias)."""
+
+
+def _bind(aliases: Aliases, target: nodes.Node, value: nodes.Node | None) -> None:
+    """Bind ``target`` in ``aliases``: simple name ``target`` to the mutating-name access
+    ``value`` reaches (#857), or to ``None``; every name of a tuple target to ``None`` (#923).
     One level: a name bound to another alias is not followed."""
-    if not isinstance(target, nodes.Name):
+    if isinstance(target, nodes.Name):
+        aliases[target.name] = None if value is None else _mutating_access(value)
         return
-    found = _mutating_access(value)
-    if found is None:
-        aliases.pop(target.name, None)
+    for name in target.find_all(nodes.Name):
+        aliases[name.name] = None
+
+
+def _expression_calls(expr: nodes.Node, aliases: Aliases, found: dict[int, str]) -> None:
+    """Record each call in ``expr`` whose callee is a name ``aliases`` holds as an alias."""
+    for node in (expr, *expr.find_all(nodes.Call)):
+        if isinstance(node, nodes.Call) and isinstance(node.node, nodes.Name):
+            method = aliases.get(node.node.name)
+            if method is not None:
+                found[id(node)] = method
+
+
+def _merge(aliases: Aliases, branches: list[Aliases]) -> None:
+    """After an ``if``: a name stays an alias only when every branch leaves it one (#923)."""
+    for name in {name for branch in branches for name in branch}:
+        methods = [branch.get(name) for branch in branches]
+        aliases[name] = methods[0] if all(m is not None for m in methods) else None
+
+
+def _statement_calls(node: nodes.Node, aliases: Aliases, found: dict[int, str]) -> None:
+    """Walk ``node`` with the names bound in scope (``aliases``, updated in place by what
+    reaches the enclosing scope), recording each call of a certain alias (#923, module docs)."""
+    if isinstance(node, nodes.Assign):
+        _expression_calls(node.node, aliases, found)
+        _bind(aliases, node.target, node.node)
+    elif isinstance(node, nodes.AssignBlock):
+        _block_calls(node.body, aliases, found)
+        _bind(aliases, node.target, None)
+    elif isinstance(node, nodes.With):
+        inner = dict(aliases)
+        for target, value in zip(node.targets, node.values, strict=False):
+            _expression_calls(value, aliases, found)
+            _bind(inner, target, value)
+        _block_calls(node.body, inner, found)
+    elif isinstance(node, nodes.For):
+        _expression_calls(node.iter, aliases, found)
+        inner = dict(aliases)
+        _bind(inner, node.target, None)
+        inner["loop"] = None
+        if node.test is not None:
+            _expression_calls(node.test, inner, found)
+        _block_calls(node.body, inner, found)
+        _block_calls(node.else_, dict(aliases), found)
+    elif isinstance(node, nodes.If):
+        branches: list[Aliases] = []
+        for test, body in [(node.test, node.body), *((e.test, e.body) for e in node.elif_)]:
+            _expression_calls(test, aliases, found)
+            branch = dict(aliases)
+            _block_calls(body, branch, found)
+            branches.append(branch)
+        otherwise = dict(aliases)
+        _block_calls(node.else_, otherwise, found)
+        _merge(aliases, [*branches, otherwise])
+    elif isinstance(node, nodes.Block):
+        _block_calls(node.body, dict(aliases), found)
+    elif isinstance(node, nodes.Expr):
+        _expression_calls(node, aliases, found)
     else:
-        aliases[target.name] = found
+        for child in node.iter_child_nodes():
+            _statement_calls(child, aliases, found)
+
+
+def _block_calls(body: list[nodes.Node], aliases: Aliases, found: dict[int, str]) -> None:
+    for node in body:
+        _statement_calls(node, aliases, found)
+
+
+def _alias_calls(tree: nodes.Template) -> dict[int, str]:
+    """Each call (by node id) of a name that is certainly a mutating-name alias where it is
+    called, mapped to the method's name (#857, #923)."""
+    found: dict[int, str] = {}
+    _block_calls(tree.body, {}, found)
+    return found
 
 
 def _filter_problem(
@@ -510,19 +594,14 @@ def _scan(tree: nodes.Template) -> str | None:
     # A ``.get`` (or ``['get']``, #852) is checked where it is called; one taken without a
     # call could be called with any key later.
     calls = {id(call.node): call for call in tree.find_all(nodes.Call)}
-    # #857: names a `{% set %}` or `{% with %}` bound to a mutating-name access, in document
-    # order, each mapped to the method's name.
-    aliases: dict[str, str] = {}
+    # #857: calls of a name a `{% set %}` or `{% with %}` bound to a mutating-name access,
+    # where it is certainly that alias (#923), each mapped to the method's name.
+    aliased = _alias_calls(tree)
     for node in tree.find_all(nodes.Node):
-        if isinstance(node, nodes.Assign):
-            _bind(aliases, node.target, node.node)
-        if isinstance(node, nodes.With):
-            for target, value in zip(node.targets, node.values, strict=False):
-                _bind(aliases, target, value)
         if isinstance(node, nodes.Call):
             callee = node.node
             called = (
-                aliases.get(callee.name)
+                aliased.get(id(node))
                 if isinstance(callee, nodes.Name)
                 else _mutating_access(callee)
             )

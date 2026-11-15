@@ -1049,6 +1049,16 @@ MUTATING_CALLS: list[tuple[str, str]] = [
     ("{{ ([inputs]|map(attribute='list.clear')|list)[0]() }}", "clear"),
     ("{{ (inputs.list|groupby('clear')|first)[0]() }}", "clear"),
     ("{% set p = [inputs]|map(attribute='pop')|first %}{{ p('voter') }}", "pop"),
+    # #923: an alias still in scope on every path to the call stays refused.
+    (
+        "{% if inputs.c %}{% set p = inputs['pop'] %}{% else %}{% set p = inputs.list.pop %}"
+        "{% endif %}{{ p() }}",
+        "pop",
+    ),
+    ("{% set p = inputs['pop'] %}{% for x in inputs.list %}{{ p(x) }}{% endfor %}", "pop"),
+    ("{% with p = inputs['pop'] %}{% if inputs.c %}{{ p() }}{% endif %}{% endwith %}", "pop"),
+    ("{% set p = inputs['pop'] %}{% if inputs.c %}{{ inputs.c }}{% endif %}{{ p() }}", "pop"),
+    ("{% with p = inputs['clear'] %}{% with q = 1 %}{{ p() }}{% endwith %}{% endwith %}", "clear"),
 ]
 """#857: calls of a mutating name reached through an alias or a filter's attribute name."""
 
@@ -1061,6 +1071,29 @@ READ_NOT_CALLED: list[tuple[str, str]] = [
     # A rebinding clears the alias; a reading method of a mapped list is still callable.
     ("{% set p = inputs['pop'] %}{% set p = inputs.list.count %}{{ p(1) }}", "1"),
     ("{{ (inputs.rows|map(attribute='pop')|list).count(1) }}", "1"),
+    # #923: an alias counts only where it is in scope on every path to the call.
+    (
+        "{% set p = inputs.voter.upper %}{% with p = inputs['pop'] %}{{ p }}{% endwith %}{{ p() }}",
+        "PASH",
+    ),
+    (
+        # Declared first: a name set only in an if's branches is an undeclared variable to
+        # Jinja's own analysis, refused by that rule, whatever the alias.
+        "{% set p = inputs.voter.lower %}{% if inputs.c %}{% set p = inputs.voter.upper %}"
+        "{% else %}{% set p = inputs['pop'] %}{% endif %}{{ p() }}",
+        "ASH",
+    ),
+    (
+        "{% with p = inputs['pop'] %}{{ p }}{% endwith %}"
+        "{% for p in [inputs.voter.upper] %}{{ p() }}{% endfor %}",
+        "PASH",
+    ),
+    (
+        "{% set p = inputs['pop'] %}{% if inputs.c %}{% set p = inputs.voter.upper %}{% endif %}"
+        "{{ p() }}",
+        "ASH",
+    ),
+    ("{% set p = inputs['pop'] %}{% set p, q = [inputs.voter.lower, 1] %}{{ p() }}", "ash"),
 ]
 """#857's complement: a mutating name bound or mapped and not called reads the key."""
 
@@ -1074,7 +1107,9 @@ def test_i_29__m9_mutating_calls() -> None:
     and a JSON value is not callable.
 
     Complement asserted: the same names bound or mapped without a call are accepted and render
-    the key's value."""
+    the key's value; and (#923) a name that is not that alias on every path to its call (a
+    ``with`` scope ended, an ``if`` branch rebound it, a loop target shadows it) is accepted and
+    renders."""
     inputs = {
         "voter": "Ash",
         "list": [1, 2, 3],
@@ -1083,6 +1118,7 @@ def test_i_29__m9_mutating_calls() -> None:
         "add": "A",
         "append_text": "T",
         "rows": [{"pop": 1}],
+        "c": True,
     }
     for template, method in MUTATING_CALLS:
         with pytest.raises(PurposeRefused) as refused:
@@ -1146,6 +1182,15 @@ STILL_SAVED: list[tuple[str, str]] = [
 ]
 """#858's complement: the accepted neighbours of ``ALWAYS_FAILING``, with what they render."""
 
+CALL_TIME_ONLY: list[str] = [
+    "{{ 1/0 }}",
+    "{% for x in inputs.list %}{{ loop(x) }}{% endfor %}",
+    "{% for x in inputs.list %}{{ loop.cycle() }}{% endfor %}",
+]
+"""#858 (#921): templates whose failure is not statically certain, so they save and fail at
+call time with 422 ``template_render_error`` (FR-MODEL-15): a division by a constant zero, and
+a loop called or cycled with nothing to cycle (each fails only once the loop runs)."""
+
 
 @pytest.mark.integration
 @pytest.mark.part("M9", "FR-MODEL-14")
@@ -1158,7 +1203,8 @@ def test_i_29__m9_always_failing() -> None:
     Each does fail when rendered without the scan (a generator ``map`` yields fails once it
     is read, so those rows read it).
 
-    Complement asserted: the neighbours in ``STILL_SAVED`` are accepted and render."""
+    Complement asserted: the neighbours in ``STILL_SAVED`` are accepted and render, and
+    ``CALL_TIME_ONLY``'s templates are accepted (#921)."""
     inputs = {
         "voter": "Ash",
         "list": [1, 2, 3],
@@ -1179,6 +1225,33 @@ def test_i_29__m9_always_failing() -> None:
             env.from_string(template).render(inputs=inputs)
     for template, rendered in STILL_SAVED:
         assert check_template(template, "body.template").render(inputs=inputs) == rendered
+    for template in CALL_TIME_ONLY:
+        check_template(template, "body.template")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14,15")
+async def test_i_29__m9_call_time_only(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """#858 (#921): a template whose failure depends on its inputs or on the loop running
+    (``CALL_TIME_ONLY``: ``1/0``, ``loop(x)``, ``loop.cycle()``) is not refused at save; it
+    saves (201) and its call answers 422 ``template_render_error`` at ``template`` before any
+    model call, as the route's description and docs/OPERATIONS.md say. Pinned so a widened
+    save scan cannot refuse them silently."""
+    client, lib = served
+    register, _ = registered
+    for template in CALL_TIME_ONLY:
+        name = unique("calltime")
+        made = await register(purpose_body(name, template=template))
+        assert made.status_code == 201, (template, made.text)
+        before = own_calls(lib, name)
+        failed = await call(client, name, {"inputs": {"list": [1, 2]}})
+        status, code, details = reason_of(failed)
+        assert (status, code, details["field"]) == (422, "template_render_error", "template"), (
+            template
+        )
+        assert own_calls(lib, name) == before, template
 
 
 @pytest.mark.integration

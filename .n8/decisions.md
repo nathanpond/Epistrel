@@ -15013,3 +15013,38 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #793's AC5 completion comment cites the green weekly run 43483176343 (026d0f6), which lists the misses without failing. P-01's `vector` stage p95 was 116.6 ms (11-08), 113.5 ms (11-11) and 14.9 ms (11-13), so #706's cap didn't regress the vector arm, and the drop came from #784's per-story partitions. AC4 names ADR-189, but the ADR it means is ADR-190, as the comment notes.
   **Why:** #793's AC5.
   **Issue:** #793
+
+## /n8-exec M10 fix pass (verify 1: #920–#923, #926) — 2026-11-15
+
+- **Decision:** This pass runs on `milestone/m10-verify-fixes`, off `origin/main` at 57a5955, in this session. It covers the three sev:high bugs (#920, #921, #922), plus #923 (medium) and #926 (low), which were cheap to fix alongside them. It doesn't cover #924: the owner accepted that residual on 2026-11-15, so it needs no code. Nor #925, which is closed.
+  **Why:** #920–#922 block M10's closure (verify 1 at f3620e7). #923 and #926 are small and touch files this pass already reads.
+  **Issue:** #920, #921, #922, #923, #926
+- **Decision (gate):** Locally I ran the static gates (ruff, format, mypy, lint-imports, check-assignment, check-parts, check-lexicon, check-traceability, check-deps, check-licenses, openapi, guarantees, capability_map: all rc=0) and the modules this pass touches:
+  - I-29 (M9), the registry and the Lite prompt: 197 passed;
+  - memory records, S-EFFECT-CRASH, the perf docs and P-10: 37 passed;
+  - C-08: 3 passed.
+
+  The full-suite gate is CI's sharded run on the PR, as in M9's fix passes.
+  **Why:** The full suite (about 5,300 tests over 24 shards) takes hours on one machine, and CI runs the same suite in parallel.
+  **Issue:** #920–#923, #926
+- **Decision (Rule 1):** #920's flake is fixed in the test, not the engine. The deduplicating `staged.after_claim` case now runs on the `api`-mode child, beside `_non_deduplicating`. The other deduplicating cases stay on the `all` child: `staged.after_intent` needs its dispatcher, and `staged.after_send` fires inside `send` on whichever path sent, so both orders end the same way. I didn't take the issue's other option, accepting both orders at :909. With that change, a run where the worker won would no longer test the request's resume after its own claim.
+  **Evidence:** The verifier's forced repro (a sitecustomize that sleeps 2 s in `staged.claim_all`) was run both ways. At the unfixed test it gave `assert 1 == 0` at :909, 1 failed. At the fix it gave 1 passed.
+  **Issue:** #920
+- **Decision:** #921's complement is the table `CALL_TIME_ONLY` (`{{ 1/0 }}`, `loop(x)`, `loop.cycle()`, each in a `for` that runs). It is checked twice: `check_template` accepts each row, and a new HTTP test, `test_i_29__m9_call_time_only` (part M9, FR-MODEL-14,15), registers each one (201) and calls it, getting 422 `template_render_error` at `template` with no model call. The test is marked M9 like the rest of #858's tests.
+  **Evidence:** A mutant that refuses any `/` at save turns both tests red.
+  **Issue:** #921
+- **Decision:** #922's test, `test_a_creation_burst_beyond_the_pool_never_times_out`, runs 12 simultaneous `create_story` calls on an engine of its own: pool 2 + overflow 1, `pool_timeout` 10 s. A real deadlock times out however long the limit is, so 10 s leaves CI's slower hosts room without weakening the test.
+  **Evidence:** A mutant `story_partition` that yields while still holding its connection gives 11 `TimeoutError`s.
+  **Issue:** #922
+- **Decision (Rule 1):** #923 replaces `_scan`'s flat alias map with a scope-aware walk, `_alias_calls`. A `with` body, a `for` body and a `block` are scopes, and a `for` target and `loop` shadow outer names. A `set` in an `if` reaches the enclosing scope, and after the `if` a name stays an alias only when every branch, including a missing `else`, leaves it one. A tuple target clears its names. The main scan still reports in document order.
+  **Evidence:** Main's `validation.py` fails the new `READ_NOT_CALLED` rows. Five new in-scope rows in `MUTATING_CALLS` stay refused.
+  **Issue:** #923
+- **Decision (scope):** #923's second repro, `{% if c %}{% set p = upper %}{% else %}{% set p = pop %}{% endif %}{{ p() }}`, is still refused, but by another rule now. Jinja's `meta.find_undeclared_variables` lists a name set only inside an `if`'s branches as undeclared. That refusal exists on main, with or without aliases. I filed it as #927 (bug, needs-triage) and didn't fix it here. The test uses the declared-first form of the repro (`{% set p = lower %}` before the `if`), which saves and renders `ASH`.
+  **Why:** That check is #824's undeclared-variable rule, outside #923's alias scope.
+  **Issue:** #923, #927
+- **Decision:** For #926, `docs/capacity-exploration.md` now records the owner's 5M no-go (2026-11-15) and its two reasons from #502:
+  - the projected retrieval p95 of about 2.6 s, against a budget that retrieval already fails at 250k;
+  - the host fit: about 20 GB of `maintenance_work_mem`/`/dev/shm` for an in-memory build, plus about 24 GiB for the tool's process after #914, which is projected, not measured.
+
+  The page is hand-merged (#502), so the tool's own "Unmeasured" line stays above the new text.
+  **Issue:** #926

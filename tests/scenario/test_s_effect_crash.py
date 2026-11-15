@@ -857,7 +857,12 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
     The non-deduplicating case runs on a child of its own in ``api`` mode (#834): no job worker
     races the request's claim. In ``all`` mode the child's dispatcher could lock the row first;
     the request's claim then skipped it, the crash rolled the worker's claim back, and the row
-    stayed ``intended``, never claimed or sent (correct, but not the case under test)."""
+    stayed ``intended``, never claimed or sent (correct, but not the case under test). The
+    deduplicating crash after the claim (3) runs on that child too (#920): in ``all`` mode the
+    worker could claim and send the row before the request's ``staged.after_claim`` fired, so
+    the provider had it before the crash (correct, but again not the case under test). The
+    other crash points stay on the ``all`` child: (2) needs its dispatcher, and (4) fires inside
+    the send on whichever path sent."""
     with migrated_database(pg_url, f"epistrel_sec_{secrets.token_hex(4)}") as url:
         settings = auth_settings(url, model_adapter="stub")
         db = make_engine(settings)
@@ -865,12 +870,13 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
         try:
             async with ps.allowed_hosts(db, [ps.LOOPBACK]):
                 await child.start()
-                await _deduped_cases(db, child)
+                await _deduped_cases(db, child, DISPATCHED_CASES)
                 await _render_failing(db, child)
                 await child.kill()
                 async with EngineProcess(
                     url, CREDENTIAL_A, lease_s=LEASE_S, mode="api", deliver=["states"]
                 ) as alone:
+                    await _deduped_cases(db, alone, CLAIMED_CASES)
                     await _non_deduplicating(db, alone)
                 await child.start()
                 await _ordinary_turn(db, child)
@@ -879,8 +885,16 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
             await db.dispose()
 
 
-async def _deduped_cases(db: AsyncEngine, child: EngineProcess) -> None:
-    for point, stage in DEDUPED_CASES:
+CLAIMED_CASES = tuple(case for case in DEDUPED_CASES if case[0] == "staged.after_claim")
+"""The deduplicating cases the request's own claim must win: run with no job worker (#920)."""
+DISPATCHED_CASES = tuple(case for case in DEDUPED_CASES if case not in CLAIMED_CASES)
+"""The other deduplicating cases, run on the ``all``-mode child."""
+
+
+async def _deduped_cases(
+    db: AsyncEngine, child: EngineProcess, cases: tuple[tuple[str, str | None], ...]
+) -> None:
+    for point, stage in cases:
         with ps.game_server() as server:
             failing = point == "staged.after_outcome"
             async with httpx.AsyncClient(base_url=child.base_url, timeout=60) as client:

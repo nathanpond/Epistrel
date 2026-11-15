@@ -14990,4 +14990,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** The full grep set (47 files) reached 5 % in 30 minutes locally, a pace of about 10 hours. Those suites play the harness with no dials, through code paths whose behaviour without dials is unchanged, and CI's eval shards run them in parallel.
   **Issue:** #913
 - **Hold:** PR #917 (#913). A new labeled set must be approved by the owner (`approved by owner YYYY-MM-DD` in `evals/sets/relationships/PROVENANCE.md`, in a commit of their own). `--check-sets` fails on `main` (`EPISTREL_REQUIRE_APPROVED_SETS=1`) while it reads `pending`, so merging before the approval would turn `main` red. The PR stays a draft until that commit lands.
+  **Resolution (2026-11-15):** hold lifted. The owner's own commit a99cb2d ("evals: owner approves the relationships set (#913)") sets `approved by owner 2026-11-15`, and the PR is marked ready.
   **Issue:** #913

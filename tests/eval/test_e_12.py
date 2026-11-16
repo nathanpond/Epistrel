@@ -32,7 +32,20 @@ from epistrel.evals.gate import RELATIVE_MIN_PAIRS, Direction, Metric, Rule, See
 from epistrel.evals.judging import CALIBRATION_FLOOR, load_pairs
 from epistrel.evals.report import Host, JudgeCalibrationRef, MetricResult, Report, SuiteResult
 from epistrel.evals.runner import CalibrationMissing
-from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
+from epistrel.evals.suites.e12_interventions import (
+    DIRECT_COMPLETED,
+    DIRECT_TYPES,
+    E12_DIRECT,
+    FLOOR,
+    DirectCase,
+    changed_id,
+    direct_metric_id,
+    direct_outcome,
+    metric_id,
+    mismatch_id,
+    not_triggered_id,
+    select_mode,
+)
 from epistrel.evals.suites.scenario_play import CONFIGS, INTERVENTION_TYPES, ScenarioCase
 from tests.eval.suite_support import SEEDS, SETS, by_id
 from tests.evals.support import stub_engine
@@ -247,3 +260,122 @@ def test_e_12__m7() -> None:
     )
     passed, _, _, covered, lacking, calibrated = floors_of(weak)
     assert (passed, covered, lacking, calibrated) == ([], [], [], False)
+
+
+# -- direct mode (#936) -------------------------------------------------------------------------
+
+_HOOKED = (
+    '{"id": "direct-test-unchanged", "type": "repair_rung_1", "say": "Where is your coat?", '
+    '"beats": [{"kind": "say", "text": "On its hook, boss.", "intent": "sincere"}, {"kind": '
+    '"do", "text": "Bobby nods at the hallway.", "propositions": [{"subject": "coat", '
+    '"relation": "located_at", "object": "hook"}]}], "stub": {"judge": "draft"}}'
+)
+
+
+@pytest.mark.part("M11", "NFR-QUAL-14")
+async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+    """#936: the direct suite plays every example case once through the real turn pipeline
+    (only the render pinned to the prepared draft). Every repair-rung type yields pairs, the
+    scripted judge's sides are the rows' rates, a tie adds no pair, and each row is
+    ``insufficient_evidence`` under 300 pairs. Complement: a draft that contradicts nothing is
+    ``not_triggered`` and adds no pair."""
+    suite = SUITES[E12_DIRECT]
+    cases = [c for c in suite.load(SETS) if isinstance(c, DirectCase)]
+    by_type = Counter(c.type for c in cases)
+    assert set(by_type) == set(DIRECT_TYPES)
+    assert min(by_type.values()) >= 5
+    unchanged = DirectCase.model_validate_json(_HOOKED)
+    calibration = tmp_path / "judge-calibration.json"
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS,
+            engine=lib,
+            sets_dir=SETS,
+            calibrate=True,
+            calibration_file=calibration,
+            cases={suite.name: [*cases, unchanged]},
+        )
+    assert report.errors == [], report.errors
+    (result,) = report.suites
+    assert result.errors == [], result.errors[:5]
+    rows = by_id(result)
+    for kind in DIRECT_TYPES:
+        mine = [c for c in cases if c.type == kind]
+        judged = [c for c in mine if c.stub is None or c.stub.judge != "tie"]
+        draft = sum(c.stub is not None and c.stub.judge == "draft" for c in judged)
+        row = rows[direct_metric_id(kind)]
+        assert row.sample_size == len(judged), (kind, row.sample_size)
+        assert row.mean == pytest.approx(draft / len(judged)), kind
+        assert row.verdict is Verdict.insufficient_evidence, row
+        assert row.judge_based
+        assert rows[mismatch_id(kind)].mean == 0, kind
+    # The unchanged draft: one not-triggered case of rung 1 a seed, no pair from it.
+    assert rows[not_triggered_id("repair_rung_1")].sample_size == by_type["repair_rung_1"] + 1
+    assert rows[not_triggered_id("repair_rung_1")].mean == pytest.approx(
+        1 / (by_type["repair_rung_1"] + 1)
+    )
+    assert rows[not_triggered_id("repair_rung_2")].mean == 0
+    assert rows[DIRECT_COMPLETED].mean == 1
+    assert any("E-12 direct fingerprint `structured`" in n for n in result.notes)
+    assert any("direct types the floor covers" in n and n.endswith("none.") for n in result.notes)
+
+
+async def test_e_12__direct_mode_calls_the_production_ladder(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#936: the harness runs the pipeline's own repair entry point, not a copy: with
+    ``pipeline.repair_turn`` made to raise, the direct case fails."""
+    from epistrel.orchestrator.structured import pipeline
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("repair_turn reached")
+
+    monkeypatch.setattr(pipeline, "repair_turn", broken)
+    suite = SUITES[E12_DIRECT]
+    first = next(c for c in suite.load(SETS) if isinstance(c, DirectCase))
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS[:1],
+            engine=lib,
+            sets_dir=SETS,
+            calibrate=True,
+            calibration_file=tmp_path / "judge-calibration.json",
+            cases={suite.name: [first]},
+        )
+    (result,) = report.suites
+    assert any("repair_turn reached" in e for e in result.errors), result.errors
+
+
+def test_e_12__direct_verdict_rule() -> None:
+    """#936: a direct row is judged by the relative rule: 299 non-tied pairs a seed is
+    ``insufficient_evidence`` whatever the rate; at 300, mean + SD = 56 % fails."""
+    (metric,) = (m for m in SUITES[E12_DIRECT].metrics if m.id == direct_metric_id("repair_rung_3"))
+    assert metric.rule is Rule.relative
+    assert metric.floor == FLOOR
+    assert judge(metric, [SeedTally(s, 299, 0) for s in SEEDS]).verdict is (
+        Verdict.insufficient_evidence
+    )
+    assert judge(metric, [SeedTally(s, 0, 299) for s in SEEDS]).verdict is (
+        Verdict.insufficient_evidence
+    )
+    assert judge(metric, [SeedTally(s, 132, 168) for s in SEEDS]).verdict is Verdict.failed
+    assert judge(metric, [SeedTally(s, 135, 165) for s in SEEDS]).verdict is Verdict.passed
+
+
+def test_e_12__direct_outcome_and_mode() -> None:
+    """#936: how a played direct case counts, and which suites ``--e12-mode`` selects."""
+    assert direct_outcome("repair_rung_1", (), changed=False) == "not_triggered"
+    assert direct_outcome("repair_rung_1", ("repair_rung_1",), changed=False) == "not_triggered"
+    assert direct_outcome("repair_rung_1", ("repair_rung_1", "age_repair"), changed=True) == "pair"
+    assert direct_outcome("repair_rung_2", ("repair_rung_1",), changed=True) == "mismatch"
+    every = ["e01", "e12", "e12_direct", "q01"]
+    assert select_mode(every, None, default="full") == ["e01", "e12", "q01"]
+    assert select_mode(every, "direct", default="full") == ["e01", "e12_direct", "q01"]
+    assert select_mode(["e12"], None, default="both") == ["e12", "e12_direct"]
+    assert select_mode(["e12_direct"], None, default="full") == ["e12_direct"]
+    with pytest.raises(ValueError, match="needs e12"):
+        select_mode(["q01"], "direct", default="full")

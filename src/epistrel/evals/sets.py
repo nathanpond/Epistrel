@@ -61,14 +61,15 @@ STRATIFIED = frozenset(
 """#179's sets, whose digest sample is stratified by family (the fixture, the category) and
 template, and #201's time-estimation set, stratified by activity family, so every stratum is in
 front of the reviewer."""
-HAND_WRITTEN = frozenset({"smoke", "e02"})
-"""Suites whose sets predate #157 (#134's smoke, #155's E-02): no provenance or digest rule."""
+HAND_WRITTEN = frozenset({"smoke/cases.jsonl", "e02/cases.jsonl", "interventions/examples.jsonl"})
+"""Set files no provenance or digest rule covers: those that predate #157 (#134's smoke, #155's
+E-02) and #936's CI-only E-12 direct examples (scripted stub answers, never a live set)."""
 
 
 def labeled_suites(suites: Iterable[Suite] | None = None) -> list[Suite]:
     """The suites whose sets #157's rules cover."""
     chosen = SUITES.values() if suites is None else suites
-    return [s for s in chosen if s.name not in HAND_WRITTEN]
+    return [s for s in chosen if s.set_file not in HAND_WRITTEN]
 
 
 def provenance_problem(directory: Path, *, require_approved: bool) -> str | None:

@@ -332,6 +332,12 @@ def default_run_id(fingerprint_value: str, when: datetime, preset: PresetName | 
 
 SCRIPTED: contextvars.ContextVar[bool] = contextvars.ContextVar("evals_scripted", default=False)
 """Set inside ``CaseContext.scripted``: the block's model calls go to the run's stub."""
+PINNED: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "evals_pinned", default=frozenset()
+)
+"""Set inside ``CaseContext.pinned``: the block's calls of these purposes go to the run's stub
+(#936: E-12's direct mode pins the render to the case's prepared draft; every other purpose of
+the turn stays on the run's model)."""
 
 
 class RoutedAdapter:
@@ -352,7 +358,7 @@ class RoutedAdapter:
         self.real_purposes = None if real_purposes is None else frozenset(real_purposes)
 
     def routes_real(self, purpose: str) -> bool:
-        if SCRIPTED.get():
+        if SCRIPTED.get() or purpose in PINNED.get():
             return False
         return self.real_purposes is None or purpose in self.real_purposes
 
@@ -529,9 +535,19 @@ class CaseContext:
         finally:
             SCRIPTED.reset(token)
 
+    @contextlib.contextmanager
+    def pinned(self, purposes: Collection[str]) -> Iterator[None]:
+        """A block whose calls of ``purposes`` go to the run's stub on every run, while every
+        other purpose stays on the run's model (#936)."""
+        token = PINNED.set(PINNED.get() | frozenset(purposes))
+        try:
+            yield
+        finally:
+            PINNED.reset(token)
+
     @property
     def scripted_stub(self) -> StubAdapter:
-        """The stub ``scripted`` blocks reach (``runner.scripted_stub``)."""
+        """The stub ``scripted`` and ``pinned`` blocks reach (``runner.scripted_stub``)."""
         return scripted_stub(self.engine)
 
     def scope_id(self, key: str) -> str:

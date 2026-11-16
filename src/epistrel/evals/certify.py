@@ -57,6 +57,7 @@ from epistrel.evals.presets import Preset, needs_of
 from epistrel.evals.report import MetricResult, Report, render_markdown, summary
 from epistrel.evals.runner import DEFAULT_SETS_DIR, AdapterConfig, run_suites, seeds_from
 from epistrel.evals.suites import SUITES, MalformedCase, Suite
+from epistrel.evals.suites.e12_interventions import E12_DIRECT
 from epistrel.evals.suites.e12_interventions import metric_id as e12_metric_id
 from epistrel.evals.suites.scenario_play import INTERVENTION_TYPES
 
@@ -113,6 +114,9 @@ def floors_of(
         judged = suite.calibration is not None
         if judged and suite.calibration is not None:
             calibrated = suite.calibration.status == "calibrated"
+        if suite.name == E12_DIRECT:
+            # #936: the direct rows are reported with the run; #937 makes the record read them.
+            continue
         for metric in suite.metrics:
             if metric.rule is Rule.informational or metric.floor is None:
                 continue
@@ -241,7 +245,7 @@ class EvalHarness:
             for name, suite in SUITES.items()
             if not suite.standalone
             and (
-                (name == E12 and QUALITY_14 in wanted)
+                (name in (E12, E12_DIRECT) and QUALITY_14 in wanted)
                 or any(requirement_id(m.id) in wanted for m in suite.metrics)
             )
         )

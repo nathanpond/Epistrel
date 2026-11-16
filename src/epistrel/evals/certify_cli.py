@@ -113,6 +113,7 @@ from epistrel.evals.runner import (
     seeds_from,
 )
 from epistrel.evals.suites import SUITES, MalformedCase
+from epistrel.evals.suites.e12_interventions import E12, E12_MODES, select_mode
 from epistrel.evals.trace import CallTrace, TraceFile, trace_path
 from epistrel.tools import model_matrix
 
@@ -480,6 +481,8 @@ async def _certify_one(
     names = [n for n in harness.applicable(settings) if n not in set(args.skip)]
     if args.suite:
         names = [n for n in names if n in set(args.suite)]
+    # #936: E-12's mode where E-12 applies (a preset without it ignores the flag).
+    names = select_mode(names, args.e12_mode if E12 in names else None, default="both")
     config = _config(args, adapter, preset)
     journal = Journal.open(
         journal_path(journals, config.model_name, preset, request.fingerprint),
@@ -606,6 +609,11 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
         action="append",
         choices=sorted(SUITES),
         help="run only these of the applicable suites (repeatable; tests)",
+    )
+    command.add_argument(
+        "--e12-mode",
+        choices=E12_MODES,
+        help="E-12's mode (#936): full turns, prepared drafts (direct), or both (the default)",
     )
     command.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
     command.add_argument(

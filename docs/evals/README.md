@@ -278,6 +278,7 @@ measures.
 | `q02` | Q-02: referential and temporal resolution (the retrieval pipeline's resolve stage) | report only | `retrieval/resolution.jsonl` (120) | #139, #157 |
 | `q03` | Q-03: abstract-query recall with vs without the reflection tier | report only | `retrieval/abstract.jsonl` (60) | #143, #157 |
 | `e12` | E-12 (M4): engine interventions and prose. Every turn where a repair rung, the composition or its polish changed the first draft is a pair; the masked pair is judged by `quality_judge` in both orders. First-draft preference rate per intervention type and fingerprint, with its Wilson 95 % interval. | mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed, else insufficient evidence (relative) | `scenarios/` (21 scenarios × 4 turns) | #158 |
+| `e12_direct` | E-12 direct mode (M11, ADR-195): one prepared first draft per case, played as one real turn with only the render pinned to the draft. A pair when the case's declared intervention changed it; `e12.direct.not_triggered.<type>` and `e12.direct.mismatch.<type>` count the cases that add none. Selected with `--e12-mode` (below). | `nfr_qual_14.direct.<type>`: mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed, else insufficient evidence (relative) | `interventions/examples.jsonl` (CI examples, 5 per repair rung; live sets #938) | #936 |
 | `e13` | E-13 (M4): text-quality signals per fingerprint: repetition, repeated openings, length accuracy (model-free), voice consistency and story-driver adherence (judge scores, uncalibrated in M4), and the Spearman correlation with users' ratings | report only (no gate) | `scenarios/` | #158 |
 | `e01_viewpoint` | E-01 (M5): a character's own claims through `Verifier.verify` against canon and its belief partition, with the declared intent: lies, false beliefs and belief-consistent claims, none of which may be repaired | false contradiction ≤ 2 %, false support ≤ 1 % (rate; NFR-QUAL-2's floors gate from M9, ADR-164); accuracy reported | `entailment_viewpoint/` (300) | #179 |
 | `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
@@ -516,6 +517,34 @@ below 75 % agreement makes every E-12 row *report only*. `run --all` calibrates 
 `run --suite e12` reads the stored calibration of its judge model and exits 1 before any case
 when there is none. Changing the judge model needs a new calibration: earlier reports keep the
 judge they recorded.
+
+## E-12's direct mode (#936)
+
+NFR-QUAL-14 needs 300 non-tied pairs a seed for each intervention type. Full-turn scenarios
+get there slowly, because an intervention fires on few live turns. The direct mode
+(`e12_direct`, ADR-195) starts from a **prepared first draft** with its trigger already in it,
+for example a beat that puts the coat on the armchair while canon has it on the hook. It plays
+one turn through `Engine.respond` on a scratch story. Only the render is pinned to the draft:
+detection, verification, the repair ladder and the composition run as in production, on the
+run's model. A case declares its type (`repair_rung_1`..`repair_rung_4`; the composition and
+identity types come with #937):
+
+```json
+{"id": "direct-rung-1-0001", "type": "repair_rung_1", "say": "Where did you leave your coat?",
+ "beats": [{"kind": "do", "text": "Bobby grins at you. The coat sits on the armchair.",
+            "propositions": [{"subject": "coat", "relation": "located_at", "object": "armchair"}]}],
+ "canon": [], "stub": {"judge": "final"}}
+```
+
+`canon` adds facts over S-COAT's (the coat on the hook, the hook in the hallway, the armchair in
+the parlor, the cast in the parlor), by the names `Wren`, `Bobby`, `coat`, `hook`, `armchair`,
+`hallway` and `parlor`. `stub` is for CI's examples only (the scripted regeneration and the
+judge's side).
+
+`--e12-mode full|direct|both` chooses which of `e12` and `e12_direct` run. `run` defaults to
+`full`, and `certify` to `both`; giving the flag without E-12 selected is an error. The direct
+rows are reported beside the full-turn rows and never pooled with them. A certification record
+reads them from #937 onward.
 
 ## A second judge model (#475)
 

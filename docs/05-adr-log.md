@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -258,6 +258,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 192 | A retrieval reads its configuration once, its canon in one statement, and its alias arm by a newest-first index | Current | — |
 | 193 | A retrieved profile carries the relationships among the message's people, by default | Current | — |
 | 194 | A model error counts only in the rates its case's label puts it in | Current | — |
+| 195 | NFR-QUAL-14 is measured on prepared drafts, beside the full-turn rows | Current | — |
 
 ---
 
@@ -2142,6 +2143,21 @@ Tuning and its exit certification come after every milestone that may change a p
 **Consequences:**
 - A rate's sample size now counts the errored cases its label puts in it, and only those. Reports are unchanged in shape. Certifications before #818 were scored under #134's rule.
 - `tests/evals/test_model_error_scoping.py` pins E-01's rule through the runner and each suite's declaration on its whole labelled set (declared ids ⊂ the suite's metrics, at least one per case). It also checks the conservative default and the journal's replay of old model-error rows.
+
+### ADR-195 — NFR-QUAL-14 is measured on prepared drafts, beside the full-turn rows
+**Status:** Accepted.
+**Context:** E-12 (ADR-164) collects NFR-QUAL-14's pairs from scenario runs: a 4-turn scenario through `Engine.respond`, a pair wherever an intervention changed a turn's first draft. A type needs 300 non-tied pairs a seed, and an intervention fires on a minority of live turns, so the full mode would need many thousands of hosted turns per certification for all seven types. The owner decided on 2026-11-09 to split #474: a direct mode reaches each type at a few calls a pair, from cases prepared with the trigger already in them (#936, #937). On 2026-11-16 the owner decided (R3) that `age_repair` and `composition_fallback` pass by construction.
+**Decision:** Applied by #936 (NFR-QUAL-14).
+- A second suite, `e12_direct`, plays one prepared first draft per case. It runs one turn through `Engine.respond` on a scratch story, with S-COAT's canon plus the case's own. The render purpose is pinned to the case's draft (`CaseContext.pinned`, which routes that purpose to the run's stub), and every other purpose stays on the run's model. Detection, verification, the repair ladder and the composition are the production pipeline's own, with no harness copy.
+- Each case declares its type. A draft the engine left unchanged counts in `e12.direct.not_triggered.<type>`, and one changed by another intervention counts in `e12.direct.mismatch.<type>`. Neither adds a pair. Otherwise the draft and the final message are judged as in full mode: masked, in both orders, with factual differences excluded.
+- `nfr_qual_14.direct.<type>` uses the same relative rule as full mode: `insufficient_evidence` below 300 non-tied pairs a seed, else pass when mean + SD ≤ 55%. Direct rows run on the `structured` configuration only. They are reported beside the full-mode rows and never pooled with them.
+- `--e12-mode full|direct|both` selects the suites (`run` defaults to `full`, `certify` to `both`; passing the flag without E-12 selected is an error). Its own suite name gives the direct mode its own journal and fingerprint, so full mode's are unchanged. Certification records read the direct rows from #937; until then the record leaves them out.
+- The CI examples (`evals/sets/interventions/examples.jsonl`, 5 per repair rung, with scripted stub answers) are hand-written and outside #157's provenance rule. The live sets (#938) carry no stub fields and are approved by the owner.
+**Alternatives considered:** Calling `check_turn` → `repair_turn` → `compose_turn` on a hand-built `Rendered` (the planner's sketch) would need the harness to rebuild the turn's read, budget, context and fallback lines, which are a copy of the pipeline's setup that drifts with it. Pinning one purpose keeps the whole turn real at the cost of the turn's other calls. Raising the number of full-mode scenarios scales the cost with each type's firing rate.
+**Consequences:**
+- NFR-QUAL-14 is measured on drafts the case author wrote, not on drafts the certified model wrote. The full mode stays as the realism check, and its rows remain in the report.
+- A direct case costs about four calls (the turn's own checks and any regeneration, then two judge calls) against a full scenario's dozens.
+- `tests/eval/test_e_12.py::test_e_12__direct_mode` plays the examples on the stub, with the not-triggered and tie complements. `test_e_12__direct_mode_calls_the_production_ladder` makes `pipeline.repair_turn` raise and sees the case fail. `test_e_12__direct_verdict_rule` pins the 299/300 boundary.
 
 ---
 

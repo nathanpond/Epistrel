@@ -22,7 +22,10 @@ the seed (OpenAI ``seed``) and the case's ``X-Eval-Case`` line, so a stub run an
 300 s by a profile override (budgets unchanged). They are deleted through
 ``Engine.delete_story`` when the case ends, and a **sweep** deletes any story with that owner
 and prefix before and after the run, so an interrupted run leaves nothing behind. The quality
-judge (``CaseContext.judge``) refuses any story that is not one of the case's own.
+judge (``CaseContext.judge``) refuses any story that is not one of the case's own. Creating and
+deleting a story attaches and detaches its partitions, which takes table-level locks that a
+concurrent case's commit would wait behind (#953, from #929's repro), so the run creates and
+deletes scratch stories one at a time (``scratch_ddl_lock``); turns and commits stay concurrent.
 
 **Isolation.** Before and after the run the runner counts, in every table with a ``story_id``
 column, the rows of every story, and the stories themselves; once its scratch stories are gone
@@ -95,6 +98,7 @@ import os
 import random
 import secrets
 import time
+import weakref
 from collections import defaultdict
 from collections.abc import (
     AsyncIterator,
@@ -431,11 +435,27 @@ async def scratch_story_ids(db: AsyncEngine) -> list[str]:
         return [str(row[0]) for row in rows]
 
 
+_DDL_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def scratch_ddl_lock() -> asyncio.Lock:
+    """The lock every scratch-story creation and deletion holds (#953): one per event loop, so
+    one per eval run, and never a lock bound to another loop (a test's loop is its own)."""
+    loop = asyncio.get_running_loop()
+    lock = _DDL_LOCKS.get(loop)
+    if lock is None:
+        lock = _DDL_LOCKS[loop] = asyncio.Lock()
+    return lock
+
+
 async def sweep(engine: Engine) -> int:
     """Delete every scratch story (an interrupted run's included); the number deleted."""
     found = await scratch_story_ids(engine.db)
     for story_id in found:
-        await engine.delete_story(_ctx(), story_id)
+        async with scratch_ddl_lock():
+            await engine.delete_story(_ctx(), story_id)
     return len(found)
 
 
@@ -449,7 +469,8 @@ class Scratch:
 
     async def create(self, spec: StorySpec) -> CreatedStory:
         name = f"{SCRATCH_PREFIX}{self.label}-{len(self.ids) + 1}"[:STORY_NAME_MAX]
-        created = await self.engine.create_story(_ctx(), spec.model_copy(update={"name": name}))
+        async with scratch_ddl_lock():
+            created = await self.engine.create_story(_ctx(), spec.model_copy(update={"name": name}))
         self.ids.append(created.story_id)
         override = ProfileOverridesPatch.model_validate(
             {"settings": {"budgets": {"deadline_ms": SCRATCH_DEADLINE_MS}}, "ignore_warnings": True}
@@ -463,7 +484,9 @@ class Scratch:
 
     async def delete_all(self) -> None:
         while self.ids:
-            await self.engine.delete_story(_ctx(), self.ids.pop())
+            story_id = self.ids.pop()
+            async with scratch_ddl_lock():
+                await self.engine.delete_story(_ctx(), story_id)
 
 
 @dataclass
@@ -1513,6 +1536,7 @@ __all__ = [
     "run_fingerprint",
     "run_suite",
     "run_suites",
+    "scratch_ddl_lock",
     "scratch_story_ids",
     "seeds_from",
     "story_rows",

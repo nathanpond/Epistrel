@@ -15185,3 +15185,14 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **CI budget (PR #949):** 72 minutes, 1.5 × the 48-minute longest check on PR #942.
 - **Merged:** PR #949 squash-merged as `a17e2a1` after CI went green (every check passed). It closed #936 and #937, and both closes landed. Still open, as intended: #938 (next, owner-approved sample sets), #754, #812, #929 (owner option pending) and #818 and everything behind it. M11 is **partially executed**.
   **Issue:** #935
+
+## /n8-exec M11 (run 4) — 2026-11-16
+
+- **Decision (owner):** #929, options 1 + 2 ("1+2", in the session, 2026-11-16). #929 closed on AC1/AC2 (PR #942). AC3, naming the holder, moved to #952, to be filled in from the next CI occurrence of the `epistrel.evals.busy` log; it blocks nothing. Option 2 is #953 (serialise scratch-story creation and deletion), filed under epic #935 and run first here. #947 stays in triage. Closing #929 unblocks #818: all four of its blockers are now closed.
+  **Issue:** #929, #952, #953, #818
+- **Process:** PR #950's (log-only) CI failed once on `tests/integration/test_rating_change.py::test_queued_turns_fail_when_they_would_start` (`TimeoutError`; 1 failed, 1305 passed). The diff was only this file, so the failed jobs were re-run (green) and the flake filed as #951 (needs-triage). #950 merged as `813a0b4`.
+  **Issue:** #951
+- **Decision:** run 4 takes #953 first. Every other open M11 story except #938, #754, #812 and #952 waits on #818, the owner's baseline hand run. #588 and #685 close with #603, which waits on #735 → #818. Branch `milestone/m11-run4`, from `main` at `813a0b4`.
+  **Issue:** #935, #953
+- **Decision (#953, planner discretion):** the lock is one `asyncio.Lock` per running event loop (`runner.scratch_ddl_lock`, a `WeakKeyDictionary` keyed by the loop). An eval process runs one loop, so the lock covers the whole run across suites, and a test on a fresh loop never meets a lock bound to another loop (a module-level lock would). It covers only `Engine.create_story` and `Engine.delete_story`: the profile-override write after a create, and every turn and commit, stay outside, so cases still overlap. `sweep` takes it too. The suite-level setup stories go through `Scratch`, so they share it.
+  **Issue:** #953

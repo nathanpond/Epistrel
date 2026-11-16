@@ -183,7 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     key = os.environ.get(API_KEY_ENV)
     if not key:
-        print(f"error: set {API_KEY_ENV}", file=sys.stderr)
+        print("error: set EPISTREL_EVALS_API_KEY to the endpoint's key", file=sys.stderr)
         return 2
 
     async def run() -> list[Timing]:

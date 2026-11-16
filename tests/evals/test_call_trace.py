@@ -35,6 +35,8 @@ from tests.model_support import config_key, mock_openai, restored_model_config
 MODEL = "trace-model"
 PLANTED_KEY = "sk-planted-0123456789abcdef"
 FINGERPRINT = "sha256:" + "cd" * 32
+SUITE_TIMING = {"duration_s", "mean_case_ms"}
+"""A suite result's wall-clock fields: they differ between any two runs."""
 
 
 class SecondSuite(SyntheticZeroSuite):
@@ -286,8 +288,8 @@ async def test_tracing_changes_no_fingerprint_report_or_journal_row(
                 await lib.models.aclose()
     traced, untraced = reports
     assert traced.fingerprint == untraced.fingerprint == run_fingerprint(MODEL)
-    assert [s.model_dump(exclude={"latency"}) for s in traced.suites] == [
-        s.model_dump(exclude={"latency"}) for s in untraced.suites
+    assert [s.model_dump(exclude=SUITE_TIMING) for s in traced.suites] == [
+        s.model_dump(exclude=SUITE_TIMING) for s in untraced.suites
     ]
 
     def rows(name: str) -> list[dict[str, Any]]:

@@ -6,6 +6,8 @@
 {% block system %}
 You check text against one content policy. Answer only with a JSON object
 {"violation": true|false, "confidence": 0.0-1.0}.
+"confidence" is how sure you are of your verdict (1.0 = certain), not the probability of a
+violation.
 
 ## Policy
 {{ policy_prompt }}

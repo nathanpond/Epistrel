@@ -494,6 +494,26 @@ async def test_low_confidence_is_uncertain_at_once(confidence: float, uncertain:
     assert len(mal.stub.calls) == 1
 
 
+CONFIDENCE_DEFINED = (
+    '"confidence" is how sure you are of your verdict (1.0 = certain), not the probability of a\n'
+    "violation."
+)
+
+
+async def test_918_the_guardrail_prompt_defines_confidence_as_certainty_of_the_verdict() -> None:
+    """#918 (the owner's option 1): ``guardrail_check.j2`` says what ``confidence`` means, so a
+    model sure there is no violation answers high instead of a low "violation probability".
+    The rule that reads it is unchanged: a confident no-violation passes, an unsure verdict
+    either way is still ``Uncertain`` (a fail-closed policy then refuses)."""
+    mal = models()
+    mal.stub.script("guardrail_check", [verdict(False, 0.9), verdict(False, 0.1)])
+    assert await check(mal) == GuardrailVerdict(violation=False, confidence=0.9)
+    assert await check(mal) == Uncertain("low_confidence", 1)
+    system = mal.stub.calls[0].messages[0]
+    assert system.role == "system"
+    assert CONFIDENCE_DEFINED in system.content
+
+
 async def test_uncertain_below_is_a_deployment_setting() -> None:
     mal = models(uncertain_below=0.9)
     mal.stub.script("guardrail_check", [verdict(False, 0.8)])

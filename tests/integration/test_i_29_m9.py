@@ -1221,6 +1221,71 @@ call time with 422 ``template_render_error`` (FR-MODEL-15): a division by a cons
 a loop called or cycled with nothing to cycle (each fails only once the loop runs)."""
 
 
+# #927: a name bound on every path to its read is declared; one that may be unset is not.
+BOUND_ON_EVERY_PATH: list[tuple[str, str]] = [
+    ("{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}{{ p }}", "1"),
+    (
+        "{% if inputs.d %}{% set p = 1 %}{% elif inputs.c %}{% set p = 2 %}{% else %}"
+        "{% set p = 3 %}{% endif %}{{ p }}",
+        "2",
+    ),
+    (
+        "{% if inputs.c %}{% if inputs.d %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}"
+        "{% else %}{% set p = 3 %}{% endif %}{{ p }}",
+        "2",
+    ),
+    (
+        "{% if inputs.c %}{% set p, q = [1, 2] %}{% else %}{% set p, q = [3, 4] %}{% endif %}"
+        "{{ p }}{{ q }}",
+        "12",
+    ),
+    ("{% if inputs.c %}{% set p %}x{% endset %}{% else %}{% set p = 'y' %}{% endif %}{{ p }}", "x"),
+    (
+        "{% for x in [1] %}{% if inputs.c %}{% set p = x %}{% else %}{% set p = 0 %}{% endif %}"
+        "{{ p }}{% endfor %}",
+        "1",
+    ),
+]
+"""#927: every branch (and an ``else``) binds the name before it is read, so it saves."""
+
+MAYBE_UNBOUND: list[str] = [
+    "{% if inputs.c %}{% set p = 1 %}{% elif inputs.d %}{% set p = 2 %}{% endif %}{{ p }}",
+    "{% if inputs.c %}{% set p = 1 %}{% endif %}{{ p }}",
+    "{% if true %}{% set p = 1 %}{% endif %}{{ p }}",
+    "{% if inputs.c %}{% set p = p %}{% else %}{% set p = 2 %}{% endif %}{{ p }}",
+    "{{ p }}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}",
+    "{% with %}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}{% endwith %}"
+    "{{ p }}",
+    "{% for x in [1] %}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}"
+    "{% endfor %}{{ p }}",
+]
+"""#927's complement: the name may be unset where it is read (a branch or the ``else`` does
+not bind it, even under a constant-true test; it reads itself; it is read first; its binding
+ended with a ``with`` or ``for`` body), so it stays undeclared."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_definite_assignment() -> None:
+    """#927: a name set on every path to its read (each ``if``/``elif`` branch and the
+    ``else``, at any depth; a tuple or set-block target counts) is not an undeclared
+    variable, so the template saves and renders. Jinja's own analysis lists it, because it is
+    unset on some path in general.
+
+    Complement asserted: a name that may be unset where it is read is still refused as
+    undeclared (FR-MODEL-14 refuses what certainly fails, and keeps refusing what Jinja's
+    analysis flags unless the walk proves it bound)."""
+    inputs = {"c": True, "d": False}
+    for template, rendered in BOUND_ON_EVERY_PATH:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered, template
+    for template in MAYBE_UNBOUND:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        assert refused.value.details["message"] == (
+            "the template references undeclared variable(s) 'p' (allowed: inputs, story, viewpoint)"
+        ), template
+
+
 @pytest.mark.integration
 @pytest.mark.part("M9", "FR-MODEL-14")
 def test_i_29__m9_always_failing() -> None:

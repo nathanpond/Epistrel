@@ -37,6 +37,7 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-16 | `claude-haiku-5-5` | full | `596a9a6b4dbe` | hosted | `q01` pass | — | — | — | — | — | pass | — | — | — | — | — | [pass](full-596a9a6b4dbe-2026-11-16.md) |
 | 2026-11-15 | `claude-haiku-5-5` | full | `c8c88895af7a` | hosted | `q01` fail, `q03` report_only, `q04` fail, `q06` report_only | fail | — | — | — | — | fail | — | — | — | — | — | [fail](full-c8c88895af7a-2026-11-15.md) |
 | 2026-11-15 | `claude-haiku-5-5` | full | `a7ac39828994` | hosted | `q01` fail, `q03` report_only, `q04` fail, `q06` report_only | fail | — | — | — | — | fail | — | — | — | — | — | [fail](full-a7ac39828994-2026-11-15.md) |
 | 2026-11-06 | `claude-haiku-5-5` | full | `4710ae26cb73` | hosted | `e01` pass, `e01_viewpoint` pass, `e02` report_only, `e03` fail, `e04` report_only, `e05` pass, `e06` fail, `e07` pass, `e09` pass, `e10` pass, `e12` insufficient_evidence, `e13` report_only, `priv_think_leak` pass, `q01` pass, `q02` report_only, `q03` report_only, `q04` fail, `smoke` fail | fail | pass | fail | pass | pass | pass | fail | pass | pass | insufficient_evidence | report_only | [fail](full-4710ae26cb73-2026-11-06.md) |

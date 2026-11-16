@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -30,8 +31,27 @@ from epistrel.evals import SUITES, AdapterConfig, Verdict, run
 from epistrel.evals.certify import floors_of, record_from
 from epistrel.evals.gate import RELATIVE_MIN_PAIRS, Direction, Metric, Rule, SeedTally, judge
 from epistrel.evals.judging import CALIBRATION_FLOOR, load_pairs
-from epistrel.evals.report import Host, JudgeCalibrationRef, MetricResult, Report, SuiteResult
+from epistrel.evals.report import (
+    Host,
+    JudgeCalibrationRef,
+    MetricResult,
+    Report,
+    SuiteResult,
+    render_markdown,
+)
 from epistrel.evals.runner import CalibrationMissing
+from epistrel.evals.suites.e12_direct import (
+    DIRECT_COMPLETED,
+    E12_DIRECT,
+    IDENTITY_TYPES,
+    JUDGED_TYPES,
+    DirectCase,
+    direct_metric_id,
+    direct_outcome,
+    mismatch_id,
+    not_triggered_id,
+    select_mode,
+)
 from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
 from epistrel.evals.suites.scenario_play import CONFIGS, INTERVENTION_TYPES, ScenarioCase
 from tests.eval.suite_support import SEEDS, SETS, by_id
@@ -170,26 +190,40 @@ async def test_e_12(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
 
 
 def _e12_report(calibration: str, tallies: dict[str, list[SeedTally]]) -> Report:
-    """A run whose E-12 rows (the run's own configuration) judged ``tallies`` per type."""
+    """A run whose E-12 direct rows (#937: what a certification reads) observed ``tallies`` per
+    type, beside a full-mode ``e12`` row that passes (informational in certification)."""
+    by_id_ = {m.id: m for m in SUITES[E12_DIRECT].metrics}
     rows = [
         MetricResult.of(metric, judge(metric, found))
         for kind, found in tallies.items()
-        for metric in [
-            Metric(metric_id("structured", kind), Rule.relative, FLOOR, Direction.at_most)
-        ]
+        for metric in [by_id_[direct_metric_id(kind)]]
     ]
     for row in rows:
-        row.judge_based = True
-    result = SuiteResult(
-        name="e12",
-        title="E-12",
-        ci_gate=False,
-        cases=len(tallies),
-        seeds=list(SEEDS),
-        metrics=rows,
-        verdict=Verdict.insufficient_evidence,
-        calibration=JudgeCalibrationRef(status=calibration, judge_model="stub", pairs=200),
-    )
+        row.judge_based = row.id in SUITES[E12_DIRECT].judge_metrics
+    full = Metric(metric_id("structured", "repair_rung_1"), Rule.relative, FLOOR, Direction.at_most)
+    ref = JudgeCalibrationRef(status=calibration, judge_model="stub", pairs=200)
+    suites = [
+        SuiteResult(
+            name=E12_DIRECT,
+            title="E-12 direct",
+            ci_gate=False,
+            cases=len(tallies),
+            seeds=list(SEEDS),
+            metrics=rows,
+            verdict=Verdict.insufficient_evidence,
+            calibration=ref,
+        ),
+        SuiteResult(
+            name="e12",
+            title="E-12",
+            ci_gate=False,
+            cases=1,
+            seeds=list(SEEDS),
+            metrics=[MetricResult.of(full, judge(full, [SeedTally(s, 300, 0) for s in SEEDS]))],
+            verdict=Verdict.passed,
+            calibration=ref,
+        ),
+    ]
     return Report(
         run_id="e12-m7",
         started_at="2026-11-02T10:00:00+00:00",
@@ -201,23 +235,24 @@ def _e12_report(calibration: str, tallies: dict[str, list[SeedTally]]) -> Report
         host=Host(kind="ci"),
         seed_base=SEEDS[0],
         seeds=list(SEEDS),
-        suites=[result],
+        suites=suites,
     )
 
 
-@pytest.mark.part("M7", "FR-PROF-15")
-def test_e_12__m7() -> None:
-    """A certification lists the intervention types NFR-QUAL-14's floor covers (E-12 M7): with a
-    calibrated judge, a type at 300 non-tied pairs a seed whose draft preference stays under 55 %
-    is covered, and one at 120 pairs is listed insufficient; NFR-QUAL-14 is a floor passed.
-    Complement: with an uncalibrated judge both lists are empty, NFR-QUAL-14 is not passed and
-    the record says ``judge_calibrated: false``."""
-    tallies = {
-        "repair_rung_1": [SeedTally(s, RELATIVE_MIN_PAIRS, 90) for s in SEEDS],
-        "repair_rung_2": [SeedTally(s, 120, 30) for s in SEEDS],
+def _all_seven(**changed: list[SeedTally]) -> dict[str, list[SeedTally]]:
+    """Every type passing (a judged type at 300 non-tied pairs a seed under 55 % draft
+    preference, an identity type at 30 unchanged cases a seed), with ``changed`` over it."""
+    found = {
+        kind: [SeedTally(s, RELATIVE_MIN_PAIRS, 90) for s in SEEDS]
+        if kind in JUDGED_TYPES
+        else [SeedTally(s, 30, 0) for s in SEEDS]
+        for kind in (*JUDGED_TYPES, *sorted(IDENTITY_TYPES))
     }
-    report = _e12_report("calibrated", tallies)
-    record = record_from(
+    return {**found, **changed}
+
+
+def _record(report: Report) -> Any:
+    return record_from(
         report,
         "# E-12\n",
         fingerprint=report.fingerprint,
@@ -225,25 +260,218 @@ def test_e_12__m7() -> None:
         profile_version=None,
         models={},
     )
+
+
+@pytest.mark.part("M7", "FR-PROF-15")
+def test_e_12__m7() -> None:
+    """A certification lists the intervention types NFR-QUAL-14's floor covers (E-12 M7, read
+    from the direct rows since #937): with a calibrated judge and all seven types passing,
+    NFR-QUAL-14 is a floor passed, every type is covered and the identity types are listed.
+    Complements: six types passing and one at 120 pairs makes NFR-QUAL-14 insufficient (the
+    rule before #937 passed it on one type); a failing type is its own floor failed; the
+    full-mode rows never count; and with an uncalibrated judge the judged types are in neither
+    list, NFR-QUAL-14 is not passed and the record says ``judge_calibrated: false``."""
+    record = _record(_e12_report("calibrated", _all_seven()))
     assert record is not None
-    assert record.intervention_types_covered == ["repair_rung_1"]
-    assert record.intervention_types_insufficient == ["repair_rung_2"]
+    assert record.schema_version == 2
+    assert sorted(record.intervention_types_covered) == sorted(INTERVENTION_TYPES)
+    assert record.intervention_types_insufficient == []
+    assert sorted(record.identity_types) == sorted(IDENTITY_TYPES)
     assert record.judge_calibrated is True
     assert [f.metric_id for f in record.floors_passed] == ["NFR-QUAL-14"]
 
-    weak = _e12_report("uncalibrated", tallies)
-    for row in weak.suites[0].metrics:
-        row.verdict = Verdict.report_only  # what an uncalibrated judge makes of judge rows
-    assert (
-        record_from(
-            weak,
-            "# E-12\n",
-            fingerprint=weak.fingerprint,
-            profile_id=None,
-            profile_version=None,
-            models={},
-        )
-        is None
+    six = _e12_report(
+        "calibrated", _all_seven(repair_rung_2=[SeedTally(s, 120, 30) for s in SEEDS])
     )
+    passed, failed, insufficient, covered, lacking, _ = floors_of(six)
+    assert passed == []
+    assert failed == []
+    assert [f.metric_id for f in insufficient] == ["NFR-QUAL-14"]
+    assert lacking == ["repair_rung_2"]
+    assert "repair_rung_2" not in covered
+    assert len(covered) == 6
+    assert _record(six) is None  # no floor passed: no record
+
+    worse = _e12_report(
+        "calibrated", _all_seven(repair_rung_4=[SeedTally(s, 100, 200) for s in SEEDS])
+    )
+    passed, failed, insufficient, _, _, _ = floors_of(worse)
+    assert passed == []
+    assert insufficient == []
+    assert [(f.metric_id, f.intervention_type) for f in failed] == [
+        ("NFR-QUAL-14", "repair_rung_4")
+    ]
+
+    weak = _e12_report("uncalibrated", _all_seven())
+    for row in weak.suites[0].metrics:
+        if row.judge_based:
+            row.verdict = Verdict.report_only  # what an uncalibrated judge makes of judge rows
+    assert _record(weak) is None
     passed, _, _, covered, lacking, calibrated = floors_of(weak)
-    assert (passed, covered, lacking, calibrated) == ([], [], [], False)
+    assert (passed, lacking, calibrated) == ([], [], False)
+    assert sorted(covered) == sorted(IDENTITY_TYPES)  # identity rows make no judge call
+
+
+# -- direct mode (#936) -------------------------------------------------------------------------
+
+_HOOKED = (
+    '{"id": "direct-test-unchanged", "type": "repair_rung_1", "say": "Where is your coat?", '
+    '"beats": [{"kind": "say", "text": "On its hook, boss.", "intent": "sincere"}, {"kind": '
+    '"do", "text": "Bobby nods at the hallway.", "propositions": [{"subject": "coat", '
+    '"relation": "located_at", "object": "hook"}]}], "stub": {"judge": "draft"}}'
+)
+
+
+_BROKEN = (
+    '{"id": "direct-test-broken", "type": "age_repair", "say": "Who knocked?", "beats": '
+    '[{"kind": "say", "text": "A courier, boss.", "intent": "sincere"}, {"kind": "do", "text": '
+    '"A courier waits on the step."}], "introduces": [{"name": "a courier", "age_range": [20, '
+    '60]}], "stub": {"composition": "{\\"text\\": \\"\\\\\\"A courier, boss,\\\\\\" Bobby '
+    'says. A courier waits on the step.\\"}"}}'
+)
+
+
+@pytest.mark.part("M11", "NFR-QUAL-14")
+async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+    """#936, #937: the direct suite plays every example case once through the real turn
+    pipeline (only the render pinned to the prepared draft). Every judged type yields pairs,
+    the scripted judge's sides are the rows' rates, a tie adds no pair, and each row is
+    ``insufficient_evidence`` under 300 pairs. Each identity type fired on five cases, every one
+    released unchanged: its row counts them and is ``insufficient_evidence`` below 50.
+    Complements: a draft that contradicts nothing is ``not_triggered`` and adds no pair, and
+    so is an introduction that gave its age; an identity case whose polish is forced to alter
+    the text is a harness error naming the case."""
+    suite = SUITES[E12_DIRECT]
+    cases = [c for c in suite.load(SETS) if isinstance(c, DirectCase)]
+    by_type = Counter(c.type for c in cases)
+    assert set(by_type) == set(INTERVENTION_TYPES)
+    assert min(by_type.values()) >= 5
+    unchanged = DirectCase.model_validate_json(_HOOKED)
+    calibration = tmp_path / "judge-calibration.json"
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS,
+            engine=lib,
+            sets_dir=SETS,
+            calibrate=True,
+            calibration_file=calibration,
+            cases={suite.name: [*cases, unchanged]},
+        )
+    assert report.errors == [], report.errors
+    (result,) = report.suites
+    assert result.errors == [], result.errors[:5]
+    rows = by_id(result)
+    played = [*cases, unchanged]
+    for kind in INTERVENTION_TYPES:
+        mine = [c for c in played if c.type == kind]
+        quiet = [c for c in mine if c.id.endswith("-0006") or c is unchanged]
+        fired = [c for c in mine if c not in quiet]
+        row = rows[direct_metric_id(kind)]
+        assert row.verdict is Verdict.insufficient_evidence, row
+        assert rows[mismatch_id(kind)].mean == 0, kind
+        assert rows[not_triggered_id(kind)].mean == pytest.approx(len(quiet) / len(mine)), kind
+        if kind in IDENTITY_TYPES:
+            assert row.rule is Rule.identity
+            assert not row.judge_based
+            assert row.note == f"identity ({len(fired) * len(SEEDS)} cases)", row.note
+            assert row.ci95 is None
+            continue
+        judged = [c for c in fired if c.stub is None or c.stub.judge != "tie"]
+        draft = sum(c.stub is not None and c.stub.judge == "draft" for c in judged)
+        assert row.sample_size == len(judged), (kind, row.sample_size)
+        assert row.mean == pytest.approx(draft / len(judged)), kind
+        assert row.judge_based
+    assert rows[DIRECT_COMPLETED].mean == 1
+    assert any("E-12 direct fingerprint `structured`" in n for n in result.notes)
+    assert any("enough evidence on this run" in n and n.endswith("none.") for n in result.notes)
+
+    # Complement: an identity intervention that changed the prose fails loudly.
+    broken = DirectCase.model_validate_json(_BROKEN)
+    async with stub_engine(pg_url, engine) as lib:
+        bad = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS[:1],
+            engine=lib,
+            sets_dir=SETS,
+            calibration_file=calibration,
+            cases={suite.name: [broken]},
+        )
+    (bad_result,) = bad.suites
+    assert any("direct-test-broken" in e and "IdentityBroken" in e for e in bad_result.errors), (
+        bad_result.errors
+    )
+    assert bad_result.verdict in (Verdict.failed, Verdict.error), bad_result.verdict
+
+
+async def test_e_12__direct_mode_calls_the_production_ladder(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#936: the harness runs the pipeline's own repair entry point, not a copy: with
+    ``pipeline.repair_turn`` made to raise, the direct case fails."""
+    from epistrel.orchestrator.structured import pipeline
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("repair_turn reached")
+
+    monkeypatch.setattr(pipeline, "repair_turn", broken)
+    suite = SUITES[E12_DIRECT]
+    first = next(c for c in suite.load(SETS) if isinstance(c, DirectCase))
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS[:1],
+            engine=lib,
+            sets_dir=SETS,
+            calibrate=True,
+            calibration_file=tmp_path / "judge-calibration.json",
+            cases={suite.name: [first]},
+        )
+    (result,) = report.suites
+    assert any("repair_turn reached" in e for e in result.errors), result.errors
+
+
+def test_e_12__direct_verdict_rule() -> None:
+    """#936: a direct row is judged by the relative rule: 299 non-tied pairs a seed is
+    ``insufficient_evidence`` whatever the rate; at 300, mean + SD = 56 % fails."""
+    (metric,) = (m for m in SUITES[E12_DIRECT].metrics if m.id == direct_metric_id("repair_rung_3"))
+    assert metric.rule is Rule.relative
+    assert metric.floor == FLOOR
+    assert judge(metric, [SeedTally(s, 299, 0) for s in SEEDS]).verdict is (
+        Verdict.insufficient_evidence
+    )
+    assert judge(metric, [SeedTally(s, 0, 299) for s in SEEDS]).verdict is (
+        Verdict.insufficient_evidence
+    )
+    assert judge(metric, [SeedTally(s, 132, 168) for s in SEEDS]).verdict is Verdict.failed
+    assert judge(metric, [SeedTally(s, 135, 165) for s in SEEDS]).verdict is Verdict.passed
+
+
+def test_e_12__direct_outcome_and_mode() -> None:
+    """#936: how a played direct case counts, and which suites ``--e12-mode`` selects."""
+    assert direct_outcome("repair_rung_1", (), changed=False) == "not_triggered"
+    assert direct_outcome("repair_rung_1", ("repair_rung_1",), changed=False) == "not_triggered"
+    assert direct_outcome("repair_rung_1", ("repair_rung_1", "age_repair"), changed=True) == "pair"
+    assert direct_outcome("repair_rung_2", ("repair_rung_1",), changed=True) == "mismatch"
+    every = ["e01", "e12", "e12_direct", "q01"]
+    assert select_mode(every, None, default="full") == ["e01", "e12", "q01"]
+    assert select_mode(every, "direct", default="full") == ["e01", "e12_direct", "q01"]
+    assert select_mode(["e12"], None, default="both") == ["e12_direct", "e12"]
+    assert select_mode(["e12_direct"], None, default="full") == ["e12_direct"]
+    with pytest.raises(ValueError, match="needs e12"):
+        select_mode(["q01"], "direct", default="full")
+
+
+def test_e_12__one_section() -> None:
+    """#937: the report shows E-12 once, the direct rows first and the full-turn rows beside
+    them; an identity row reads "identity (n cases)"."""
+    report = _e12_report("calibrated", _all_seven())
+    report.suites.reverse()  # whatever order the suites ran in
+    text = render_markdown(report)
+    assert text.count("## E-12: engine interventions and prose (NFR-QUAL-14)") == 1
+    assert text.index("### `e12_direct`") < text.index("### `e12`:")
+    assert "(the realism check: informational in a certification)" in text
+    assert "identity (60 cases)" in text

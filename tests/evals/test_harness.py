@@ -305,7 +305,9 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             }
             assert failing - short <= {"nfr_qual_10.recall_gated"}, suite
             # E-12's stub set is far below NFR-QUAL-14's 300 pairs a type (#158).
-            proven = Verdict.insufficient_evidence if suite.name == "e12" else Verdict.passed
+            # (#936: so is the direct mode's example set, 5 cases a type.)
+            short_set = suite.name in ("e12", "e12_direct")
+            proven = Verdict.insufficient_evidence if short_set else Verdict.passed
             assert suite.verdict is proven or failing, suite
     # Every turn was a real one on a scratch story, under its case's eval scope and seed.
     assert played
@@ -606,7 +608,7 @@ def test_check_cross_references_the_guarantee_table() -> None:
         in checks.problems(suites=without_e09)
     )
     assert checks.problems(suites=without_e09, pending={"NFR-QUAL-9": "M6"}) == []
-    without_e12 = [s for s in SUITES.values() if s.name != "e12"]
+    without_e12 = [s for s in SUITES.values() if s.name not in ("e12", "e12_direct")]
     assert (
         "guarantee row quality_judge: its metric NFR-QUAL-14 is measured by no eval suite"
         in checks.problems(suites=without_e12)

@@ -332,6 +332,18 @@ def default_run_id(fingerprint_value: str, when: datetime, preset: PresetName | 
 
 SCRIPTED: contextvars.ContextVar[bool] = contextvars.ContextVar("evals_scripted", default=False)
 """Set inside ``CaseContext.scripted``: the block's model calls go to the run's stub."""
+PINNED: contextvars.ContextVar[tuple[type[Any], ...]] = contextvars.ContextVar(
+    "evals_pinned", default=()
+)
+"""Set inside ``CaseContext.pinned``: the block's calls whose response schema is one of these
+(or a subclass) go to the run's stub (#936: E-12's direct mode pins the render, ``RenderedBeats``,
+to the case's prepared draft; every other call of the turn stays on the run's model)."""
+
+
+def pinned_call(response_schema: type[Any] | None) -> bool:
+    """Whether a call with ``response_schema`` is pinned to the stub (``PINNED``)."""
+    pins = PINNED.get()
+    return bool(pins) and isinstance(response_schema, type) and issubclass(response_schema, pins)
 
 
 class RoutedAdapter:
@@ -351,8 +363,8 @@ class RoutedAdapter:
         self.stub = stub
         self.real_purposes = None if real_purposes is None else frozenset(real_purposes)
 
-    def routes_real(self, purpose: str) -> bool:
-        if SCRIPTED.get():
+    def routes_real(self, purpose: str, response_schema: type[Any] | None = None) -> bool:
+        if SCRIPTED.get() or pinned_call(response_schema):
             return False
         return self.real_purposes is None or purpose in self.real_purposes
 
@@ -363,7 +375,8 @@ class RoutedAdapter:
         params: ModelParams,
         response_schema: type[Any] | None = None,
     ) -> ModelResult:
-        target: ModelAdapter = self.real if self.routes_real(purpose) else self.stub
+        real = self.routes_real(purpose, response_schema)
+        target: ModelAdapter = self.real if real else self.stub
         return await target.complete(purpose, messages, params, response_schema)
 
     async def probe(self, purpose: str) -> ProbeResult:
@@ -529,9 +542,19 @@ class CaseContext:
         finally:
             SCRIPTED.reset(token)
 
+    @contextlib.contextmanager
+    def pinned(self, schemas: Collection[type[Any]]) -> Iterator[None]:
+        """A block whose calls answering one of ``schemas`` go to the run's stub on every run,
+        while every other call stays on the run's model (#936)."""
+        token = PINNED.set((*PINNED.get(), *schemas))
+        try:
+            yield
+        finally:
+            PINNED.reset(token)
+
     @property
     def scripted_stub(self) -> StubAdapter:
-        """The stub ``scripted`` blocks reach (``runner.scripted_stub``)."""
+        """The stub ``scripted`` and ``pinned`` blocks reach (``runner.scripted_stub``)."""
         return scripted_stub(self.engine)
 
     def scope_id(self, key: str) -> str:

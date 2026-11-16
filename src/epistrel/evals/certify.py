@@ -18,15 +18,18 @@ plays a run through it.
 - **Record** (``record_from``): each floored metric's verdict becomes a floor passed, failed or
   insufficient (``FloorResult``: ``metric_id`` is the NFR-QUAL id with its sub-metric,
   ``NFR-QUAL-1.false_support``, or the suite's own id for a harness metric); informational
-  and report-only rows are left out. E-12's rows of the run's own configuration
-  (``structured``) give the intervention types NFR-QUAL-14's floor covers (``pass``: at least
-  300 non-tied pairs a seed and a calibrated judge, which ``gate.judge`` requires) and those
-  with ``insufficient_evidence``; NFR-QUAL-14 is passed when at least one type is covered, and
-  a type that fails is a floor failed (``{metric_id: NFR-QUAL-14, intervention_type}``). An
-  uncalibrated judge makes every judge row ``report_only``: NFR-QUAL-14 is not passed, both
-  lists are empty and ``judge_calibrated`` is false. A suite the model's guardrail refused at
-  setup (#738) carries each floored metric as failed with n=0 (``SuiteResult.refused``), so its
-  floors are failed, never left out (#756); a refused E-12's types fail whatever the judge. No
+  and report-only rows are left out. NFR-QUAL-14 reads E-12's **direct** rows only (#937,
+  ADR-196; the full-turn ``e12`` rows are the realism check and stay out of the record): they
+  give the intervention types the floor covers (``pass``: at least 300 non-tied pairs a seed
+  and a calibrated judge, or an identity type's 50 unchanged cases) and those with
+  ``insufficient_evidence``. NFR-QUAL-14 is passed only when **all seven** types pass; a type
+  that fails is a floor failed (``{metric_id: NFR-QUAL-14, intervention_type}``), and otherwise
+  NFR-QUAL-14 is insufficient. ``identity_types`` lists the identity types that passed. An
+  uncalibrated judge makes every judged row ``report_only``: those types are in neither list,
+  NFR-QUAL-14 is not passed and ``judge_calibrated`` is false. A suite the model's guardrail
+  refused at setup (#738) carries each floored metric as failed with n=0
+  (``SuiteResult.refused``), so its floors are failed, never left out (#756); a refused E-12's
+  types fail whatever the judge. No
   floor passed: no record (the run is recorded, and the configuration stays ``uncertified``).
 """
 
@@ -57,14 +60,16 @@ from epistrel.evals.presets import Preset, needs_of
 from epistrel.evals.report import MetricResult, Report, render_markdown, summary
 from epistrel.evals.runner import DEFAULT_SETS_DIR, AdapterConfig, run_suites, seeds_from
 from epistrel.evals.suites import SUITES, MalformedCase, Suite
-from epistrel.evals.suites.e12_interventions import metric_id as e12_metric_id
-from epistrel.evals.suites.scenario_play import INTERVENTION_TYPES
+from epistrel.evals.suites.e12_direct import (
+    DIRECT_TYPES,
+    E12_DIRECT,
+    IDENTITY_TYPES,
+    direct_metric_id,
+)
+from epistrel.evals.suites.e12_interventions import E12
 
 TOKENS_PER_CALL = 2_000
 """A model call's prompt and completion tokens, for an estimate (a structured turn's call)."""
-E12 = "e12"
-E12_CONFIG = "structured"
-"""E-12's rows of the run's own configuration (``gated`` is a variant with its own fingerprint)."""
 TIER_REFERENCE = "reference"
 TIER_OTHER = "other"
 
@@ -94,7 +99,8 @@ def _floor(metric: MetricResult, metric_id: str, intervention: str | None = None
 
 
 def _e12_types() -> dict[str, str]:
-    return {e12_metric_id(E12_CONFIG, kind): kind for kind in INTERVENTION_TYPES}
+    """NFR-QUAL-14's rows: E-12's direct rows by type (#937)."""
+    return {direct_metric_id(kind): kind for kind in DIRECT_TYPES}
 
 
 def floors_of(
@@ -107,25 +113,34 @@ def floors_of(
     insufficient: list[FloorResult] = []
     covered: list[str] = []
     lacking: list[str] = []
+    failing: list[str] = []
     calibrated = False
+    direct = False
     types = _e12_types()
     for suite in report.suites:
         judged = suite.calibration is not None
         if judged and suite.calibration is not None:
             calibrated = suite.calibration.status == "calibrated"
+        if suite.name == E12:
+            # #937: the full-turn rows are the realism check, informational in certification.
+            continue
         for metric in suite.metrics:
-            if metric.rule is Rule.informational or metric.floor is None:
-                continue
-            if suite.name == E12:
+            if suite.name == E12_DIRECT:
                 kind = types.get(metric.id)
                 if kind is None:
                     continue
-                if metric.verdict is Verdict.passed and calibrated:
+                direct = True
+                # An identity row makes no judge call, so no calibration gates it.
+                trusted = calibrated or kind in IDENTITY_TYPES
+                if metric.verdict is Verdict.passed and trusted:
                     covered.append(kind)
-                elif metric.verdict is Verdict.insufficient_evidence and calibrated:
+                elif metric.verdict is Verdict.insufficient_evidence and trusted:
                     lacking.append(kind)
-                elif metric.verdict is Verdict.failed and (calibrated or suite.refusal):
+                elif metric.verdict is Verdict.failed and (trusted or suite.refusal):
+                    failing.append(kind)
                     failed.append(_floor(metric, QUALITY_14, kind))
+                continue
+            if metric.rule is Rule.informational or metric.floor is None:
                 continue
             target = {
                 Verdict.passed: passed,
@@ -134,15 +149,18 @@ def floors_of(
             }.get(metric.verdict)
             if target is not None:
                 target.append(_floor(metric, requirement_id(metric.id)))
-    if covered:
-        passed.append(
+    if direct and not failing:
+        # NFR-QUAL-14 passes only when every type does (#937); a type failed is its own floor
+        # failed, and anything short of all seven passing without a failure is insufficient.
+        every = set(covered) == set(DIRECT_TYPES)
+        (passed if every else insufficient).append(
             FloorResult(
                 metric_id=QUALITY_14,
                 floor=None,
                 rule=Rule.relative.value,
                 n=0,
                 seeds=len(report.seeds),
-                verdict=Verdict.passed.value,
+                verdict=(Verdict.passed if every else Verdict.insufficient_evidence).value,
             )
         )
     return passed, failed, insufficient, covered, lacking, calibrated
@@ -177,6 +195,7 @@ def record_from(
         floors_insufficient=insufficient,
         intervention_types_covered=covered,
         intervention_types_insufficient=lacking,
+        identity_types=[kind for kind in covered if kind in IDENTITY_TYPES],
         judge_calibrated=calibrated,
         sample_sizes={f.metric_id: f.n for f in (*passed, *failed, *insufficient)},
         seed_count=len(report.seeds),
@@ -241,7 +260,7 @@ class EvalHarness:
             for name, suite in SUITES.items()
             if not suite.standalone
             and (
-                (name == E12 and QUALITY_14 in wanted)
+                (name in (E12, E12_DIRECT) and QUALITY_14 in wanted)
                 or any(requirement_id(m.id) in wanted for m in suite.metrics)
             )
         )

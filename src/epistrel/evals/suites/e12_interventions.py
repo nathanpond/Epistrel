@@ -26,6 +26,10 @@ Every row is judge-based: before the run the judge must be calibrated (``judging
 and below 75 % agreement every row is ``report_only``. The judge only reads the case's own
 scratch stories.
 
+**Direct mode** (#936, #937) is the sibling suite ``e12_direct`` (``suites.e12_direct``):
+prepared first drafts, one real turn each; its rows are reported beside these and never pooled
+with them.
+
 On the stub, the scenarios are scripted so that each turn triggers its family's intervention,
 and the judge's preference is scripted per turn (``stub_judge``). CI's stub run proves the
 plumbing and reports ``insufficient_evidence``: the stub set is far below 300 pairs a type. The
@@ -115,9 +119,12 @@ def _pairs(outcome: Outcome) -> list[Mapping[str, Any]]:
     return [p for p in found if isinstance(p, Mapping)]
 
 
+E12 = "e12"
+
+
 @register
 class E12Suite(Suite):
-    name = "e12"
+    name = E12
     title = "E-12 (M4): engine interventions and prose, in aggregate"
     set_path = SET_PATH
     min_cases = MIN_SCENARIOS
@@ -251,4 +258,4 @@ def _n(found: Aggregate) -> int:
     return found.good + found.bad if isinstance(found, Counts) else found.n
 
 
-__all__ = ["COMPLETED", "FLOOR", "E12Suite", "changed_id", "metric_id"]
+__all__ = ["COMPLETED", "E12", "FLOOR", "E12Suite", "changed_id", "metric_id"]

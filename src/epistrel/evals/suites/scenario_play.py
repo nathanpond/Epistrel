@@ -189,11 +189,12 @@ class Played:
     places: tuple[str, ...]
 
 
-async def _plant(ctx: CaseContext, story_id: str, cast: Sequence[str]) -> None:
+async def _plant(ctx: CaseContext, story_id: str, cast: Sequence[str]) -> dict[str, str]:
     """S-COAT's canon: the coat on the hook, the hook in the hallway, the armchair in the
     parlor (the author's facts, so the two places are told apart), and ``cast`` in the parlor:
     the seeded profile routes perception (#181), and an unplaced character perceives nothing,
-    so Bobby hears the player's line only when both are placed together (#572)."""
+    so Bobby hears the player's line only when both are placed together (#572). Returns the
+    planted entities' ids by name (#936's direct cases add canon over them)."""
     async with ctx.engine.db.begin() as conn:
         found = {name: await store.add_entity(conn, story_id, "item", name) for name in ITEMS}
         for name in PLACES:
@@ -217,6 +218,7 @@ async def _plant(ctx: CaseContext, story_id: str, cast: Sequence[str]) -> None:
                 )
             ),
         )
+    return found
 
 
 async def _rejected_originals(ctx: CaseContext, operation_id: str) -> dict[int, str]:
@@ -363,6 +365,10 @@ def script(case: ScenarioCase, stub: StubAdapter) -> None:
             stub.when((marker, texts[0]), turn.stub.composition, purpose=COMPOSITION_TEMPLATE)
 
 
+plant = _plant
+"""S-COAT's canon on a scratch story (``_plant``), for #936's direct cases."""
+
+
 def changed_pairs(played: Sequence[PlayedTurn]) -> list[PlayedTurn]:
     """The turns whose final message differs from their first draft."""
     return [t for t in played if t.changed]
@@ -374,6 +380,8 @@ __all__ = [
     "CONFIG_DIALS",
     "DEFINITION",
     "INTERVENTION_TYPES",
+    "ITEMS",
+    "PLACES",
     "PLAYER",
     "RENDERER",
     "Config",
@@ -387,6 +395,7 @@ __all__ = [
     "drivers_text",
     "first_draft",
     "interventions",
+    "plant",
     "play",
     "repair_tags",
     "script",

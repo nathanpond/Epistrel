@@ -110,6 +110,7 @@ from epistrel.evals.runner import (
     seeds_from,
 )
 from epistrel.evals.suites import SUITES, MalformedCase, get_suites
+from epistrel.evals.suites.e12_direct import E12_MODES, select_mode
 from epistrel.evals.trace import (
     CallTrace,
     TraceFile,
@@ -347,6 +348,11 @@ def parser() -> argparse.ArgumentParser:
         help="a suite --all leaves out (repeatable; CI runs the zero-leak suites as a job of "
         "their own)",
     )
+    run.add_argument(
+        "--e12-mode",
+        choices=E12_MODES,
+        help="E-12's mode (#936): full turns (the default), prepared drafts (direct), or both",
+    )
     run.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
     run.add_argument("--run-id", help="the run to write or merge into")
     run.add_argument("--new-run", action="store_true", help="never merge into an earlier run")
@@ -487,6 +493,15 @@ async def _run(args: argparse.Namespace) -> int:
         print("error: --preflight is e11's (`run --suite e11 --preflight`)", file=sys.stderr)
         return EX_USAGE
     try:
+        chosen = select_mode(
+            [s.name for s in get_suites(None if args.all else args.suite)],
+            args.e12_mode,
+            default="full",
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EX_USAGE
+    try:
         dials = checked_dials(args.dials, args.preset)
     except DialInvalid as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -540,7 +555,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     try:
         report = await run_suites(
-            [s for s in get_suites(None if args.all else args.suite) if s.name not in args.skip],
+            [s for s in get_suites(chosen) if s.name not in args.skip],
             config,
             seeds_from(args.seeds, args.seed_base),
             sets_dir=args.sets_dir,

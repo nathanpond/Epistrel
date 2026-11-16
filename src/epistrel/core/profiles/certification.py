@@ -1,7 +1,8 @@
 """Certification records and the quality status they produce (FR-PROF-15..17, NFR-QUAL-8,11;
 #233).
 
-**A record** (``CertificationRecord``, ``schema_version`` 1) is what an eval run against one
+**A record** (``CertificationRecord``, ``schema_version`` 2; #937 added ``identity_types``,
+kept in the record only, and a version 1 record is read as recorded) is what an eval run against one
 configuration fingerprint certifies: the floors it passed, each with its rule, mean, standard
 deviation, sample size, seeds and bound (``FloorResult``), the floors it failed or could not
 decide (recorded, never hidden), the intervention types NFR-QUAL-14's floor covers and those it
@@ -86,13 +87,15 @@ from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+"""#937: version 2 adds ``identity_types``; a version 1 record keeps its verdicts as recorded."""
 SEEDS_DIR = Path(__file__).resolve().parent.parent / "seeds" / "certifications"
 """The committed certification records the start-up loader imports (#235 writes them)."""
 VALID = "valid"
 STALE = "stale"
 QUALITY_14 = "NFR-QUAL-14"
-"""NFR-QUAL-14's metric id: passed when at least one intervention type is covered."""
+"""NFR-QUAL-14's metric id: passed when every intervention type passes (#937; a version 1
+record passed it on one covered type)."""
 
 
 class FloorResult(BaseModel):
@@ -148,7 +151,7 @@ class CertificationRecord(BaseModel):
         },
     )
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     certification_id: str = Field(pattern=ULID_PATTERN)
     fingerprint: str = Field(pattern=FINGERPRINT_PATTERN)
     profile_id: str | None = Field(default=None, pattern=ULID_PATTERN)
@@ -161,6 +164,9 @@ class CertificationRecord(BaseModel):
     floors_insufficient: list[FloorResult] = Field(default_factory=list)
     intervention_types_covered: list[str] = Field(default_factory=list)
     intervention_types_insufficient: list[str] = Field(default_factory=list)
+    identity_types: list[str] = Field(default_factory=list)
+    """#937: the identity intervention types that passed (kept in the record only, not
+    stored)."""
     judge_calibrated: bool = False
     sample_sizes: dict[str, int] = Field(default_factory=dict)
     seed_count: int = Field(ge=1)
@@ -260,7 +266,9 @@ def check_report(record: CertificationRecord, report_md: str | None) -> None:
 
 
 def _values(record: CertificationRecord, via: str) -> dict[str, Any]:
-    dumped = record.model_dump(mode="json", exclude={"schema_version", "report_md"})
+    dumped = record.model_dump(
+        mode="json", exclude={"schema_version", "report_md", "identity_types"}
+    )
     dumped["id"] = dumped.pop("certification_id")
     dumped["run_at"] = record.run_at
     dumped["recorded_via"] = via

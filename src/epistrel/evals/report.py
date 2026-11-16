@@ -108,10 +108,15 @@ class MetricResult(BaseModel):
     fingerprint: str | None = None
     """The configuration fingerprint a per-configuration row measured (E-13's rows, #463);
     ``None`` for a row of the run's own fingerprint or of no single configuration."""
+    note: str | None = None
+    """A short note on the row (#937: an identity row's "identity (n cases)")."""
 
     @classmethod
     def of(cls, metric: Metric, judgement: Judgement) -> MetricResult:
         return cls(
+            note=None
+            if metric.rule is not Rule.identity
+            else f"identity ({identity_cases(judgement)} cases)",
             id=metric.id,
             description=metric.description,
             rule=metric.rule,
@@ -334,7 +339,14 @@ def percent(value: float | None) -> str:
     return EM_DASH if value is None else f"{value * 100:.2f}%"
 
 
+def identity_cases(judgement: Judgement) -> int:
+    """An identity row's fired cases over every seed (#937): the seeds' cases, summed."""
+    return judgement.cases
+
+
 def _floor_text(metric: MetricResult) -> str:
+    if metric.rule is Rule.identity:
+        return "identity"
     if metric.rule is Rule.informational or metric.floor is None:
         return "none"
     if metric.rule is Rule.zero:
@@ -347,7 +359,10 @@ def _floor_text(metric: MetricResult) -> str:
 
 def _measured_text(metric: MetricResult) -> str:
     """The per-seed value's mean ± SD: the good rate for a ≥ floor, the bad rate otherwise;
-    with its pooled 95 % confidence interval when the suite gives one (#158)."""
+    with its pooled 95 % confidence interval when the suite gives one (#158); an identity row's
+    note (#937)."""
+    if metric.rule is Rule.identity:
+        return metric.note or "identity (0 cases)"
     if metric.mean is None:
         return "no observations"
     spread = EM_DASH if metric.stdev is None else percent(metric.stdev)
@@ -555,6 +570,34 @@ HOW_TO_READ = """\
 """
 
 
+SECTIONS: Mapping[str, tuple[str, str]] = {
+    "e12_direct": ("E-12: engine interventions and prose (NFR-QUAL-14)", ""),
+    "e12": (
+        "E-12: engine interventions and prose (NFR-QUAL-14)",
+        " (the realism check: informational in a certification)",
+    ),
+}
+"""Suites the report shows under one heading when both ran (#937): E-12's direct rows, which a
+certification reads, then its full-turn rows beside them."""
+
+
+def sectioned(suites: Sequence[SuiteResult]) -> list[SuiteResult]:
+    """``suites`` in report order, with each section's suites together in ``SECTIONS``' order
+    at the first one's place."""
+    order = list(SECTIONS)
+    found: list[SuiteResult] = []
+    placed = False
+    for suite in suites:
+        if suite.name not in SECTIONS:
+            found.append(suite)
+        elif not placed:
+            placed = True
+            found += sorted(
+                (s for s in suites if s.name in SECTIONS), key=lambda s: order.index(s.name)
+            )
+    return found
+
+
 def render_markdown(report: Report) -> str:
     """The report as Markdown (see the module docstring)."""
     seeds = report.seeds
@@ -624,8 +667,15 @@ def render_markdown(report: Report) -> str:
         )
     if report.errors:
         lines += ["", "**Run errors:**", ""] + [f"- {error}" for error in report.errors]
-    for suite in report.suites:
-        lines += ["", f"## `{suite.name}`: {suite.title}", ""]
+    grouped = sum(s.name in SECTIONS for s in report.suites) > 1
+    heading = ""
+    for suite in sectioned(report.suites):
+        section = SECTIONS.get(suite.name) if grouped else None
+        if section is not None and section[0] != heading:
+            heading = section[0]
+            lines += ["", f"## {heading}"]
+        level = "##" if section is None else "###"
+        lines += ["", f"{level} `{suite.name}`: {suite.title}{section[1] if section else ''}", ""]
         timing = (
             f"; mean case time {suite.mean_case_ms / 1000:.1f} s (informational)"
             if suite.mean_case_ms is not None

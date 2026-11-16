@@ -113,7 +113,8 @@ from epistrel.evals.runner import (
     seeds_from,
 )
 from epistrel.evals.suites import SUITES, MalformedCase
-from epistrel.evals.suites.e12_interventions import E12, E12_MODES, select_mode
+from epistrel.evals.suites.e12_direct import E12_MODES, select_mode
+from epistrel.evals.suites.e12_interventions import E12
 from epistrel.evals.trace import CallTrace, TraceFile, trace_path
 from epistrel.tools import model_matrix
 

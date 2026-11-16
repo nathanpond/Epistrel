@@ -22,6 +22,11 @@ share of bad ones for an ``at_most`` floor (false support ≤ 1 %); values are f
   observations per seed (E-12's non-tied pairs of one intervention type); it passes when the mean
   across seeds plus one sample standard deviation is **at most** the floor (NFR-QUAL-14 says "at
   most 55 %"), and fewer observations are ``insufficient_evidence``, never a pass.
+- **Identity rule** (``identity``, NFR-QUAL-14's identity interventions; #937, ADR-196): an
+  intervention that by construction releases the draft's prose unchanged (``age_repair``,
+  ``composition_fallback``). It has no floor. It passes when at least ``IDENTITY_MIN_CASES`` (50)
+  fired cases, summed over at least two seeds, all released the draft unchanged; one that
+  differed fails it; fewer is ``insufficient_evidence``.
 - **Informational** (``informational``): no floor; the verdict is ``report_only``.
 
 Each floored rule is ``insufficient_evidence`` with no observations or fewer than two seeds
@@ -44,6 +49,8 @@ ZERO_MIN_CASES = 300
 RELATIVE_MIN_PAIRS = 300
 """NFR-QUAL-14's minimum non-tied pairs of an intervention type (per seed) before its floor
 is judged (#158)."""
+IDENTITY_MIN_CASES = 50
+"""The fired cases, summed over seeds, an identity intervention needs before it passes (#937)."""
 CONFIDENCE = 0.95
 MIN_SEEDS = 2
 """A standard deviation needs two seeds; fewer is ``insufficient_evidence``."""
@@ -56,6 +63,7 @@ class Rule(StrEnum):
     rate = "rate"
     zero = "zero"
     relative = "relative"
+    identity = "identity"
     informational = "informational"
 
 
@@ -102,9 +110,11 @@ def metric_problems(metric: Metric) -> list[str]:
     found: list[str] = []
     if not METRIC_ID_PATTERN.match(metric.id):
         found.append(f"{metric.id!r}: not a lower-case dotted metric id")
-    if metric.rule is Rule.informational:
+    if metric.rule in (Rule.informational, Rule.identity):
         if metric.floor is not None:
-            found.append(f"{metric.id}: an informational metric has no floor")
+            found.append(f"{metric.id}: an {metric.rule} metric has no floor")
+        if metric.rule is Rule.identity and metric.direction is not Direction.at_most:
+            found.append(f"{metric.id}: an identity metric counts differing cases (at_most)")
         return found
     if metric.floor is None:
         found.append(f"{metric.id}: rule {metric.rule} but no floor")
@@ -157,6 +167,8 @@ class Judgement:
     per_seed: tuple[float, ...]
     violations: int | None = None
     upper_bound_95: float | None = None
+    cases: int = 0
+    """The observations summed over every seed (an identity row's fired cases, #937)."""
 
 
 def _value(metric: Metric, tally: SeedTally) -> float:
@@ -187,6 +199,14 @@ def judge(metric: Metric, tallies: Sequence[SeedTally], *, lost: Sequence[int] =
         )
         if verdict is Verdict.failed and not violations and short:
             verdict = Verdict.insufficient_evidence
+    elif metric.rule is Rule.identity:
+        fired = sum(t.n for t in tallies)
+        if any(t.bad for t in tallies):
+            verdict = Verdict.failed
+        elif seeds < MIN_SEEDS or fired < IDENTITY_MIN_CASES:
+            verdict = Verdict.insufficient_evidence
+        else:
+            verdict = Verdict.passed
     elif metric.rule is Rule.informational or metric.floor is None:
         verdict = Verdict.report_only
     elif sample == 0 or mean is None or stdev is None:
@@ -200,7 +220,8 @@ def judge(metric: Metric, tallies: Sequence[SeedTally], *, lost: Sequence[int] =
         verdict = Verdict.passed if mean - stdev > metric.floor else Verdict.failed
     else:
         verdict = Verdict.passed if mean + stdev < metric.floor else Verdict.failed
-    return Judgement(verdict, mean, stdev, sample, seeds, values, violations, bound)
+    total = sum(t.n for t in tallies)
+    return Judgement(verdict, mean, stdev, sample, seeds, values, violations, bound, total)
 
 
 def _zero_verdict(violations: int, sample: int, seeds: int) -> Verdict:
@@ -244,6 +265,7 @@ def gate(verdicts: Iterable[Verdict]) -> Verdict:
 
 __all__ = [
     "CONFIDENCE",
+    "IDENTITY_MIN_CASES",
     "MIN_SEEDS",
     "RELATIVE_MIN_PAIRS",
     "ZERO_MIN_CASES",

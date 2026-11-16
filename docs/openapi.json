@@ -3540,6 +3540,13 @@
             "title": "Host",
             "type": "object"
           },
+          "identity_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Identity Types",
+            "type": "array"
+          },
           "intervention_types_covered": {
             "items": {
               "type": "string"
@@ -3671,7 +3678,10 @@
             "type": "object"
           },
           "schema_version": {
-            "const": 1,
+            "enum": [
+              1,
+              2
+            ],
             "title": "Schema Version",
             "type": "integer"
           },

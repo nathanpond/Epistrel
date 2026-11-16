@@ -40,7 +40,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171, 176 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142, 164 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183, 196 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -178,7 +178,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 112 | The engine must not degrade prose; voice, plot, repetition, and length are reported, not gated | Amended | 114, 115 |
 | 113 | The general media sweep spares drafts and candidates; the images introduction separates the three sources | Amended | 186 |
 | 114 | Precise wording for age checks and the prose floor; image attempts are fenced | Partly superseded | 116, 117, 125, 115 |
-| 115 | The prose floor needs enough evidence per intervention type | Current | — |
+| 115 | The prose floor needs enough evidence per intervention type | Amended | 196 |
 | 116 | Fenced image attempts settle their own reservation through a dedicated path | Partly superseded | 117, 119, 121, 124 |
 | 117 | After an attempt's horizon, retries wait only when the adapter can confirm completion; overage is the only way past a limit | Partly superseded | 118, 125, 120 |
 | 118 | `confirms_completion` is a declared adapter capability with a strict meaning of "definitive" | Partly superseded | 119, 124, 125, 131 |
@@ -259,6 +259,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 193 | A retrieved profile carries the relationships among the message's people, by default | Current | — |
 | 194 | A model error counts only in the rates its case's label puts it in | Current | — |
 | 195 | NFR-QUAL-14 is measured on prepared drafts, beside the full-turn rows | Current | — |
+| 196 | Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types | Current | — |
 
 ---
 
@@ -1197,6 +1198,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-115 — The prose floor needs enough evidence per intervention type
 **Status:** Accepted. Refines ADR-112 and ADR-114.
+**Amended by:** ADR-196 — a certification claims NFR-QUAL-14 only when every intervention type passes, and the age repair and the composition fallback pass as identity interventions.
 **Context:** A rarely triggered repair rung could appear to pass the 55% prose floor on a handful of comparisons.
 **Decision:** Each intervention type needs at least 300 non-tied pairs to pass, and passes when the mean across seeds plus one standard deviation is at most 55% (NFR-QUAL-8). Every report gives the rate with its 95% confidence interval. Types below the minimum are `insufficient_evidence`, never passed, and certifications list the types the floor covers. Eval suites include scenarios that trigger each rung. Judge calibration uses at least 200 labeled pairs, reported with its interval (NFR-QUAL-14).
 **Consequences:** No intervention type is certified on thin evidence, and sparse rungs are visibly uncovered rather than silently passing. Test E-12.
@@ -2158,6 +2160,19 @@ Tuning and its exit certification come after every milestone that may change a p
 - NFR-QUAL-14 is measured on drafts the case author wrote, not on drafts the certified model wrote. The full mode stays as the realism check, and its rows remain in the report.
 - A direct case costs about four calls (the turn's own checks and any regeneration, then two judge calls) against a full scenario's dozens.
 - `tests/eval/test_e_12.py::test_e_12__direct_mode` plays the examples on the stub, with the not-triggered and tie complements. `test_e_12__direct_mode_calls_the_production_ladder` makes `pipeline.repair_turn` raise and sees the case fail. `test_e_12__direct_verdict_rule` pins the 299/300 boundary.
+
+### ADR-196 — Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types
+**Status:** Accepted.
+**Context:** NFR-QUAL-14 compares a first draft with the final message wherever an intervention changed it. Two of E-12's seven types never change the prose. The age repair answers an introduced character's age, which a turn's text does not carry, and the composition fallback releases the deterministic assembly of the verified beats, which is the draft when no rung fired. Neither can give a judged pair, so neither could ever reach 300. The owner decided on 2026-11-16 (R3) that both pass by construction. #233's certification record passed NFR-QUAL-14 when any one type was covered, so a certification could claim the floor on one rung.
+**Decision:** Applied by #937 (NFR-QUAL-14, FR-PROF-15). Amends ADR-115: certifications still list the types the floor covers, and claim NFR-QUAL-14 only when all seven pass.
+- `gate.Rule.identity` has no floor. A row passes when at least `IDENTITY_MIN_CASES` (50) fired cases, summed over at least two seeds, released the draft unchanged; one that changed fails it; fewer is `insufficient_evidence`. Its report row shows the floor as "identity" and the measure as "identity (n cases)", with no interval. It makes no judge call and is not judge-gated.
+- E-12's direct mode (ADR-195) measures `age_repair` (a draft introducing an ageless adult) and `composition_fallback` (a polish, pinned like the draft, that the composition's check refuses) as identity rows. A fired case whose released prose differs from the draft under `normalized` raises `IdentityBroken`, a harness error naming the case. `composition_polished` is judged in pairs, like the rungs.
+- A certification reads NFR-QUAL-14 from E-12's direct rows only; the full-turn rows are the realism check. NFR-QUAL-14 is a floor passed only when all seven types pass. A failing type is a floor failed, as before. Short of seven passing with none failing, NFR-QUAL-14 is a floor insufficient. `intervention_types_covered` lists every passing type, and a record's new `identity_types` lists the identity types among them. The record's `schema_version` is 2. A version 1 record keeps its verdicts as recorded. `identity_types` is kept in the record only, with no column and nothing in the certification API.
+- The report shows one E-12 section: the direct rows first, then the full-turn rows beside them.
+**Alternatives considered:** Judging the identity types' pairs would compare a text with itself, so every judgement would be a tie, never counted. Leaving them uncovered would keep NFR-QUAL-14 from ever passing under "all seven". Keeping "one type covers the floor" lets a certification claim NFR-QUAL-14 while most interventions are unmeasured.
+**Consequences:**
+- A certification before #937 that passed NFR-QUAL-14 on fewer than seven types stays as recorded, version 1. From #937 on, the claim needs all seven, so certifications will report NFR-QUAL-14 insufficient until the live sets (#938) reach 300 pairs a judged type and 50 cases an identity type.
+- `tests/eval/test_e_12.py::test_e_12__m7` pins the certification rule (all seven pass; six plus one insufficient does not; a failing type is a floor failed; an uncalibrated judge leaves only the identity types covered). `test_e_12__direct_mode` plays the identity examples and forces a polish that changes an identity case's text, which must fail the case by name.
 
 ---
 

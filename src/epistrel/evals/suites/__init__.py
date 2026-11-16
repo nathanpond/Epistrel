@@ -266,6 +266,7 @@ from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F
 from epistrel.evals.suites import e09_time_estimation as _e09  # noqa: E402, F401
 from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
 from epistrel.evals.suites import e11_image_policies as _e11  # noqa: E402, F401
+from epistrel.evals.suites import e12_direct as _e12d  # noqa: E402, F401
 from epistrel.evals.suites import e12_interventions as _e12  # noqa: E402, F401
 from epistrel.evals.suites import e13_signals as _e13  # noqa: E402, F401
 from epistrel.evals.suites import priv_think_leak as _think  # noqa: E402, F401

@@ -1059,6 +1059,23 @@ MUTATING_CALLS: list[tuple[str, str]] = [
     ("{% with p = inputs['pop'] %}{% if inputs.c %}{{ p() }}{% endif %}{% endwith %}", "pop"),
     ("{% set p = inputs['pop'] %}{% if inputs.c %}{{ inputs.c }}{% endif %}{{ p() }}", "pop"),
     ("{% with p = inputs['clear'] %}{% with q = 1 %}{{ p() }}{% endwith %}{% endwith %}", "clear"),
+    # #930: a set inside a set block, filter block or autoescape block ends with it, so the
+    # outer alias is the one called.
+    (
+        "{% set p = inputs['pop'] %}{% set q %}{% set p = inputs.voter.upper %}{% endset %}"
+        "{{ p() }}",
+        "pop",
+    ),
+    (
+        "{% set p = inputs['pop'] %}{% filter upper %}{% set p = inputs.voter.upper %}"
+        "{% endfilter %}{{ p() }}",
+        "pop",
+    ),
+    (
+        "{% set p = inputs['pop'] %}{% autoescape false %}{% set p = inputs.voter.upper %}"
+        "{% endautoescape %}{{ p() }}",
+        "pop",
+    ),
 ]
 """#857: calls of a mutating name reached through an alias or a filter's attribute name."""
 
@@ -1094,6 +1111,17 @@ READ_NOT_CALLED: list[tuple[str, str]] = [
         "ASH",
     ),
     ("{% set p = inputs['pop'] %}{% set p, q = [inputs.voter.lower, 1] %}{{ p() }}", "ash"),
+    # #930: a rebinding inside a set block or a filter block does not reach the call.
+    (
+        "{% set p = inputs.voter.upper %}{% set q %}{% set p = inputs['pop'] %}{% endset %}"
+        "{{ p() }}",
+        "ASH",
+    ),
+    (
+        "{% set p = inputs.voter.upper %}{% filter upper %}{% set p = inputs['pop'] %}"
+        "{% endfilter %}{{ p() }}",
+        "ASH",
+    ),
 ]
 """#857's complement: a mutating name bound or mapped and not called reads the key."""
 
@@ -1109,7 +1137,8 @@ def test_i_29__m9_mutating_calls() -> None:
     Complement asserted: the same names bound or mapped without a call are accepted and render
     the key's value; and (#923) a name that is not that alias on every path to its call (a
     ``with`` scope ended, an ``if`` branch rebound it, a loop target shadows it) is accepted and
-    renders."""
+    renders. #930: a set block, filter block or autoescape block is a scope, so a rebinding
+    inside one neither hides the outer alias nor clears it."""
     inputs = {
         "voter": "Ash",
         "list": [1, 2, 3],
@@ -1130,7 +1159,7 @@ def test_i_29__m9_mutating_calls() -> None:
             f"the template uses {method!r}, a method that changes its value",
         ), template
     for template, rendered in READ_NOT_CALLED:
-        assert check_template(template, "body.template").render(inputs=inputs) == rendered
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered, template
 
 
 ALWAYS_FAILING: list[tuple[str, str]] = [

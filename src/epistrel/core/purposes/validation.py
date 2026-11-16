@@ -68,7 +68,9 @@ them, and a loop target (and ``loop``) shadows a name. A ``{% set %}`` in an ``{
 the enclosing scope, so after the ``if`` a name is an alias only when every branch (a missing
 ``else`` included) leaves it one. A tuple target rebinds each of its names. So
 ``{% with p = inputs['pop'] %}{{ p }}{% endwith %}{{ p() }}`` calls the outer ``p`` and is
-accepted; a call that fails anyway fails cleanly at call time.
+accepted; a call that fails anyway fails cleanly at call time. #930: a ``{% set x %}…{% endset %}``
+body, a ``{% filter %}`` body and an ``{% autoescape %}`` body are scopes too, so a ``set``
+inside one does not reach past it (the set block's own target binds after its body).
 
 #858: what fails on every render, whatever the inputs, is refused too. Every ``{% set x.y %}``
 target (``'x' is not a namespace``: no ``namespace`` exists here), so ``{% set inputs._y = 1 %}``
@@ -462,7 +464,11 @@ def _statement_calls(node: nodes.Node, aliases: Aliases, found: dict[int, str]) 
         _expression_calls(node.node, aliases, found)
         _bind(aliases, node.target, node.node)
     elif isinstance(node, nodes.AssignBlock):
-        _block_calls(node.body, aliases, found)
+        # #930: a set block's body is a scope of its own; its filter reads the outer names,
+        # and its target binds after the body.
+        if node.filter is not None:
+            _expression_calls(node.filter, aliases, found)
+        _block_calls(node.body, dict(aliases), found)
         _bind(aliases, node.target, None)
     elif isinstance(node, nodes.With):
         inner = dict(aliases)
@@ -489,7 +495,16 @@ def _statement_calls(node: nodes.Node, aliases: Aliases, found: dict[int, str]) 
         otherwise = dict(aliases)
         _block_calls(node.else_, otherwise, found)
         _merge(aliases, [*branches, otherwise])
-    elif isinstance(node, nodes.Block):
+    elif isinstance(node, nodes.FilterBlock):
+        # #930: a filter block's body is scoped; its filter reads the outer names.
+        _expression_calls(node.filter, aliases, found)
+        _block_calls(node.body, dict(aliases), found)
+    elif isinstance(node, nodes.ScopedEvalContextModifier):
+        # #930: an autoescape block's body is scoped; its options read the outer names.
+        for option in node.options:
+            _expression_calls(option.value, aliases, found)
+        _block_calls(node.body, dict(aliases), found)
+    elif isinstance(node, (nodes.Block, nodes.Scope)):
         _block_calls(node.body, dict(aliases), found)
     elif isinstance(node, nodes.Expr):
         _expression_calls(node, aliases, found)

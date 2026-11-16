@@ -15148,3 +15148,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #530
 - **Merged:** PR #942 squash-merged as `6ac2204` after CI went green (27 checks) on `05e1bab`. It closed #737, #530, #930, #927, #931 and #785; every close landed. #588 had been linked by the words "closes #588" in the body, and was unlinked before the merge. Still open, as intended: #929 (AC3), #918 (blocked), #588, #685, #818. M11 is **partially executed**.
   **Issue:** #935
+
+## /n8-exec M11 (run 2, owner answers) — 2026-11-16
+
+- **Decision (owner):** #918, option 1. `guardrail_check.j2` defines `confidence` as certainty of the verdict. The policy prompt, `on_uncertain` and `uncertain_below` are unchanged. Every preset's fingerprint moved ahead of #818 (`INDEX.md` regenerated; all four were already uncertified). Verified with paid run 3 of 5: q01 on hosted Haiku, 3 seeds, 100 cases, NFR-QUAL-6 recall@10 1.0 (n 252), pass. The report is committed. `entailment.j2` and `belief_adjudication.j2` carry the same undefined `confidence` and are left as they are: the owner approved the guardrail template only.
+  **Issue:** #918
+- **Decision (owner):** "merge everything you need to, don't wait for my approval". #946 was merged. #934 and #940 were closed as superseded rather than merged: their entries had reached `main` through #942, and merging would have duplicated them.
+  **Issue:** #934, #940, #946
+- **Decision (#929):** an amplified repro (story-lock wait cut to 200 ms, a scratch wrapper, q04 at concurrency 4, three runs) caught one commit `lock_timeout` while another case's story deletion held a `stories` lock. Two runs failed a case's own scratch-story deletion with a raw `OperationalError`, filed as #947. `operation.lock_timed_out` maps any lock wait in a commit to StoryBusy, so the likely cause is concurrent scratch-story create/delete DDL (partition attach and detach). This is unproven. The holder log now names the row's holder (by `xmax`) and every blocking table lock. The options are on #929 (recommended: close on AC1/AC2 and fill in the holder from the next CI log); the owner's pick is pending.
+  **Issue:** #929, #947

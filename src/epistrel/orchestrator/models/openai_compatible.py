@@ -40,6 +40,7 @@ import openai
 from openai.types.chat import ChatCompletion
 from pydantic import BaseModel
 
+from epistrel.orchestrator.models import call_trace
 from epistrel.orchestrator.models.adapter import (
     DEFAULT_TIMEOUT_S,
     PROBE_MESSAGES,
@@ -147,6 +148,34 @@ def reported_cost(usage: object) -> float | None:
     if isinstance(cost, bool) or not isinstance(cost, int | float) or cost < 0:
         return None
     return float(cost)
+
+
+def traced_response(completion: object) -> dict[str, Any]:
+    """What an eval run's call trace keeps of a response (#737, ``call_trace``): the text, the
+    finish reason, the refusal, token use with the provider's breakdown when it sends one
+    (``completion_tokens_details``: reasoning tokens, #735), the request id and the reported
+    version. Anything the SDK could not parse as a chat completion is kept as its type only."""
+    if not isinstance(completion, ChatCompletion):
+        return {"unparsed": type(completion).__name__}
+    choice = completion.choices[0] if completion.choices else None
+    message = getattr(choice, "message", None)
+    usage = completion.usage
+    details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
+    text = (message.content if message is not None else None) or ""
+    return {
+        "text": text,
+        "text_len": len(text),
+        "finish_reason": choice.finish_reason if choice is not None else None,
+        "refusal": message.refusal if message is not None else None,
+        "tokens_in": usage.prompt_tokens if usage is not None else None,
+        "tokens_out": usage.completion_tokens if usage is not None else None,
+        "completion_tokens_details": details.model_dump(exclude_none=True)
+        if details is not None
+        else None,
+        "request_id": completion.id or None,
+        "reported_version": getattr(completion, "system_fingerprint", None) or None,
+        "model": completion.model,
+    }
 
 
 @dataclass(eq=False)
@@ -262,10 +291,20 @@ class OpenAICompatibleAdapter:
                 sampling=sampling,
                 strict=is_anthropic(base_url),
             )
+            traced = call_trace.exchange(body)
+            sent_at = time.perf_counter()
             try:
                 completion = await client.chat.completions.create(**body, timeout=timeout)
+                if traced is not None:
+                    traced.latency_ms = round((time.perf_counter() - sent_at) * 1000)
+                    traced.response = traced_response(completion)
                 break
-            except openai.BadRequestError as exc:
+            except BaseException as exc:
+                if traced is not None:
+                    traced.latency_ms = round((time.perf_counter() - sent_at) * 1000)
+                    traced.error = call_trace.error_of(exc)
+                if not isinstance(exc, openai.BadRequestError):
+                    raise
                 sent = "temperature" in body or "top_p" in body
                 if sampling and sent and rejects_sampling(exc):
                     self._default_sampling.add((base_url, model))
@@ -275,6 +314,7 @@ class OpenAICompatibleAdapter:
                     raise
                 self._legacy_max_tokens.add(base_url)
                 legacy = True
+                continue
         latency_ms = round((time.perf_counter() - started) * 1000)
         # A 200 whose body is not a chat completion (an HTML page, ``{}``, no choices) is
         # garbage, not an empty answer.
@@ -351,4 +391,5 @@ __all__ = [
     "rejects_sampling",
     "reported_cost",
     "request_body",
+    "traced_response",
 ]

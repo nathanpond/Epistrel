@@ -138,6 +138,55 @@ error, `none` none. `--fresh` sets the journal aside (renamed, never deleted) an
 case again. Journals are kept per model and configuration fingerprint, so the results of every
 model run are there for later comparison. `--journal-dir` moves them.
 
+**The call trace** (#737). Beside each journal, `certify` writes
+`<preset>-<fingerprint[:12]>.calls.jsonl.gz`, `run` writes `run-<fingerprint[:12]>.calls.jsonl.gz`,
+and `calibrate-judge` writes `<judge>/calibration.calls.jsonl.gz`. It holds one record for each
+HTTP request a model call made, and it exists so a failed call can be diagnosed by reading a
+file instead of paying for a replay. `--no-trace` turns it off (no file is written), and a stub
+run writes none because it sends nothing. Like the journal, the trace is ignored by git and is
+never committed. It changes no fingerprint, report or journal row, and a deployed engine has no
+setting that turns it on. A record (`v: 1`, `evals/trace.py` has the full list) carries:
+
+- **The journal key** of its case: `suite`, `suite_fingerprint`, `case`, `digest` and `seed`,
+  plus `fingerprint`, `preset` and `model`. Also `call`, the call's index within the case, and
+  `http`, the request's index within the call. A judge-calibration call has `phase:
+  calibration` and a null case. The endpoint's protocol probe is not traced.
+- **What the call was:** `purpose`, `attempt`, `schema`, `judge` (true for E-03's entailment
+  judge and `quality_judge`) and `structured_mode`, which is `json_schema_strict`,
+  `json_schema`, `parse_validate_retry` or null.
+- **The request as sent:** `messages` (an image's `data:` URL is replaced by its digest and
+  length) and `params` (`temperature`/`top_p` as actually sent, `max_completion_tokens` or
+  `max_tokens`, `seed`, `stop`, and any provider extras such as `extra_body`).
+- **The `response`:** `text`, `text_len`, `finish_reason`, `refusal`, `tokens_in`,
+  `tokens_out`, `completion_tokens_details` when the provider sends one, `request_id` and
+  `reported_version`. Anthropic's endpoint sends no token breakdown. A hidden-reasoning share
+  (#735) shows instead as `tokens_out` close to `max_completion_tokens` with a short `text_len`.
+- **On a failed request,** `error`: the exception `type`, HTTP `status`, the provider's error
+  `body` and `request_id`. `raised` is what the call ended in.
+- **Bookkeeping:** `latency_ms`, `call_latency_ms`, `engine_sha`, `session` (one per process)
+  and `complete` (false when the case ended in a harness error and has no journal row).
+
+Text fields are capped at 64 KiB, and `truncated: true` marks a record that was cut. No API key
+and no `Authorization` or `x-api-key` value is ever written, and every key the run was given is
+also scrubbed from each line. Records are written once their case ends, and each case's records
+are one gzip member. A case cancelled by a second Ctrl-C writes nothing and gets its records when
+it plays again. Cases a resumed run takes from the journal add nothing. A process killed during
+a write leaves a torn last member, and the next run cuts it off. `--fresh` sets the trace aside
+together with the journal.
+
+The trace is plain gzip-compressed JSONL, so any JSONL reader works. DuckDB, for example, run
+in a throwaway environment so it never enters the lock (`finish_reason` counts per suite):
+
+```sh
+uv run --no-project --with duckdb python -c "import duckdb; duckdb.sql('''
+  SELECT suite, response->>'finish_reason' AS finish, count(*) AS calls
+  FROM read_json_auto('.evals-results/claude-haiku-5-5/standard-*.calls.jsonl.gz')
+  GROUP BY ALL ORDER BY suite, calls DESC''').show()"
+```
+
+The trace meets #735's diagnostic needs (`finish_reason`, tokens against `max_tokens` and the
+raw text of a structured-parse failure), so the journal stays as it is.
+
 **Expected duration.** Standard plans 8,718 case runs at 3 seeds; Full and Max run more
 suites, so more (each preset prints its count as it starts). A case is a few model calls (a
 structured turn is ~7). Measured: the local reference model on an M3 Max at `--concurrency 1`

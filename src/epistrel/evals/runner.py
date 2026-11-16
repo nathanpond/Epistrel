@@ -124,7 +124,7 @@ from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
-from epistrel.evals.journal import Journal
+from epistrel.evals.journal import Journal, case_digest
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
 from epistrel.evals.presets import (
     DEFAULT_PRESET,
@@ -145,6 +145,7 @@ from epistrel.evals.report import (
     SuiteResult,
 )
 from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite, Summary
+from epistrel.evals.trace import CallTrace, CaseKey
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
@@ -754,6 +755,9 @@ class SuiteRun:
     dials: Mapping[str, Any] | None = None
     """The run's own settings merge patch (#913: ``run --dial``), under each suite's
     ``Suite.dials``; ``None``: the preset as it is."""
+    trace: CallTrace | None = None
+    """The run's per-call trace (#737, ``evals.trace``): each case's calls, written as it
+    ends; ``None``: no trace."""
 
 
 def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
@@ -902,7 +906,13 @@ async def _play_seeds(
         async with gate_slots:
             if job.stop is not None and job.stop.is_set():
                 return None
-            played = await _play(suite, job, case, seed)
+            if job.trace is None:
+                played = await _play(suite, job, case, seed)
+            else:
+                key = CaseKey(suite.name, own_fingerprint, case.id, case_digest(case), seed)
+                # A case cancelled mid-play writes nothing: it plays again on resume (#737).
+                with job.trace.case(key) as held:
+                    played = await _play(suite, job, case, seed)
         if job.journal is not None and played.error is None and played.outcome is not None:
             job.journal.record(
                 suite.name,
@@ -915,6 +925,8 @@ async def _play_seeds(
                 model_version=job.model_version,
                 preset=job.config.preset,
             )
+        if job.trace is not None:
+            job.trace.finish(held, complete=played.error is None and played.outcome is not None)
         job.progress.case_done(
             suite.name,
             seed,
@@ -1171,6 +1183,7 @@ async def run_suites(
     stop: asyncio.Event | None = None,
     progress: Progress | None = None,
     dials: Mapping[str, Any] | None = None,
+    trace: CallTrace | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1199,7 +1212,10 @@ async def run_suites(
     ``journal`` (#730, ``evals.journal``): the cases it holds are taken from it and every case
     played is written to it, and the report says so (``Report.resumed``). Once ``stop`` is set,
     no new case starts and ``Stopped`` is raised after the cases in flight end. ``progress``
-    sees each suite start and each case end."""
+    sees each suite start and each case end.
+
+    ``trace`` (#737, ``evals.trace``): the run's per-call trace, on for the run's model calls;
+    the judge calibration's calls are recorded under ``phase: calibration``."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -1241,7 +1257,7 @@ async def run_suites(
         engine_for(config, engine) as live,
         judge_layer_for(config, live) as judging,
     ):
-        with routed(live, config):
+        with routed(live, config), _tracing(trace):
             if probed is not None:
                 report.model_version, judge_version = probed
             else:
@@ -1258,15 +1274,16 @@ async def run_suites(
                     else None,
                 )
             if calibrate:
-                stored = await calibrate_judge(
-                    live,
-                    config,
-                    sets_dir=sets_dir,
-                    model_version=judge_version,
-                    flip=calibration_flip,
-                    seed=seed_base,
-                    judge_layer=judging,
-                )
+                with _phase(trace, "calibration"):
+                    stored = await calibrate_judge(
+                        live,
+                        config,
+                        sets_dir=sets_dir,
+                        model_version=judge_version,
+                        flip=calibration_flip,
+                        seed=seed_base,
+                        judge_layer=judging,
+                    )
                 judges.save(store, stored)
             await sweep(live)
             before = await story_rows(live.db)
@@ -1290,6 +1307,7 @@ async def run_suites(
                 progress=progress or Progress(),
                 model_version=report.model_version,
                 dials=dict(dials) if dials else None,
+                trace=trace,
             )
             preset_token = RUN_PRESET.set(chosen)
             try:
@@ -1316,6 +1334,25 @@ async def run_suites(
         )
     report.finish(datetime.now(UTC))
     return report
+
+
+@contextlib.contextmanager
+def _tracing(trace: CallTrace | None) -> Iterator[None]:
+    """``trace`` on for the calls made inside (nothing for ``None``)."""
+    if trace is None:
+        yield
+        return
+    with trace.active():
+        yield
+
+
+@contextlib.contextmanager
+def _phase(trace: CallTrace | None, name: str) -> Iterator[None]:
+    if trace is None:
+        yield
+        return
+    with trace.phase(name):
+        yield
 
 
 def routed_purposes(config: AdapterConfig) -> list[str] | None:
@@ -1360,21 +1397,24 @@ async def run_calibration(
     sets_dir: Path = DEFAULT_SETS_DIR,
     calibration_file: Path | None = None,
     flip: Collection[str] = (),
+    trace: CallTrace | None = None,
 ) -> judges.Calibration:
     """``calibrate-judge``: preflight the endpoint, calibrate its judge and store the result
-    (``calibration_path`` unless ``calibration_file``)."""
+    (``calibration_path`` unless ``calibration_file``); ``trace`` (#737) records the judge's
+    calls under ``phase: calibration``."""
     async with engine_for(config, engine) as live, judge_layer_for(config, live) as judging:
         version = await preflight(live, config)
         if config.judge_model is not None:
             version = await judge_preflight(judging, config)
-        found = await calibrate_judge(
-            live,
-            config,
-            sets_dir=sets_dir,
-            model_version=version,
-            flip=flip,
-            judge_layer=judging,
-        )
+        with _tracing(trace), _phase(trace, "calibration"):
+            found = await calibrate_judge(
+                live,
+                config,
+                sets_dir=sets_dir,
+                model_version=version,
+                flip=flip,
+                judge_layer=judging,
+            )
     judges.save(calibration_file or calibration_path(config), found)
     return found
 

@@ -76,7 +76,7 @@ import contextlib
 import json
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,6 +113,8 @@ from epistrel.evals.runner import (
     seeds_from,
 )
 from epistrel.evals.suites import SUITES, MalformedCase
+from epistrel.evals.trace import CallTrace, TraceFile, trace_path
+from epistrel.tools import model_matrix
 
 EX_FAILED = 1
 EX_USAGE = 2
@@ -283,7 +285,20 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
     first = _config(args, adapter, presets[0])
     done: list[Certified] = []
     failed = False
-    async with engine_for(first, None) as live, judge_layer_for(first, live) as judging:
+    trace = (
+        None
+        if args.no_trace
+        else CallTrace(
+            model=first.model_name,
+            engine_sha=model_matrix.engine_sha(),
+            secrets=(first.api_key, first.judge_api_key, first.embedding_api_key),
+        )
+    )
+    async with (
+        engine_for(first, None) as live,
+        judge_layer_for(first, live) as judging,
+        _traced(trace),
+    ):
         try:
             model_version = await preflight(live, first)
             judge_version = model_version
@@ -301,14 +316,15 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
         if calibration is not None and calibration.model_version not in (None, judge_version):
             calibration = None
         if calibration is None:
-            calibration = await calibrate_judge(
-                live,
-                first,
-                sets_dir=args.sets_dir,
-                model_version=judge_version,
-                seed=args.seed_base,
-                judge_layer=judging,
-            )
+            with trace.phase("calibration") if trace is not None else contextlib.nullcontext():
+                calibration = await calibrate_judge(
+                    live,
+                    first,
+                    sets_dir=args.sets_dir,
+                    model_version=judge_version,
+                    seed=args.seed_base,
+                    judge_layer=judging,
+                )
             judges.save(where.calibration_file, calibration)
             reused = ""
         else:
@@ -341,6 +357,7 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
                     calibrated=calibration.status == "calibrated",
                     journals=journals,
                     stop=stop,
+                    trace=trace,
                 )
             except Stopped:
                 print(
@@ -365,6 +382,16 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
         print("a ci_gate suite failed its floors on this run", file=sys.stderr)
         return EX_FAILED
     return 0
+
+
+@contextlib.asynccontextmanager
+async def _traced(trace: CallTrace | None) -> AsyncIterator[None]:
+    """The run's call trace on for everything inside (#737); nothing for ``None``."""
+    if trace is None:
+        yield
+        return
+    with trace.active():
+        yield
 
 
 def _journal_root(args: argparse.Namespace) -> Path:
@@ -448,6 +475,7 @@ async def _certify_one(
     calibrated: bool,
     journals: Path,
     stop: asyncio.Event | None = None,
+    trace: CallTrace | None = None,
 ) -> Certified:
     names = [n for n in harness.applicable(settings) if n not in set(args.skip)]
     if args.suite:
@@ -460,6 +488,13 @@ async def _certify_one(
         retry_errors=args.retry_errors,
         fresh=args.fresh,
     )
+    if trace is not None:
+        # #737: the preset's trace beside its journal (set aside with it by --fresh).
+        trace.attach(
+            TraceFile(trace_path(journal.path), fresh=args.fresh),
+            preset=preset,
+            fingerprint=request.fingerprint,
+        )
     planned = len(seeds) * sum(
         planned_cases(
             SUITES[n],
@@ -495,6 +530,7 @@ async def _certify_one(
         journal=journal,
         stop=stop,
         progress=Printer(preset, planned),
+        trace=trace,
     )
     report_md = reports.render_markdown(report)
     report_file = where.reports_dir / f"{run_id}.md"
@@ -594,6 +630,11 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
         "--journal-dir",
         type=Path,
         help="where the results journal lives (default .evals-results/ in the repository)",
+    )
+    command.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="write no per-call trace (#737; default: .calls.jsonl.gz beside each journal)",
     )
     command.add_argument(
         "--fresh",

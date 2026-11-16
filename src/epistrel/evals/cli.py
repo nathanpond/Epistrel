@@ -77,7 +77,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -90,6 +90,7 @@ from epistrel.evals import check as checks
 from epistrel.evals import report as reports
 from epistrel.evals import sets as labeled_sets
 from epistrel.evals.gate import Verdict
+from epistrel.evals.journal import default_root
 from epistrel.evals.presets import DEFAULT_PRESET, PRESET_NAMES, PRESETS
 from epistrel.evals.runner import (
     BUILD_DIR,
@@ -109,6 +110,13 @@ from epistrel.evals.runner import (
     seeds_from,
 )
 from epistrel.evals.suites import SUITES, MalformedCase, get_suites
+from epistrel.evals.trace import (
+    CallTrace,
+    TraceFile,
+    calibration_trace_path,
+    run_trace_path,
+)
+from epistrel.tools import model_matrix
 
 if TYPE_CHECKING:
     from epistrel.evals.suites.e11_image_policies import Preflight
@@ -222,6 +230,41 @@ def _embedding_options(command: argparse.ArgumentParser, *, required: bool = Fal
     )
 
 
+def _trace_option(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="write no per-call trace (#737; default: .evals-results/<model>/…calls.jsonl.gz)",
+    )
+    command.add_argument("--trace-dir", type=Path, help=argparse.SUPPRESS)
+
+
+def _trace(
+    args: argparse.Namespace, config: AdapterConfig, path: Callable[[Path], Path]
+) -> CallTrace | None:
+    """The command's per-call trace (#737, ``evals.trace``): ``None`` with ``--no-trace``, on
+    the stub (it sends nothing), or with no repository to put ``.evals-results/`` in."""
+    if args.no_trace or config.adapter == "stub":
+        return None
+    root: Path | None = args.trace_dir
+    if root is None:
+        from epistrel.evals.certify_cli import repo_root
+
+        found = repo_root()
+        if found is None:
+            print("note: no repository here: no call trace (pass --trace-dir)", file=sys.stderr)
+            return None
+        root = default_root(found)
+    trace = CallTrace(
+        model=config.model_name,
+        engine_sha=model_matrix.engine_sha(),
+        file=TraceFile(path(root)),
+        preset=config.preset,
+        secrets=(config.api_key, config.judge_api_key, config.embedding_api_key),
+    )
+    return trace
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m epistrel.evals",
@@ -321,11 +364,13 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--reports-dir", type=Path, default=checks.REPORTS_DIR, help=argparse.SUPPRESS)
     run.add_argument("--json-dir", type=Path, default=BUILD_DIR, help=argparse.SUPPRESS)
     run.add_argument("--markdown", type=Path, help="where the Markdown goes (see the docs)")
+    _trace_option(run)
     calibrate = sub.add_parser(
         "calibrate-judge",
         help="calibrate the quality judge on the labeled pairs and store its agreement (#158)",
     )
     _endpoint_options(calibrate)
+    _trace_option(calibrate)
     from epistrel.evals import certify_cli
 
     certify_cli.add_parser(sub)
@@ -404,9 +449,10 @@ async def _calibrate(args: argparse.Namespace) -> int:
         print("error: a real-model calibration needs --base-url and --model", file=sys.stderr)
         return EX_USAGE
     config = _config(args, adapter)
+    trace = _trace(args, config, lambda root: calibration_trace_path(root, config.judge_name))
     try:
         found = await run_calibration(
-            config, sets_dir=args.sets_dir, calibration_file=args.calibration_file
+            config, sets_dir=args.sets_dir, calibration_file=args.calibration_file, trace=trace
         )
     except EndpointUnavailable as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -470,6 +516,11 @@ async def _run(args: argparse.Namespace) -> int:
         return EX_USAGE
     json_path = args.json_dir / f"{run_id}.json"
     failures = args.json_dir / f"{run_id}-failures.jsonl"
+    trace = _trace(
+        args, config, lambda root: run_trace_path(root, config.model_name, fingerprint_value)
+    )
+    if trace is not None:
+        trace.fingerprint = fingerprint_value
 
     def merged(report: reports.Report) -> reports.Report:
         if prior is None:
@@ -504,6 +555,7 @@ async def _run(args: argparse.Namespace) -> int:
             calibrate=bool(args.all),
             calibration_file=args.calibration_file,
             dials=dials,
+            trace=trace,
         )
     except (EndpointUnavailable, CalibrationMissing) as exc:
         print(f"error: {exc}", file=sys.stderr)

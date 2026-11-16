@@ -15098,3 +15098,11 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #935
 - **Decision:** the Audit (M12) emphases are now final. M11 was the last feature milestone, so the provisional markers on the M9 and M10 entries are removed, and an M11 entry is added.
   **Issue:** —
+
+## /n8-exec M11 — 2026-11-16
+
+- **Decision:** the milestone branch `milestone/m11-performance-tuning` merges the two open state PRs' branches (#934 `n8/release-v0.3.0-record`, #940 `n8/plan-m11-state`) first. Both only append to `.n8/decisions.md`, and both append at the same spot, so a milestone branch cut from bare `main` would conflict with whichever merged second. The two appends were kept in PR order (release, then plan).
+  **Why:** this keeps the milestone's own log entries after the plan entry and makes both PRs' content arrive with this one if the owner hasn't merged them first.
+  **Issue:** #934, #940
+- **Decision:** this run executes the stories that #818 (the owner's hand-run baseline) does not gate: #737, #530, #918, #929 (the eval-correctness set #818 waits on), #930 → #927 → #931 (the purpose scan), #936 → #937 → #938 (E-12 direct mode), and #588, #685, #754, #785, #812. #474, #528, #529, #540, #602, #603, #735, #747, #748, #749, #750, #939 and #819 are blocked by #818 (directly or via #735) and are not started; the run is therefore a **partial** execution of M11 by construction (epic #935's order: eval fixes → baseline #818 → floors → exit #819).
+  **Issue:** #935, #818

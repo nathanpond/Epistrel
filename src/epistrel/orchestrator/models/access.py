@@ -76,6 +76,13 @@ from epistrel.orchestrator.models.adapter import (
     UndeclaredInput,
     UnknownPurpose,
 )
+from epistrel.orchestrator.models.call_trace import (
+    CALL_TRACE,
+    EXCHANGES,
+    STRUCTURED_SCHEMA,
+    CallTraceSink,
+    Exchange,
+)
 from epistrel.orchestrator.models.config import (
     ConfigCache,
     ConfigEntry,
@@ -271,6 +278,32 @@ def _has_text(result: ModelResult) -> bool:
     return bool(result.text.strip())
 
 
+def _trace(
+    sink: CallTraceSink,
+    purpose: str,
+    attempt: int,
+    response_schema: type[BaseModel] | None,
+    started: float,
+    opened: list[Exchange],
+    error: BaseException | None,
+) -> None:
+    """Hand an eval run's trace sink one call (#737, ``call_trace``): nothing when the adapter
+    sent no request (the stub, a held answer)."""
+    if not opened:
+        return
+    schema = response_schema.__name__ if response_schema is not None else STRUCTURED_SCHEMA.get()
+    call: dict[str, Any] = {
+        "purpose": purpose,
+        "attempt": attempt,
+        "schema": schema,
+        "latency_ms": _elapsed_ms(started),
+    }
+    if error is not None:
+        call["raised"] = type(error).__name__
+        call["raised_code"] = getattr(error, "code", None)
+    sink.record(call, opened)
+
+
 class ModelAccessLayer:
     """One adapter for every purpose, plus the configuration it reads."""
 
@@ -426,7 +459,9 @@ class ModelAccessLayer:
                 if kept is not None:
                     result = kept
                 else:
-                    result = await self.adapter.complete(purpose, messages, params, response_schema)
+                    result = await self._complete(
+                        purpose, messages, params, response_schema, attempt
+                    )
         except TimeoutError:
             if not bound.expired():
                 raise
@@ -475,6 +510,32 @@ class ModelAccessLayer:
         )
         if version:
             await reported_version.observe(self._db, model or result.model, version)
+        return result
+
+    async def _complete(
+        self,
+        purpose: str,
+        messages: Sequence[Message],
+        params: ModelParams,
+        response_schema: type[BaseModel] | None,
+        attempt: int,
+    ) -> ModelResult:
+        """The adapter's answer; under an eval run's call trace (#737, ``call_trace``) the HTTP
+        requests it made are handed to the trace's sink, whether it answered or raised."""
+        sink = CALL_TRACE.get()
+        if sink is None:
+            return await self.adapter.complete(purpose, messages, params, response_schema)
+        opened: list[Exchange] = []
+        token = EXCHANGES.set(opened)
+        started = time.perf_counter()
+        try:
+            result = await self.adapter.complete(purpose, messages, params, response_schema)
+        except BaseException as exc:
+            _trace(sink, purpose, attempt, response_schema, started, opened, exc)
+            raise
+        finally:
+            EXCHANGES.reset(token)
+        _trace(sink, purpose, attempt, response_schema, started, opened, None)
         return result
 
     async def _listed_version(self, purpose: str, model: str) -> str | None:

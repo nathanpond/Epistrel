@@ -45,6 +45,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from epistrel.evals import trace
 from epistrel.evals.metrics import wilson
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
@@ -151,7 +152,7 @@ async def _verdict(
         same = normalized(first) == normalized(second)
         return QualityJudgeVerdict(preferred="tie", reasons="identical") if same else None
 
-    with eval_scope(scope, _seed()):
+    with eval_scope(scope, _seed()), trace.judging():
         return await models.structured_call(
             QUALITY_JUDGE.name,
             QualityJudgeVerdict,
@@ -207,7 +208,7 @@ async def score(
     """``message`` scored 1-5 against ``reference`` on ``criteria``; ``None`` when the judge's
     answer was ``Uncertain``."""
     inputs = QualityJudgeInputs(message=message, reference=reference or None, criteria=criteria)
-    with eval_scope(_scope_id(case_id, "score"), _seed()):
+    with eval_scope(_scope_id(case_id, "score"), _seed()), trace.judging():
         found = await models.structured_call(
             QUALITY_JUDGE.name,
             QualityJudgeScore,

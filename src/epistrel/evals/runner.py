@@ -69,11 +69,15 @@ control or a repair, and the suite's floors are judged on its completed cases (t
 rule's 300 cases are completed ones: a seed short of them because of model errors is
 ``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
 decision of 2026-10-24: model-robustness floors belong to M11, ADR-164). Every other suite (M4's)
-observes the error as bad on every metric (#134). Either way the failure record's ``detail``
-carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
-reason, the attempts and the structural error codes). A ``GuardrailViolation`` is the model's
-verdict too (a model-assisted policy check refused the content, FR-GUARD-10,11; #738): during a
-case it fails the case like a ``ModelError`` (``model_error`` ``guardrail_violation``), and
+observes the error as bad on the metrics its case's label puts it in (``Suite.error_metrics``,
+#530, ADR-194: an error on an E-01 case labelled ``supported`` is a missed ``supported``, a
+false contradiction, and never a false support) and leaves the rest unobserved; a suite that
+declares nothing observes it as bad on every metric (#134). Either way the failure record's
+``detail`` carries the error's code and its content-free details (``ERROR_DETAILS``: the
+purpose, the reason, the attempts and the structural error codes). A ``GuardrailViolation``
+is the model's verdict too (a model-assisted policy check refused the content,
+FR-GUARD-10,11; #738): during a case it fails the case like a ``ModelError`` (``model_error``
+``guardrail_violation``), and
 during a suite's setup it fails the suite with no cases (``SuiteResult.refused``), the run going
 on. Any other exception, or a malformed labeled set, is a **harness error**: the suite's verdict
 is ``error``. Each failed case's inputs
@@ -809,7 +813,7 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         with eval_scope(case.id, seed):
             outcome = await suite.evaluate(ctx, case)
     except (ModelError, GuardrailViolation) as exc:
-        outcome = model_error_outcome(suite, exc)
+        outcome = model_error_outcome(suite, exc, case)
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
     finally:
@@ -829,22 +833,32 @@ ERROR_DETAILS = ("purpose", "reason", "provider_status", "attempts", "structural
 and counts, never the model's answer or the prompt (invariant 3)."""
 
 
-def model_error_outcome(suite: Suite, exc: ModelError | GuardrailViolation) -> Outcome:
-    """A case that ended in ``exc``, a model error or a guardrail refusal (module docstring):
-    with the suite's model-error row, that row observes it as bad and nothing else is observed;
-    without one, every metric is bad (#134). ``detail`` names the error: its code, class and
-    ``ERROR_DETAILS``."""
+def model_error_outcome(
+    suite: Suite, exc: ModelError | GuardrailViolation, case: CaseModel | None = None
+) -> Outcome:
+    """A case that ended in ``exc``, a model error or a guardrail refusal (module docstring).
+    With the suite's model-error row, that row observes it as bad. Without one, the metrics
+    ``Suite.error_metrics`` declares for ``case`` observe it as bad and the rest observe
+    nothing (#530); a suite that declares nothing has every metric bad (#134). ``detail``
+    names the error (its code, class and ``ERROR_DETAILS``) and carries
+    ``Suite.error_detail``'s counts."""
     errored = suite.model_error_metric
+    declared = suite.error_metrics(case) if case is not None else None
     observations: dict[str, bool | None]
-    if errored is None:
-        observations = {metric.id: False for metric in suite.metrics}
-    else:
+    if errored is not None:
         observations = {metric.id: None for metric in suite.metrics}
         observations[errored] = False
+    elif declared is None:
+        observations = {metric.id: False for metric in suite.metrics}
+    else:
+        observations = {
+            metric.id: False if metric.id in declared else None for metric in suite.metrics
+        }
     details = {k: exc.details[k] for k in ERROR_DETAILS if k in exc.details}
+    extra = dict(suite.error_detail(case)) if case is not None else {}
     return Outcome(
         observations,
-        detail={"model_error": exc.code, "error_type": type(exc).__name__, **details},
+        detail={**extra, "model_error": exc.code, "error_type": type(exc).__name__, **details},
     )
 
 

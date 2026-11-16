@@ -425,6 +425,13 @@ class E02Suite(Suite):
             await ctx.engine.remove_verify_gate(ctx.principal, shape)
         return Outcome({PROMOTION_RULE: good}, output=json.dumps(detail), detail=detail)
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: an escalation case's four rows, or a promotion case's one."""
+        assert isinstance(case, E02Case)  # noqa: S101 - load() validated it as case_model
+        if case.kind == "promotion":
+            return frozenset({PROMOTION_RULE})
+        return frozenset({INSTRUMENTATION, NO_SILENT_SUPPORTED, SHADOW_RECORDED, YIELD_REPORTED})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, E02Case)  # noqa: S101 - load() validated it as case_model
         if case.kind != "escalation" or case.verdict is None:

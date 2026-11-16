@@ -395,6 +395,15 @@ class E10Suite(Suite):
             }
         return Outcome(observations, output=json.dumps(detail[MODES[0]]["claims"]), detail=detail)
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: each mode's recall and layer rows, and the case's own category rows (the
+        claim was not found, by any layer)."""
+        assert isinstance(case, DetectionCase)  # noqa: S101 - load() validated it as case_model
+        rows = {recall_id(m) for m in MODES} | {
+            category_id(m, case.expected.category) for m in MODES
+        }
+        return frozenset(rows | {layer_id(m, n) for m in MODES for n in LAYERS})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, DetectionCase)  # noqa: S101 - load() validated it as case_model
         return {EXTRACTION_BACKSTOP.name: json.dumps(case.stub_answer)}

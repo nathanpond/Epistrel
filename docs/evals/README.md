@@ -241,8 +241,13 @@ one-sided 95% upper bound.
 - A **relative** floor (E-12, NFR-QUAL-14) is judged only on at least 300 non-tied pairs per
   seed and passes when the mean + SD is at most the floor; fewer pairs is *insufficient
   evidence*, never a pass. A judge-based row also states the judge calibration it ran under.
-- One seed, or no observations, is *insufficient evidence*; a model error counts as a failed
-  case. Timings are informational.
+- One seed, or no observations, is *insufficient evidence*. Timings are informational.
+- A **model error** is a failed case. It counts against the metrics whose denominator the
+  case's label puts it in, and against no others (#530, ADR-194). For example, an E-01 claim
+  labelled `supported` that errors counts as a false contradiction, never as a false support.
+  E-05's and Q-01's recall count its labelled items as missed. Each suite declares the rule per
+  case (`Suite.error_metrics`); a suite that declares nothing fails every metric on an error
+  (#134). Journalled model errors scored under the old rule play again on the next run.
 
 ## Suites
 

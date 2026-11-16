@@ -195,6 +195,20 @@ class Suite:
         for purpose, answer in self.stub_answers(case).items():
             stub.case(case.id, answer, purpose=purpose)
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str] | None:
+        """The metrics a model error on ``case`` counts against (#530, ADR-194): the rates
+        whose denominator the case's label puts it in, plus the report-only rows that count
+        every case. The runner observes those as bad and leaves the rest unobserved, so an
+        error never inflates a rate it could not have affected. ``None`` (the default) keeps
+        #134's rule: the error is bad on every metric, so an undeclared suite is conservative."""
+        return None
+
+    def error_detail(self, case: CaseModel) -> Mapping[str, Any]:
+        """What an errored case adds to its outcome's ``detail`` for ``aggregate`` (#530): a
+        suite whose aggregate sums labelled items from ``detail`` counts the case's labelled
+        items as missed; nothing by default."""
+        return {}
+
     def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
         """Per-seed values of metrics that are not one boolean per case, from one seed's
         outcomes: ``(good, bad)`` counts (micro recall over several relevant items a case) or

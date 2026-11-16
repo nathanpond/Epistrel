@@ -146,6 +146,10 @@ class SmokeSuite(Suite):
             detail={"design_problems": problems, "degradation": list(result.degradation)},
         )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: both rows count every case."""
+        return frozenset({TURN_COMPLETED, INSTRUCTION_FOLLOWED})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, SmokeCase)  # noqa: S101 - load() validated it as case_model
         return {GENERATION.name: f'{INNKEEPER} nods. "Of course: {case.keyword}, as you asked."'}

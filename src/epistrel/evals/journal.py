@@ -20,7 +20,8 @@ reused when its suite, suite fingerprint, case id, case digest and seed all matc
 labelled case plays again. The engine commit is recorded, never compared: a resumed run may mix
 commits, and its report lists them (``Report.resumed``). A case a transient model error ended
 (``TRANSIENT``: a timeout, a dropped connection, a rate limit, a rejected key, a provider 5xx)
-plays again unless ``retry_errors`` is off; ``retry_errors="all"`` replays every model error.
+plays again unless ``retry_errors`` is off; ``retry_errors="all"`` replays every model error. A
+model-error line scored under an earlier rule (``SCORING_REVISION``, #530) plays again too.
 
 **Durability.** Each line is written, flushed and fsynced as its case ends, so a killed process
 loses at most the cases in flight. A torn last line (a kill mid-write) is skipped on load.
@@ -42,6 +43,11 @@ from epistrel.evals.suites import CaseModel, Outcome
 
 JOURNAL_DIR_NAME = ".evals-results"
 JOURNAL_VERSION = 1
+SCORING_REVISION = 2
+"""The rule a model-error row was scored under: 1 is #134's (the error is bad on every metric),
+2 is #530's (only on the metrics the case's label puts it in, ``Suite.error_metrics``). A
+model-error row scored under an earlier rule plays again rather than being reused; any other
+row is the same under both and is reused."""
 TRANSIENT_REASONS = frozenset({"timeout", "connection", "rate_limited", "auth"})
 TRANSIENT_STATUSES = frozenset({408, 409, 429, 529})
 """HTTP statuses a provider sends for a passing condition (529: Anthropic's ``overloaded``);
@@ -86,6 +92,8 @@ class Recorded:
     engine_sha: str
     model_version: str | None
     at: str
+    scoring: int = 1
+    """The ``SCORING_REVISION`` the row was written under (1 for a line that names none)."""
 
 
 type Key = tuple[str, str, str, str, int]
@@ -148,6 +156,7 @@ class Journal:
                 str(line.get("engine_sha") or ""),
                 line.get("model_version"),
                 str(line.get("at") or ""),
+                int(line.get("scoring") or 1),
             )
         return journal
 
@@ -161,6 +170,7 @@ class Journal:
         if "model_error" in found.outcome.detail and (
             self.retry_errors == "all"
             or (self.retry_errors == "transient" and transient(found.outcome.detail))
+            or found.scoring < SCORING_REVISION
         ):
             return None
         self.reused += 1
@@ -201,6 +211,7 @@ class Journal:
             "latency_ms": latency_ms,
             "engine_sha": engine_sha,
             "at": at,
+            "scoring": SCORING_REVISION,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
@@ -208,7 +219,7 @@ class Journal:
             handle.flush()
             os.fsync(handle.fileno())
         self.entries[(suite, suite_fingerprint or "", case.id, digest, seed)] = Recorded(
-            outcome, latency_ms, engine_sha, model_version, at
+            outcome, latency_ms, engine_sha, model_version, at, SCORING_REVISION
         )
         self.played += 1
 
@@ -232,6 +243,7 @@ def default_root(repo: Path) -> Path:
 
 __all__ = [
     "JOURNAL_DIR_NAME",
+    "SCORING_REVISION",
     "Journal",
     "Recorded",
     "RetryErrors",

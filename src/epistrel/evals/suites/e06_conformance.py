@@ -142,6 +142,12 @@ class E06Suite(Suite):
             },
         )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: structure, length and conformance; ``repeatable`` only on a repeat case."""
+        assert isinstance(case, ConformanceCase)  # noqa: S101 - load() validated it
+        rows = {STRUCTURE, LENGTH, CONFORMANCE}
+        return frozenset(rows | {REPEATABLE} if case.inputs.repeat else rows)
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, ConformanceCase)  # noqa: S101 - load() validated it
         return {GENERATION.name: case.stub_answer}

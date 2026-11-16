@@ -150,6 +150,10 @@ class Q03Suite(Suite):
             detail={"reflections": len(reflections)},
         )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: every row counts every case."""
+        return frozenset({WITH, WITHOUT, REFLECTION_FOUND})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, AbstractCase)  # noqa: S101 - load() validated it
         reflection = {

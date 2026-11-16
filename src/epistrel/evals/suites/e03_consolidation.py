@@ -208,6 +208,12 @@ class E03Suite(Suite):
         }
         return Outcome(observations, output=json.dumps(reflections), detail=detail)
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: a window the model errored on produced no reflection, so it counts against
+        ``produced`` and faithfulness (a reflection was owed); the judge's agreement with the
+        labels was not measured."""
+        return frozenset({PRODUCED, FAITHFULNESS})
+
     def script_stub(self, case: CaseModel, stub: StubAdapter) -> None:
         assert isinstance(case, ConsolidationCase)  # noqa: S101 - load() validated it
         labels = case.expected

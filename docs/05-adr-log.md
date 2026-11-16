@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -257,6 +257,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 191 | The compose database ships a lock table sized for 6,400 stories, and the test servers run it | Current | — |
 | 192 | A retrieval reads its configuration once, its canon in one statement, and its alias arm by a newest-first index | Current | — |
 | 193 | A retrieved profile carries the relationships among the message's people, by default | Current | — |
+| 194 | A model error counts only in the rates its case's label puts it in | Current | — |
 
 ---
 
@@ -2127,6 +2128,20 @@ Tuning and its exit certification come after every milestone that may change a p
 - Measured in paired rounds on the 50k fixture (4 rounds of 300 queries, one process, omniscient): relationships in a retrieval's profiles went from 357 to 16 on average (1,613 to 99 at most). P-01's local total p95 went from 181.4 ms to 176.1 with the message scope alone and to 169.8 with #908's placement filter too (each round −10.2 to −14.0), the profiles stage's p95 from 76.2 to 59.7, and the p99 from 270.7 to 192.8. The p50 rose by 3–5 ms in both A/Bs, not explained yet (the shorter profile lines leave assembly more room for memories). On the runner's ratio to these local runs that is about 204 ms against #868's 200 ms target. What remains in the stage for many-character queries is the canon (about 30 ms for 9–10 subjects at `CANON_PER_ENTITY` facts each).
 - What a character's render sees narrows to the relationships among the people in play. A claim about a relationship it no longer sees is checked by verification as any claim is. A quality comparison of the two values runs per story by setting `profile_scope` and has not been run.
 - `test_a_scoped_profile_keeps_the_relationships_among_its_people` and `test_retrieval_scopes_profiles_to_the_message` pin the rule and that `full` is the route's answer; `test_the_profile_scope_joins_the_profile_defaults` covers 0155.
+
+### ADR-194 — A model error counts only in the rates its case's label puts it in
+**Status:** Accepted.
+**Context:** #134 made a case that ends in a `ModelError` a failed case on every metric of its suite, so an error never silently drops out of a rate. On a certified model (NFR-QUAL-2..4, 7) this over-counts. E-01's false-support rate is over the claims labelled anything but `supported`. An error on a `supported` claim made a false-support observation, so a rate the case could not have affected moved. Some aggregates over labelled items (Q-01's recall@10, E-05's span recall) also mishandled an error: Q-01's raised `KeyError`, and E-05's dropped the case's spans from its denominator. The owner chose option (c) on #530 (2026-11-09): an error counts only in the rates its case's label puts it in. It lands before the re-certification baseline (#818) because observations are scored at play time and journalled.
+**Decision:** Applied by #530 (NFR-QUAL-2,3,4,7, NFR-QUAL-8).
+- `Suite.error_metrics(case)` declares the metrics a model error on `case` counts against: the rates whose denominators the case's label puts it in, and the report-only rows that count every case. The runner (`model_error_outcome`) observes those as failed and leaves the rest unobserved. `GuardrailViolation` is handled the same way.
+- `Suite.error_detail(case)` gives an aggregate over labelled items the case's items as missed: E-05 counts every labelled span missed, and Q-01 every relevant item missed with a reciprocal rank of 0.
+- The declarations: E-01 and E-01 viewpoint by their `score` functions (`false_support` unless the label is `supported`, `false_contradiction` unless it is `contradicted`; the residual rows only on a residual case). E-02 by case kind. E-03: `produced` and faithfulness (the judge's agreement is not measured). E-04: `scored` and above-median. E-05: `answered`, and recall or `texture_clean` by label. E-06: structure, length and conformance, with `repeatable` only on a repeat case. E-09: in-range and the case's own family and kind rows (a pacing case counts nothing). E-10: both modes' recall and layer rows and the case's own category. Q-01: `all_found`. Q-03 and smoke: every row.
+- A suite that declares nothing keeps #134's rule, so a new suite is conservative by default. E-07, E-11, E-12 and E-13 keep it. Q-02 calls no model. NFR-QUAL-1's suites keep their model-error row (ADR-164), and a suite with both observes the row first.
+- The results journal (#730) records the rule a row was scored under (`scoring`, `SCORING_REVISION` = 2). A model-error row written under #134's rule plays again rather than being reused. A completed case's row is the same under both rules and is reused.
+**Alternatives considered:** (a) excluding errored cases from every rate would hide a model that errors on exactly the hard cases; #134 rejected silent exclusion for that reason. (b) Keeping #134's rule over-counts rates the error could not have touched, so an endpoint's transient failures read as a quality failure on the wrong floor.
+**Consequences:**
+- A rate's sample size now counts the errored cases its label puts in it, and only those. Reports are unchanged in shape. Certifications before #818 were scored under #134's rule.
+- `tests/evals/test_model_error_scoping.py` pins E-01's rule through the runner and each suite's declaration on its whole labelled set (declared ids ⊂ the suite's metrics, at least one per case). It also checks the conservative default and the journal's replay of old model-error rows.
 
 ---
 

@@ -246,6 +246,16 @@ class Q01Suite(Suite):
             },
         )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: not all found; ``error_detail`` gives recall and MRR its misses."""
+        return frozenset({ALL_FOUND})
+
+    def error_detail(self, case: CaseModel) -> Mapping[str, Any]:
+        """#530: every relevant item missed, reciprocal rank 0 (``aggregate``'s inputs, which
+        an errored case's outcome lacked)."""
+        assert isinstance(case, RecallCase)  # noqa: S101 - load() validated it
+        return {"found": 0, "missed": len(set(case.expected.relevant)), "rr": 0.0}
+
     def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
         found = sum(int(o.detail["found"]) for o in outcomes)
         missed = sum(int(o.detail["missed"]) for o in outcomes)

@@ -15182,3 +15182,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #936, #937
 - **Decision:** this run ends with the #936/#937 PR. #754 (batched epistemic writes: an overlay plus a flush across six core modules, and an equivalence test) needs a run of its own, so it is not started here. #812 is the long paid vision-check run, and #938's PR waits on the owner's approval of the sample sets. Both are left for the next `/n8-exec M11`.
   **Issue:** #754, #812, #938
+- **CI budget (PR #949):** 72 minutes, 1.5 × the 48-minute longest check on PR #942.
+- **Merged:** PR #949 squash-merged as `a17e2a1` after CI went green (every check passed). It closed #936 and #937, and both closes landed. Still open, as intended: #938 (next, owner-approved sample sets), #754, #812, #929 (owner option pending) and #818 and everything behind it. M11 is **partially executed**.
+  **Issue:** #935

@@ -205,7 +205,7 @@ async def test_a_commit_refused_on_a_held_story_lock_is_retried(
     assert row.outcome.detail["story_busy_retries"] == 1
     warned = [r.getMessage() for r in caplog.records if r.name == "epistrel.evals.busy"]
     assert len(warned) == 1
-    assert "busy (lock_timeout); retrying. Holders of a stories lock:" in warned[0]
+    assert "busy (lock_timeout); retrying. Holder of its row:" in warned[0]
 
 
 def test_the_proxy_passes_plain_attributes_through() -> None:

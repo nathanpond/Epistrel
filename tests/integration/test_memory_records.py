@@ -19,9 +19,10 @@ import psycopg
 import pytest
 from sqlalchemy import make_url, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from epistrel.core import prune, timeline
+from epistrel.core.db import normalize_url, session_options
 from epistrel.core.enums import (
     MemoryKind,
     MemoryTrustTier,
@@ -629,6 +630,41 @@ async def test_a_creation_holds_one_connection_and_its_claim_keeps_the_partition
         async with engine.connect() as conn:
             assert await story_partitions.has_partition(conn, story)
     assert await story_partitions.drop_partition(engine, story) == story_partitions.DROPPED
+
+
+BURST = 12
+"""#922: simultaneous story creations, four times the small pool's 3 connections."""
+
+
+async def test_a_creation_burst_beyond_the_pool_never_times_out(pg_url: str) -> None:
+    """#875 (#922): more simultaneous story creations than the pool holds
+    (``pool_size + max_overflow`` = 3, ``BURST`` = 12) all finish, with no pool timeout, and
+    every connection is returned. A creation that held a second pooled connection while its
+    first waited (the session advisory lock #875 removed) deadlocks such a burst: every
+    connection is held by a creation waiting for another, until ``pool_timeout`` fails them
+    with ``TimeoutError``."""
+    small = create_async_engine(
+        normalize_url(pg_url),
+        pool_size=2,
+        max_overflow=1,
+        pool_timeout=10,
+        connect_args={"options": session_options(pg_url)},
+    )
+    try:
+        made = await asyncio.gather(
+            *(create_story(small, principal=MEMORY_PRINCIPAL) for _ in range(BURST)),
+            return_exceptions=True,
+        )
+        errors = [type(r).__name__ for r in made if isinstance(r, BaseException)]
+        assert errors == []
+        assert len(set(made)) == BURST
+        assert small.sync_engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        async with small.connect() as conn:
+            assert [await story_partitions.has_partition(conn, str(s)) for s in made] == [
+                True
+            ] * BURST
+    finally:
+        await small.dispose()
 
 
 async def _until(mon: psycopg.AsyncConnection[Any], sql: str, **params: object) -> None:

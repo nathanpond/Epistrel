@@ -21,6 +21,13 @@ Latencies are in milliseconds. First budget that fails: at 250,000 memories, ret
 
 Unmeasured: 5,000,000 memories. No figure and no capacity is claimed for it.
 
+**5M recommendation: no-go (owner's decision, 2026-11-15; #502).** The 5M step was not run, and won't be for now. 1M stays the largest measured point, and anything larger is an unvalidated estimate (NFR-SCALE-1). The reasons, from #502:
+
+- **It would only document a known failure at a larger size.** A power law (`y = a·x^b`) fitted through this run's 250k and 1M points projects retrieval p95 at about 2.6 s at 5M, against a 150 ms budget that retrieval already fails at 250k. Commit p95 is flat, at about 20 ms, and the HNSW build is roughly linear (b ≈ 1.07, about 33 min). So 5M would add only how much further retrieval degrades. That gap belongs to retrieval, not to capacity.
+- **It doesn't fit this host as configured.** The projections at 5M are a database of about 52 GiB and an index of about 19.1 GiB. Building that index in memory needs about 20 GB each of `maintenance_work_mem` and `/dev/shm`, plus `shared_buffers`, all inside the Docker VM. After #914 streamed the tool's memory rows, its own process is projected at about 24 GiB, not 114 GiB. That figure comes from a linear projection of the 150k and 1M peaks; it isn't a measurement.
+
+Revisit after retrieval meets its budget at 250k–1M. An approved 5M run gets its own issue.
+
 Run notes: `EPISTREL_PERF_HOST=local-mac-tuned python -m epistrel.tools.capacity --up-to 1000000 --start-memories 1000 --steps 250000,1000000 --maintenance-work-mem 8GB --parallel-workers 4`, against `pgvector/pgvector:pg16` started by hand with `-c shared_buffers=8GB --shm-size=16g`, on an otherwise idle machine. It took 20 min 17 s of wall-clock time. At 1M the database was 10.3 GiB, and the tool's own process peaked at 22.8 GiB resident. Raw figures: `perf/results/2026-11-13-capacity.json`.
 
 ## 2026-10-22: default Postgres, 250k (reference only)

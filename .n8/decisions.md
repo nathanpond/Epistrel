@@ -15067,3 +15067,34 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Multi-arch publish:** success. `ghcr.io/nathanpond/epistrel` is tagged `0.3.0`, `0.3`, `0` and `latest`. All four point to `sha256:ec163a81803fc7df082c04c2021fa9898b891b1b66c6118ef505c1b750763074` (amd64 and arm64).
   - **GitHub release:** the workflow created it, and a human summary with the known issues was added on top with `gh release edit`.
 - **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.3.0
+
+## /n8-plan M11 — 2026-11-16
+
+- **Decision:** M11 is planned under one new epic, #935 "Model-bound quality floors met on a certified model". It has four new stories: #936 (E-12 direct mode, rungs 1–4), #937 (composition and identity types; certify reads direct rows), #938 (per-type case sets, approved by the owner from a sample) and #939 (NFR-QUAL-7 conformance, added by the coverage check). 23 existing issues gained an "M11 plan" body section and a comment. #474 is retitled to the live measurement with tuning.
+  **Why:** these are the planner changes the owner approved on 2026-11-09 (one epic, the template, the #474 split). The coverage check found that NFR-QUAL-7 had no story with a delivering acceptance criterion.
+  **Issue:** #935
+- **Decision (owner, round one):** #530 option (c) (errors count only in the rates the case's label puts them in). #603/#588/#685 option (ii): the local reference tier is recorded as unable to do three-voice turns, and the row is measured on hosted Haiku. #602 option (a): a new 422. #528 and #529 targets are reported and checked at exit, not gated. #747 may use a separate, stronger judge for entailment; the cost estimate given was about $20 extra per three-preset certification with Sonnet judging entailment only, against about $200 if every judge purpose moved. #474 sets approved by sample (20 per type). #812 option (a), with the rest moved to v2.
+  **Issue:** #530, #603, #602, #528, #529, #747, #938, #812
+- **Decision (owner, round two, "all recs good"):**
+  - R1: the configuration fingerprint gains an engine `MODEL_CALL_REVISION` with a guarded snapshot, so Python-held prompts and constants retire certifications (#818).
+  - R2: a harmless child character must pass the minors policy, fixed by a prompt change with the fixture unchanged (#918).
+  - R3: `age_repair` and `composition_fallback` pass by construction through a per-case identity check, and deterministic rung fixes happen in M11 (#937, #474).
+  - R4: NFR-QUAL-3 counts only when the judge agrees ≥ 75% on E-03's labelled pairs (#747).
+  - R5: #602's 422 fires only on an explicit request deadline.
+  - Gate: repeatability counts toward NFR-QUAL-7 only on hosts that honour temperature 0 (#939, option (b)).
+  **Issue:** #818, #918, #937, #474, #747, #602, #939
+- **Decision (planner, shown at the gate):**
+  - The current-fingerprint guard is a release gate (release.yml and `/n8-verify`), not a PR gate, so tuning PRs can merge between #818 and #819.
+  - #602's in-turn gates also use the per-model estimates.
+  - #918's prompt fix ships as a migration that keeps administrator edits, and no false-negative probe is authored (ADR-182).
+  - #812's version-not-text certification binding is filed separately.
+  - #938's PR waits for the owner's approval, because main CI requires approved sets.
+  **Issue:** #818, #602, #918, #812, #938
+- **Decision (triage):**
+  - #918 and #929 join M11 and block #818. #930, #927 and #931 join M11 as non-blocking; #930 and #931 move from M10's closed epic #860 to #935.
+  - #924, #890 and #891 move to v2.
+  - The edges #603 ← #588 ← #685 are removed (they would deadlock under option (ii)), as are #588's `blocked`/`needs-owner-action` labels.
+  - #819 is now blocked by every other M11 story.
+  **Issue:** #935
+- **Decision:** the Audit (M12) emphases are now final. M11 was the last feature milestone, so the provisional markers on the M9 and M10 entries are removed, and an M11 entry is added.
+  **Issue:** —

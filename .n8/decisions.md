@@ -15048,3 +15048,22 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 
   The page is hand-merged (#502), so the tool's own "Unmeasured" line stays above the new text.
   **Issue:** #926
+
+## /n8-release v0.3.0 — 2026-11-16
+
+- **Version:** v0.3.0, a minor bump from v0.2.0. The owner chose it at `/n8-release`. PR #933 bumped `pyproject.toml` and `uv.lock`.
+- **Decision:** the owner accepted the carried M10 bugs #930 (sev:medium), #931 and #924 (sev:low) as known issues. They are listed in the release notes, and they did not block the release.
+  **Why:** `/n8-verify` carried them with gate = 0. #930 is a template over-refusal and alias leak, not a regression in the shipped surfaces.
+  **Issue:** #930, #931, #924
+- **Decision:** the opentelemetry-api/sdk 1.45.2 bump went into #933, and Dependabot's #893 and #882 were closed as superseded.
+  **Why:** the repo requires branches to be up to date before merging, so merging four PRs one at a time would have meant four CI runs in a row, about 51 min each. The fix (Dependabot alert 45, a `traceparent` parsing DoS in a runtime dependency) had to ship in the release. The alert is now `fixed`.
+  **Issue:** #893, #882
+- **Commit:** annotated tag `v0.3.0` on `5326afd`, the merge of #933. Its parent `db57b5b` (#932, `current_milestone = 10`) sits on `c3fcec1`, the commit M10 was verified at.
+- **Milestones included:** M8, M9 and M10. `/n8-verify` closed all three.
+- **What the tag triggered:** `release.yml`, [run 43866222944](https://github.com/nathanpond/Epistrel/actions/runs/43866222944). It took 45 min.
+  - **validate:** success.
+  - **Full CI:** success.
+  - **C-10 smoke:** success.
+  - **Multi-arch publish:** success. `ghcr.io/nathanpond/epistrel` is tagged `0.3.0`, `0.3`, `0` and `latest`. All four point to `sha256:ec163a81803fc7df082c04c2021fa9898b891b1b66c6118ef505c1b750763074` (amd64 and arm64).
+  - **GitHub release:** the workflow created it, and a human summary with the known issues was added on top with `gh release edit`.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.3.0

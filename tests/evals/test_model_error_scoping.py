@@ -4,6 +4,9 @@ An eval case a ``ModelError`` ended observes ``False`` on the metrics ``Suite.er
 declares for it and nothing on the rest; a suite that declares nothing keeps #134's rule (every
 metric bad). An aggregate that sums labelled items from ``detail`` (E-05, Q-01) gets the case's
 items as missed (``Suite.error_detail``). Journal rows scored under #134's rule replay.
+
+No test here carries a part marker: this is the harness's scoring rule (docs/04 §8, ADR-194),
+and E-01's own M11 part is ``tests/eval/test_e_01.py``'s.
 """
 
 from __future__ import annotations
@@ -75,8 +78,7 @@ class RaisingE01(e01.E01Suite):
 
 
 @pytest.mark.integration
-@pytest.mark.part("M11", "NFR-QUAL-2")
-async def test_e_01__an_error_counts_only_where_its_label_is_measured(
+async def test_an_e01_error_counts_only_where_its_label_is_measured(
     pg_url: str, engine: AsyncEngine
 ) -> None:
     """Through the runner: an error on a ``supported`` residual case is one failed

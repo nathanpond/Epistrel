@@ -127,6 +127,8 @@ from epistrel.core.seeds import profiles as seeded_profiles
 from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
+from epistrel.evals.busy import CURRENT as BUSY
+from epistrel.evals.busy import BusyRetry, Stopped, busy_engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.journal import Journal, case_digest
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
@@ -199,11 +201,6 @@ class EndpointUnavailable(Exception):
 
 class NotScratch(Exception):
     """The quality judge was asked about a story that is not one of the eval's scratch stories."""
-
-
-class Stopped(Exception):
-    """The run was asked to stop (``SuiteRun.stop``): no new case started, the ones in flight
-    finished and were journalled, and nothing was reported."""
 
 
 class CalibrationMissing(Exception):
@@ -796,9 +793,22 @@ def planned_cases(
 
 
 async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Played:
-    scratch = Scratch(job.engine, f"{job.run_id}-{case.id}-{seed}")
+    # #929: the case's engine calls (and its scratch stories') retry its story's StoryBusy.
+    engine = busy_engine(job.engine)
+    budget = BusyRetry(stop=job.stop)
+    busy_token = BUSY.set(budget)
+    try:
+        return await _play_case(suite, job, case, seed, engine, budget)
+    finally:
+        BUSY.reset(busy_token)
+
+
+async def _play_case(
+    suite: Suite, job: SuiteRun, case: CaseModel, seed: int, engine: Engine, budget: BusyRetry
+) -> _Played:
+    scratch = Scratch(engine, f"{job.run_id}-{case.id}-{seed}")
     ctx = CaseContext(
-        job.engine,
+        engine,
         scratch,
         seed,
         job.run_id,
@@ -814,6 +824,8 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
             outcome = await suite.evaluate(ctx, case)
     except (ModelError, GuardrailViolation) as exc:
         outcome = model_error_outcome(suite, exc, case)
+    except Stopped:
+        raise
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
     finally:
@@ -821,7 +833,10 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
             await scratch.delete_all()
         except Exception as exc:
             error = error or f"case {case.id} seed {seed}: cleanup failed: {type(exc).__name__}"
-    latency = round((time.perf_counter() - started) * 1000)
+    # #929: time spent waiting out StoryBusy is not the case's latency.
+    latency = max(round((time.perf_counter() - started) * 1000) - budget.slept_ms, 0)
+    if outcome is not None and budget.retries:
+        outcome = replace(outcome, detail={**outcome.detail, "story_busy_retries": budget.retries})
     errored = suite.model_error_metric
     if outcome is not None and errored is not None and errored not in outcome.observations:
         outcome = replace(outcome, observations={**outcome.observations, errored: True})
@@ -1016,11 +1031,11 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     lost: dict[int, int] = {}
     job.progress.suite_started(suite.name, len(cases), len(job.seeds))
     try:
-        await suite.setup(job.engine, _ctx())
+        await suite.setup(busy_engine(job.engine), _ctx())
     except GuardrailViolation as exc:
         # The model's guardrail refused the fixture (#738): a verdict, not a harness error.
         with contextlib.suppress(Exception):
-            await suite.teardown(job.engine, _ctx())
+            await suite.teardown(busy_engine(job.engine), _ctx())
         return SuiteResult.refused(suite, f"setup: {type(exc).__name__}: {exc}", list(job.seeds))
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
@@ -1028,7 +1043,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every, lost)
     finally:
         try:
-            await suite.teardown(job.engine, _ctx())
+            await suite.teardown(busy_engine(job.engine), _ctx())
         except Exception as exc:
             errors.append(f"teardown: {type(exc).__name__}: {exc}")
     summary = Summary()

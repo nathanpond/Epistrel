@@ -248,6 +248,12 @@ one-sided 95% upper bound.
   E-05's and Q-01's recall count its labelled items as missed. Each suite declares the rule per
   case (`Suite.error_metrics`); a suite that declares nothing fails every metric on an error
   (#134). Journalled model errors scored under the old rule play again on the next run.
+- A case whose own story is **busy** (`StoryBusy`: its commit waited past the story-lock
+  timeout, or a turn was still in flight) retries the refused call, waiting out
+  `Retry-After` with backoff for at most 30 s altogether (#929). It is then scored once; the
+  wait is not counted in its latency, and its journal row's `detail` says how many retries it
+  took (`story_busy_retries`). A story still busy after 30 s is a harness error that names
+  `StoryBusy`, never a model error. A full turn queue (`queue_full`) is never retried.
 
 ## Suites
 

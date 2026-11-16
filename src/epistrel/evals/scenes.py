@@ -16,6 +16,7 @@ them even when ``teardown`` does not run.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -36,6 +37,7 @@ from epistrel.core.stories import CreatedStory
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
 from epistrel.engine import Engine
+from epistrel.evals import busy
 from epistrel.evals.presets import RUN_PRESET
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.jobs import queue
@@ -113,24 +115,33 @@ async def episodes(
     (``<Name> does: <text>``) written by the turn's commit (``write_episodic``)."""
     written: list[records.Memory] = []
     for actor, line in lines:
-        async with Operation(
-            engine.db, story_id=story_id, kind=OperationKind.TURN, principal=PRINCIPAL
-        ) as op:
-            op.append(
-                "player_input",
-                {"text": line, "say": None, "do": line},
-                provenance=Provenance.PLAYER,
-                character_id=actor,
-                beat=1,
-            )
-
-            async def step(conn: AsyncConnection, op: Operation = op) -> None:
-                beats = await records.beats_of_operation(conn, op.operation_id)
-                written.extend(await records.write_episodic(conn, op, beats))
-
-            op.add_commit_step(step)
-            await op.commit()
+        # #929: a commit refused with StoryBusy wrote nothing, so the turn is built again.
+        written.extend(
+            await busy.retrying(functools.partial(_episode, engine, story_id, actor, line))
+        )
     return written
+
+
+async def _episode(engine: Engine, story_id: str, actor: str, line: str) -> list[records.Memory]:
+    kept: list[records.Memory] = []
+    async with Operation(
+        engine.db, story_id=story_id, kind=OperationKind.TURN, principal=PRINCIPAL
+    ) as op:
+        op.append(
+            "player_input",
+            {"text": line, "say": None, "do": line},
+            provenance=Provenance.PLAYER,
+            character_id=actor,
+            beat=1,
+        )
+
+        async def step(conn: AsyncConnection, op: Operation = op) -> None:
+            beats = await records.beats_of_operation(conn, op.operation_id)
+            kept.extend(await records.write_episodic(conn, op, beats))
+
+        op.add_commit_step(step)
+        await op.commit()
+    return kept
 
 
 _CLAIM = text(

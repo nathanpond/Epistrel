@@ -79,6 +79,8 @@ RESIDUAL_FALSE_CONTRADICTION = "e01.residual.false_contradiction"
 RESIDUAL_FALSE_SUPPORT = "e01.residual.false_support"
 RESIDUAL = "residual-"
 """The family prefix of the fuzzy-residual cases."""
+ERRORED = "model_error"
+"""The final kind ``score`` is given for a case a model error ended (#530): no label."""
 FRAME = TimeFrame(epoch=DEFAULT_EPOCH)
 """The cases' calendar: their years are story-minutes from ``DEFAULT_EPOCH`` (``_minute``), so
 the model reads them as the dates they are (#460)."""
@@ -369,6 +371,14 @@ class E01Suite(Suite):
                 "model_confidence": result.model_confidence,
             },
         )
+
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: the metrics ``score`` puts this label in (``false_support`` unless the case is
+        labelled ``supported``, ``false_contradiction`` unless ``contradicted``; the residual
+        rows on a residual case) and the accuracy row."""
+        assert isinstance(case, EntailmentCase)  # noqa: S101 - load() validated it
+        found = score(case.expected, ERRORED, case.residual)
+        return frozenset(k for k, v in found.items() if v is not None)
 
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, EntailmentCase)  # noqa: S101 - load() validated it as case_model

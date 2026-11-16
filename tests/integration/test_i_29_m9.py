@@ -1059,6 +1059,23 @@ MUTATING_CALLS: list[tuple[str, str]] = [
     ("{% with p = inputs['pop'] %}{% if inputs.c %}{{ p() }}{% endif %}{% endwith %}", "pop"),
     ("{% set p = inputs['pop'] %}{% if inputs.c %}{{ inputs.c }}{% endif %}{{ p() }}", "pop"),
     ("{% with p = inputs['clear'] %}{% with q = 1 %}{{ p() }}{% endwith %}{% endwith %}", "clear"),
+    # #930: a set inside a set block, filter block or autoescape block ends with it, so the
+    # outer alias is the one called.
+    (
+        "{% set p = inputs['pop'] %}{% set q %}{% set p = inputs.voter.upper %}{% endset %}"
+        "{{ p() }}",
+        "pop",
+    ),
+    (
+        "{% set p = inputs['pop'] %}{% filter upper %}{% set p = inputs.voter.upper %}"
+        "{% endfilter %}{{ p() }}",
+        "pop",
+    ),
+    (
+        "{% set p = inputs['pop'] %}{% autoescape false %}{% set p = inputs.voter.upper %}"
+        "{% endautoescape %}{{ p() }}",
+        "pop",
+    ),
 ]
 """#857: calls of a mutating name reached through an alias or a filter's attribute name."""
 
@@ -1094,6 +1111,34 @@ READ_NOT_CALLED: list[tuple[str, str]] = [
         "ASH",
     ),
     ("{% set p = inputs['pop'] %}{% set p, q = [inputs.voter.lower, 1] %}{{ p() }}", "ash"),
+    # #931: a loop target shadows a live outer alias.
+    (
+        "{% set p = inputs['pop'] %}{% for p in [inputs.voter.upper] %}{{ p() }}{% endfor %}",
+        "ASH",
+    ),
+    # #931: a for body's bindings end with the loop (its else sees the outer name).
+    (
+        "{% set p = inputs.voter.upper %}{% for x in [] %}{% set p = inputs['pop'] %}"
+        "{% else %}{{ p() }}{% endfor %}",
+        "ASH",
+    ),
+    # #931: a missing else is a branch of the if-merge, which leaves the outer name.
+    (
+        "{% set p = inputs.voter.upper %}{% if not inputs.c %}{% set p = inputs['pop'] %}"
+        "{% endif %}{{ p() }}",
+        "ASH",
+    ),
+    # #930: a rebinding inside a set block or a filter block does not reach the call.
+    (
+        "{% set p = inputs.voter.upper %}{% set q %}{% set p = inputs['pop'] %}{% endset %}"
+        "{{ p() }}",
+        "ASH",
+    ),
+    (
+        "{% set p = inputs.voter.upper %}{% filter upper %}{% set p = inputs['pop'] %}"
+        "{% endfilter %}{{ p() }}",
+        "ASH",
+    ),
 ]
 """#857's complement: a mutating name bound or mapped and not called reads the key."""
 
@@ -1109,7 +1154,10 @@ def test_i_29__m9_mutating_calls() -> None:
     Complement asserted: the same names bound or mapped without a call are accepted and render
     the key's value; and (#923) a name that is not that alias on every path to its call (a
     ``with`` scope ended, an ``if`` branch rebound it, a loop target shadows it) is accepted and
-    renders."""
+    renders. #930: a set block, filter block or autoescape block is a scope, so a rebinding
+    inside one neither hides the outer alias nor clears it. #931: one row pins each of the
+    walk's loop-target shadowing, loop-body scope and missing-else merge rules (each fails
+    when its rule is removed)."""
     inputs = {
         "voter": "Ash",
         "list": [1, 2, 3],
@@ -1130,7 +1178,7 @@ def test_i_29__m9_mutating_calls() -> None:
             f"the template uses {method!r}, a method that changes its value",
         ), template
     for template, rendered in READ_NOT_CALLED:
-        assert check_template(template, "body.template").render(inputs=inputs) == rendered
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered, template
 
 
 ALWAYS_FAILING: list[tuple[str, str]] = [
@@ -1190,6 +1238,71 @@ CALL_TIME_ONLY: list[str] = [
 """#858 (#921): templates whose failure is not statically certain, so they save and fail at
 call time with 422 ``template_render_error`` (FR-MODEL-15): a division by a constant zero, and
 a loop called or cycled with nothing to cycle (each fails only once the loop runs)."""
+
+
+# #927: a name bound on every path to its read is declared; one that may be unset is not.
+BOUND_ON_EVERY_PATH: list[tuple[str, str]] = [
+    ("{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}{{ p }}", "1"),
+    (
+        "{% if inputs.d %}{% set p = 1 %}{% elif inputs.c %}{% set p = 2 %}{% else %}"
+        "{% set p = 3 %}{% endif %}{{ p }}",
+        "2",
+    ),
+    (
+        "{% if inputs.c %}{% if inputs.d %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}"
+        "{% else %}{% set p = 3 %}{% endif %}{{ p }}",
+        "2",
+    ),
+    (
+        "{% if inputs.c %}{% set p, q = [1, 2] %}{% else %}{% set p, q = [3, 4] %}{% endif %}"
+        "{{ p }}{{ q }}",
+        "12",
+    ),
+    ("{% if inputs.c %}{% set p %}x{% endset %}{% else %}{% set p = 'y' %}{% endif %}{{ p }}", "x"),
+    (
+        "{% for x in [1] %}{% if inputs.c %}{% set p = x %}{% else %}{% set p = 0 %}{% endif %}"
+        "{{ p }}{% endfor %}",
+        "1",
+    ),
+]
+"""#927: every branch (and an ``else``) binds the name before it is read, so it saves."""
+
+MAYBE_UNBOUND: list[str] = [
+    "{% if inputs.c %}{% set p = 1 %}{% elif inputs.d %}{% set p = 2 %}{% endif %}{{ p }}",
+    "{% if inputs.c %}{% set p = 1 %}{% endif %}{{ p }}",
+    "{% if true %}{% set p = 1 %}{% endif %}{{ p }}",
+    "{% if inputs.c %}{% set p = p %}{% else %}{% set p = 2 %}{% endif %}{{ p }}",
+    "{{ p }}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}",
+    "{% with %}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}{% endwith %}"
+    "{{ p }}",
+    "{% for x in [1] %}{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}"
+    "{% endfor %}{{ p }}",
+]
+"""#927's complement: the name may be unset where it is read (a branch or the ``else`` does
+not bind it, even under a constant-true test; it reads itself; it is read first; its binding
+ended with a ``with`` or ``for`` body), so it stays undeclared."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_definite_assignment() -> None:
+    """#927: a name set on every path to its read (each ``if``/``elif`` branch and the
+    ``else``, at any depth; a tuple or set-block target counts) is not an undeclared
+    variable, so the template saves and renders. Jinja's own analysis lists it, because it is
+    unset on some path in general.
+
+    Complement asserted: a name that may be unset where it is read is still refused as
+    undeclared (FR-MODEL-14 refuses what certainly fails, and keeps refusing what Jinja's
+    analysis flags unless the walk proves it bound)."""
+    inputs = {"c": True, "d": False}
+    for template, rendered in BOUND_ON_EVERY_PATH:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered, template
+    for template in MAYBE_UNBOUND:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        assert refused.value.details["message"] == (
+            "the template references undeclared variable(s) 'p' (allowed: inputs, story, viewpoint)"
+        ), template
 
 
 @pytest.mark.integration

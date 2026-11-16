@@ -288,6 +288,13 @@ class E09Suite(Suite):
             detail={"pacing_turns": len(played.turns), "pacing_removed": removed},
         )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: the in-range rate and the case's own family and kind rows; a pacing case
+        counts nothing (``_pacing``: an error is not a refused skip)."""
+        if not isinstance(case, TimeEstimationCase):
+            return frozenset()
+        return frozenset({WITHIN, family_id(case.family), kind_id(case.kind)})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         if isinstance(case, TimeEstimationCase):
             return {TIME_ESTIMATION.name: case.stub_answer.model_dump_json()}

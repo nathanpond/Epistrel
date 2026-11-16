@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -171,6 +171,17 @@ class E05Suite(Suite):
                 "degradation": list(verdict.degradation),
             },
         )
+
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: ``answered``, and recall on a case with labelled spans (``texture_clean`` on
+        one without); precision has no prediction to judge."""
+        assert isinstance(case, SalienceCase)  # noqa: S101 - load() validated it as case_model
+        return frozenset({ANSWERED, RECALL if case.expected else TEXTURE_CLEAN})
+
+    def error_detail(self, case: CaseModel) -> Mapping[str, Any]:
+        """#530: every labelled span missed, nothing predicted (``aggregate``'s counts)."""
+        assert isinstance(case, SalienceCase)  # noqa: S101 - load() validated it as case_model
+        return {"found": 0, "missed": len(case.expected), "right": 0, "wrong": 0}
 
     def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
         total = {k: sum(int(o.detail.get(k, 0)) for o in outcomes) for k in

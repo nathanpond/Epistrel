@@ -68,7 +68,17 @@ them, and a loop target (and ``loop``) shadows a name. A ``{% set %}`` in an ``{
 the enclosing scope, so after the ``if`` a name is an alias only when every branch (a missing
 ``else`` included) leaves it one. A tuple target rebinds each of its names. So
 ``{% with p = inputs['pop'] %}{{ p }}{% endwith %}{{ p() }}`` calls the outer ``p`` and is
-accepted; a call that fails anyway fails cleanly at call time.
+accepted; a call that fails anyway fails cleanly at call time. #930: a ``{% set x %}…{% endset %}``
+body, a ``{% filter %}`` body and an ``{% autoescape %}`` body are scopes too, so a ``set``
+inside one does not reach past it (the set block's own target binds after its body).
+
+#927: the undeclared-variable check takes Jinja's analysis (``meta.find_undeclared_variables``),
+which lists a name that is unset on some path, and drops a name the same walk read only where it
+is bound on every path to the read: every ``if``/``elif`` branch and the ``else`` set it (a
+missing ``else`` is a branch that does not), at any depth. So
+``{% if inputs.c %}{% set p = 1 %}{% else %}{% set p = 2 %}{% endif %}{{ p }}`` saves, and a
+name set in only some branches, read before it is set, or read after the ``with`` or ``for``
+body that set it, is still refused. A block's body sees no outer name as bound.
 
 #858: what fails on every render, whatever the inputs, is refused too. Every ``{% set x.y %}``
 target (``'x' is not a namespace``: no ``namespace`` exists here), so ``{% set inputs._y = 1 %}``
@@ -106,6 +116,7 @@ import json
 import re
 from collections import deque
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
 from jinja2 import StrictUndefined, Template, TemplateError, meta, nodes
@@ -428,87 +439,146 @@ Aliases = dict[str, str | None]
 ``None`` when it holds something else (a binding that shadows an outer alias)."""
 
 
-def _bind(aliases: Aliases, target: nodes.Node, value: nodes.Node | None) -> None:
-    """Bind ``target`` in ``aliases``: simple name ``target`` to the mutating-name access
+@dataclass
+class _Scope:
+    """What the walk knows at one point of a template: the names bound in scope and what they
+    alias (``aliases``, #923), and the names bound on every path to this point (``bound``,
+    #927)."""
+
+    aliases: Aliases = field(default_factory=dict)
+    bound: set[str] = field(default_factory=set)
+
+    def inner(self) -> _Scope:
+        """A scope of its own (a ``with``, ``for`` or block body): what it binds ends with it."""
+        return _Scope(dict(self.aliases), set(self.bound))
+
+
+@dataclass
+class _Walk:
+    """What the walk finds: the calls of a certain alias (``found``, by node id, #857/#923),
+    and for #927 every name read (``read``) and the names read somewhere they may be unbound
+    (``unsafe``)."""
+
+    found: dict[int, str] = field(default_factory=dict)
+    read: set[str] = field(default_factory=set)
+    unsafe: set[str] = field(default_factory=set)
+
+
+def _bind(scope: _Scope, target: nodes.Node, value: nodes.Node | None) -> None:
+    """Bind ``target`` in ``scope``: simple name ``target`` to the mutating-name access
     ``value`` reaches (#857), or to ``None``; every name of a tuple target to ``None`` (#923).
-    One level: a name bound to another alias is not followed."""
+    One level: a name bound to another alias is not followed. Each name is bound (#927)."""
     if isinstance(target, nodes.Name):
-        aliases[target.name] = None if value is None else _mutating_access(value)
+        scope.aliases[target.name] = None if value is None else _mutating_access(value)
+        scope.bound.add(target.name)
         return
     for name in target.find_all(nodes.Name):
-        aliases[name.name] = None
+        scope.aliases[name.name] = None
+        scope.bound.add(name.name)
 
 
-def _expression_calls(expr: nodes.Node, aliases: Aliases, found: dict[int, str]) -> None:
-    """Record each call in ``expr`` whose callee is a name ``aliases`` holds as an alias."""
+def _expression(expr: nodes.Node, scope: _Scope, walk: _Walk) -> None:
+    """Record each call in ``expr`` whose callee is a name ``scope`` holds as an alias, and
+    each name it reads, unsafe when it is not bound on every path to here (#927)."""
     for node in (expr, *expr.find_all(nodes.Call)):
         if isinstance(node, nodes.Call) and isinstance(node.node, nodes.Name):
-            method = aliases.get(node.node.name)
+            method = scope.aliases.get(node.node.name)
             if method is not None:
-                found[id(node)] = method
+                walk.found[id(node)] = method
+    for node in (expr, *expr.find_all(nodes.Name)):
+        if isinstance(node, nodes.Name) and node.ctx == "load":
+            walk.read.add(node.name)
+            if node.name not in scope.bound:
+                walk.unsafe.add(node.name)
 
 
-def _merge(aliases: Aliases, branches: list[Aliases]) -> None:
-    """After an ``if``: a name stays an alias only when every branch leaves it one (#923)."""
-    for name in {name for branch in branches for name in branch}:
-        methods = [branch.get(name) for branch in branches]
-        aliases[name] = methods[0] if all(m is not None for m in methods) else None
+def _merge(scope: _Scope, branches: list[_Scope]) -> None:
+    """After an ``if``: a name stays an alias only when every branch leaves it one (#923), and
+    is bound only when every branch binds it (#927; a missing ``else`` is a branch)."""
+    for name in {name for branch in branches for name in branch.aliases}:
+        methods = [branch.aliases.get(name) for branch in branches]
+        scope.aliases[name] = methods[0] if all(m is not None for m in methods) else None
+    scope.bound = set.intersection(*(branch.bound for branch in branches))
 
 
-def _statement_calls(node: nodes.Node, aliases: Aliases, found: dict[int, str]) -> None:
-    """Walk ``node`` with the names bound in scope (``aliases``, updated in place by what
-    reaches the enclosing scope), recording each call of a certain alias (#923, module docs)."""
+def _statement(node: nodes.Node, scope: _Scope, walk: _Walk) -> None:
+    """Walk ``node`` with what ``scope`` knows, updated in place by what reaches the enclosing
+    scope (#923, #927, module docs)."""
     if isinstance(node, nodes.Assign):
-        _expression_calls(node.node, aliases, found)
-        _bind(aliases, node.target, node.node)
+        _expression(node.node, scope, walk)
+        _bind(scope, node.target, node.node)
     elif isinstance(node, nodes.AssignBlock):
-        _block_calls(node.body, aliases, found)
-        _bind(aliases, node.target, None)
+        # #930: a set block's body is a scope of its own; its filter reads the outer names,
+        # and its target binds after the body.
+        if node.filter is not None:
+            _expression(node.filter, scope, walk)
+        _body(node.body, scope.inner(), walk)
+        _bind(scope, node.target, None)
     elif isinstance(node, nodes.With):
-        inner = dict(aliases)
+        inner = scope.inner()
         for target, value in zip(node.targets, node.values, strict=False):
-            _expression_calls(value, aliases, found)
+            _expression(value, scope, walk)
             _bind(inner, target, value)
-        _block_calls(node.body, inner, found)
+        _body(node.body, inner, walk)
     elif isinstance(node, nodes.For):
-        _expression_calls(node.iter, aliases, found)
-        inner = dict(aliases)
+        _expression(node.iter, scope, walk)
+        inner = scope.inner()
         _bind(inner, node.target, None)
-        inner["loop"] = None
+        _bind(inner, nodes.Name("loop", "store"), None)
         if node.test is not None:
-            _expression_calls(node.test, inner, found)
-        _block_calls(node.body, inner, found)
-        _block_calls(node.else_, dict(aliases), found)
+            _expression(node.test, inner, walk)
+        _body(node.body, inner, walk)
+        _body(node.else_, scope.inner(), walk)
     elif isinstance(node, nodes.If):
-        branches: list[Aliases] = []
+        branches: list[_Scope] = []
         for test, body in [(node.test, node.body), *((e.test, e.body) for e in node.elif_)]:
-            _expression_calls(test, aliases, found)
-            branch = dict(aliases)
-            _block_calls(body, branch, found)
+            _expression(test, scope, walk)
+            branch = scope.inner()
+            _body(body, branch, walk)
             branches.append(branch)
-        otherwise = dict(aliases)
-        _block_calls(node.else_, otherwise, found)
-        _merge(aliases, [*branches, otherwise])
+        otherwise = scope.inner()
+        _body(node.else_, otherwise, walk)
+        _merge(scope, [*branches, otherwise])
+    elif isinstance(node, nodes.FilterBlock):
+        # #930: a filter block's body is scoped; its filter reads the outer names.
+        _expression(node.filter, scope, walk)
+        _body(node.body, scope.inner(), walk)
+    elif isinstance(node, nodes.ScopedEvalContextModifier):
+        # #930: an autoescape block's body is scoped; its options read the outer names.
+        for option in node.options:
+            _expression(option.value, scope, walk)
+        _body(node.body, scope.inner(), walk)
     elif isinstance(node, nodes.Block):
-        _block_calls(node.body, dict(aliases), found)
+        # A block renders from the context, not the template's local names (#927: nothing
+        # outside it is bound inside it).
+        _body(node.body, _Scope(dict(scope.aliases)), walk)
+    elif isinstance(node, nodes.Scope):
+        _body(node.body, scope.inner(), walk)
     elif isinstance(node, nodes.Expr):
-        _expression_calls(node, aliases, found)
+        _expression(node, scope, walk)
     else:
         for child in node.iter_child_nodes():
-            _statement_calls(child, aliases, found)
+            _statement(child, scope, walk)
 
 
-def _block_calls(body: list[nodes.Node], aliases: Aliases, found: dict[int, str]) -> None:
+def _body(body: list[nodes.Node], scope: _Scope, walk: _Walk) -> None:
     for node in body:
-        _statement_calls(node, aliases, found)
+        _statement(node, scope, walk)
+
+
+def _walk(tree: nodes.Template) -> _Walk:
+    """The scoped walk of ``tree`` (#857, #923, #927, #930): each call of a name that is
+    certainly a mutating-name alias where it is called, and the names read where they may be
+    unbound."""
+    walk = _Walk()
+    _body(tree.body, _Scope(), walk)
+    return walk
 
 
 def _alias_calls(tree: nodes.Template) -> dict[int, str]:
     """Each call (by node id) of a name that is certainly a mutating-name alias where it is
     called, mapped to the method's name (#857, #923)."""
-    found: dict[int, str] = {}
-    _block_calls(tree.body, {}, found)
-    return found
+    return _walk(tree).found
 
 
 def _filter_problem(
@@ -596,7 +666,8 @@ def _scan(tree: nodes.Template) -> str | None:
     calls = {id(call.node): call for call in tree.find_all(nodes.Call)}
     # #857: calls of a name a `{% set %}` or `{% with %}` bound to a mutating-name access,
     # where it is certainly that alias (#923), each mapped to the method's name.
-    aliased = _alias_calls(tree)
+    walked = _walk(tree)
+    aliased = walked.found
     for node in tree.find_all(nodes.Node):
         if isinstance(node, nodes.Call):
             callee = node.node
@@ -667,7 +738,11 @@ def _scan(tree: nodes.Template) -> str | None:
             problem = _printf_problem(node)
             if problem is not None:
                 return problem
-    undeclared = sorted(meta.find_undeclared_variables(tree) - TEMPLATE_VARIABLES)
+    # #927: Jinja's analysis lists a name that may be unset on some path; a name the walk read
+    # only where it is bound on every path is not undeclared. Anything the walk never read is
+    # left to Jinja's verdict.
+    certain = walked.read - walked.unsafe
+    undeclared = sorted(meta.find_undeclared_variables(tree) - TEMPLATE_VARIABLES - certain)
     if undeclared:
         names = ", ".join(repr(name) for name in undeclared)
         allowed = ", ".join(sorted(TEMPLATE_VARIABLES))

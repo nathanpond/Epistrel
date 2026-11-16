@@ -268,6 +268,13 @@ class E01ViewpointSuite(Suite):
         "made.",
     )
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: the rows ``score`` observes for this label (``false_support`` unless the
+        objective label is ``supported``; the others on every case)."""
+        assert isinstance(case, ViewpointCase)  # noqa: S101 - load() validated it
+        found = score(case, "model_error", None, None, repaired=False)
+        return frozenset(k for k, v in found.items() if v is not None)
+
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, ViewpointCase)  # noqa: S101 - load() validated it as case_model
         result = await check_claim(case, ctx.models)

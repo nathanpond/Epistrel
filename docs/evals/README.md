@@ -138,6 +138,55 @@ error, `none` none. `--fresh` sets the journal aside (renamed, never deleted) an
 case again. Journals are kept per model and configuration fingerprint, so the results of every
 model run are there for later comparison. `--journal-dir` moves them.
 
+**The call trace** (#737). Beside each journal, `certify` writes
+`<preset>-<fingerprint[:12]>.calls.jsonl.gz`, `run` writes `run-<fingerprint[:12]>.calls.jsonl.gz`,
+and `calibrate-judge` writes `<judge>/calibration.calls.jsonl.gz`. It holds one record for each
+HTTP request a model call made, and it exists so a failed call can be diagnosed by reading a
+file instead of paying for a replay. `--no-trace` turns it off (no file is written), and a stub
+run writes none because it sends nothing. Like the journal, the trace is ignored by git and is
+never committed. It changes no fingerprint, report or journal row, and a deployed engine has no
+setting that turns it on. A record (`v: 1`, `evals/trace.py` has the full list) carries:
+
+- **The journal key** of its case: `suite`, `suite_fingerprint`, `case`, `digest` and `seed`,
+  plus `fingerprint`, `preset` and `model`. Also `call`, the call's index within the case, and
+  `http`, the request's index within the call. A judge-calibration call has `phase:
+  calibration` and a null case. The endpoint's protocol probe is not traced.
+- **What the call was:** `purpose`, `attempt`, `schema`, `judge` (true for E-03's entailment
+  judge and `quality_judge`) and `structured_mode`, which is `json_schema_strict`,
+  `json_schema`, `parse_validate_retry` or null.
+- **The request as sent:** `messages` (an image's `data:` URL is replaced by its digest and
+  length) and `params` (`temperature`/`top_p` as actually sent, `max_completion_tokens` or
+  `max_tokens`, `seed`, `stop`, and any provider extras such as `extra_body`).
+- **The `response`:** `text`, `text_len`, `finish_reason`, `refusal`, `tokens_in`,
+  `tokens_out`, `completion_tokens_details` when the provider sends one, `request_id` and
+  `reported_version`. Anthropic's endpoint sends no token breakdown. A hidden-reasoning share
+  (#735) shows instead as `tokens_out` close to `max_completion_tokens` with a short `text_len`.
+- **On a failed request,** `error`: the exception `type`, HTTP `status`, the provider's error
+  `body` and `request_id`. `raised` is what the call ended in.
+- **Bookkeeping:** `latency_ms`, `call_latency_ms`, `engine_sha`, `session` (one per process)
+  and `complete` (false when the case ended in a harness error and has no journal row).
+
+Text fields are capped at 64 KiB, and `truncated: true` marks a record that was cut. No API key
+and no `Authorization` or `x-api-key` value is ever written, and every key the run was given is
+also scrubbed from each line. Records are written once their case ends, and each case's records
+are one gzip member. A case cancelled by a second Ctrl-C writes nothing and gets its records when
+it plays again. Cases a resumed run takes from the journal add nothing. A process killed during
+a write leaves a torn last member, and the next run cuts it off. `--fresh` sets the trace aside
+together with the journal.
+
+The trace is plain gzip-compressed JSONL, so any JSONL reader works. DuckDB, for example, run
+in a throwaway environment so it never enters the lock (`finish_reason` counts per suite):
+
+```sh
+uv run --no-project --with duckdb python -c "import duckdb; duckdb.sql('''
+  SELECT suite, response->>'finish_reason' AS finish, count(*) AS calls
+  FROM read_json_auto('.evals-results/claude-haiku-5-5/standard-*.calls.jsonl.gz')
+  GROUP BY ALL ORDER BY suite, calls DESC''').show()"
+```
+
+The trace meets #735's diagnostic needs (`finish_reason`, tokens against `max_tokens` and the
+raw text of a structured-parse failure), so the journal stays as it is.
+
 **Expected duration.** Standard plans 8,718 case runs at 3 seeds; Full and Max run more
 suites, so more (each preset prints its count as it starts). A case is a few model calls (a
 structured turn is ~7). Measured: the local reference model on an M3 Max at `--concurrency 1`
@@ -192,8 +241,19 @@ one-sided 95% upper bound.
 - A **relative** floor (E-12, NFR-QUAL-14) is judged only on at least 300 non-tied pairs per
   seed and passes when the mean + SD is at most the floor; fewer pairs is *insufficient
   evidence*, never a pass. A judge-based row also states the judge calibration it ran under.
-- One seed, or no observations, is *insufficient evidence*; a model error counts as a failed
-  case. Timings are informational.
+- One seed, or no observations, is *insufficient evidence*. Timings are informational.
+- A **model error** is a failed case. It counts against the metrics whose denominator the
+  case's label puts it in, and against no others (#530, ADR-194). For example, an E-01 claim
+  labelled `supported` that errors counts as a false contradiction, never as a false support.
+  E-05's and Q-01's recall count its labelled items as missed. Each suite declares the rule per
+  case (`Suite.error_metrics`); a suite that declares nothing fails every metric on an error
+  (#134). Journalled model errors scored under the old rule play again on the next run.
+- A case whose own story is **busy** (`StoryBusy`: its commit waited past the story-lock
+  timeout, or a turn was still in flight) retries the refused call, waiting out
+  `Retry-After` with backoff for at most 30 s altogether (#929). It is then scored once; the
+  wait is not counted in its latency, and its journal row's `detail` says how many retries it
+  took (`story_busy_retries`). A story still busy after 30 s is a harness error that names
+  `StoryBusy`, never a model error. A full turn queue (`queue_full`) is never retried.
 
 ## Suites
 
@@ -379,6 +439,64 @@ uv run python -m epistrel.evals run --suite q06 --suite q01 --suite q03 --suite 
 
 Each run writes its report to `docs/evals/full-<fingerprint>-<date>.md` and regenerates
 `INDEX.md`. Commit both reports, and post the per-kind rows of each run side by side on #868.
+
+## First use of a strict schema on api.anthropic.com (#785)
+
+api.anthropic.com compiles a strict `json_schema` into a grammar the first time it sees it and
+caches it, so a structured purpose's first call after the cache expires can be much slower than
+the next. `epistrel.tools.schema_compile_probe` measures this. For every schema a structured
+call may send strictly (render schemas have no strict wire form and are never sent strictly), it
+sends a cold call and then a warm call. A per-round nonce property makes each round's schemas
+new to the endpoint. The assumption is that the cache is keyed on the schema itself, so no
+expiry wait is needed:
+
+```sh
+uv run python -m epistrel.tools.schema_compile_probe \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 --rounds 3
+```
+
+Measured 2026-11-16 (one run, sequential, 600 s client timeout, `max_tokens` 64):
+
+Model `claude-haiku-5-5`, 3 rounds, cold then warm per schema, sequential (seconds; cold = a schema new to the endpoint, by a per-round nonce property).
+
+| Schema | Cold (each round) | Warm (each round) | Max cold |
+|---|---|---|---|
+| `BeliefAdjudicationResult` | 2.6, 2.5, 2.5 | 1.7, 1.7, 1.7 | 2.6 |
+| `ConsolidationResult` | 3.3, 2.8, 2.7 | 2.2, 1.7, 1.8 | 3.3 |
+| `DirectorOrder` | 2.2, 2.2, 2.1 | 1.6, 2.1, 1.6 | 2.2 |
+| `DirectorTiebreak` | 2.2, 2.8, 3.1 | 1.8, 1.7, 1.7 | 3.1 |
+| `EntailmentVerdict` | 1.9, 1.9, 2.2 | 1.6, 1.7, 1.8 | 2.2 |
+| `ExtractionResult` | 3.3, 3.2, 3.2 | 1.9, 1.7, 1.7 | 3.3 |
+| `GuardrailVerdict` | 2.7, 2.1, 2.5 | 1.5, 1.5, 1.5 | 2.7 |
+| `ImagePromptResult` | 2.2, 2.2, 2.6 | 1.7, 1.5, 1.5 | 2.6 |
+| `ImportanceScore` | 2.3, 2.1, 2.4 | 1.8, 1.8, 1.5 | 2.4 |
+| `LiteRewriteParseResult` | 2.6, 2.5, 2.4 | 1.7, 0.8, 0.9 | 2.6 |
+| `LiteRewriteReachResult` | 2.5, 3.4, 2.4 | 1.8, 1.5, 2.2 | 3.4 |
+| `QualityJudgeVerdict` | 2.6, 2.2, 2.3 | 1.6, 1.9, 1.5 | 2.6 |
+| `RatingSuggestionVerdict` | 6.0, 5.9, 6.6 | 1.9, 1.8, 2.0 | 6.6 |
+| `RewriteParseResult` | 128.6, 138.8, 134.1 | 1.8, 2.0, 1.7 | 138.8 |
+| `RewrittenRecord` | 2.3, 2.3, 2.3 | 1.4, 1.6, 1.5 | 2.3 |
+| `SalienceResult` | 3.7, 3.2, 2.9 | 1.7, 1.7, 1.6 | 3.7 |
+| `TimeEstimate` | 2.4, 2.9, 2.4 | 1.8, 1.7, 1.6 | 2.9 |
+
+Largest cold call: 138.8 s.
+- It exceeds 45 s, Standard's and Full's per-call deadline.
+- It exceeds 60 s, the default per-call timeout (`DEFAULT_TIMEOUT_S`).
+- It exceeds 120 s, the eval harness's per-call timeout (`CALL_TIMEOUT_S`) when measured; it is now 210 s (below).
+
+**What it means.** Only `rewrite_parse` (`RewriteParseResult`) is slow, at about 2.2 minutes
+cold, every round, against about 2 s warm. Every other schema compiles in under 7 s. A turn's
+structured calls are within Standard's and Full's 45 s per-call bound.
+
+- **The eval harness** sets every purpose's timeout to `evals.runner.CALL_TIMEOUT_S`, now 210 s
+  (1.5 x 138.8 s), so a certification run measures a schema's first use instead of losing the
+  case to it. No suite calls `rewrite_parse` today.
+- **A deployment on api.anthropic.com:** the first `POST …/rewrites` parse after the grammar
+  cache expires is likely to fail with 503 `model_unavailable` (`timeout`). Raising
+  `rewrite_parse`'s `params.timeout` in `/admin/model-config` does not help, because the parse's
+  own deadline (`rewrite.parse.PARSE_DEADLINE_S`, 120 s) clamps the call. Whether the provider
+  keeps a grammar compiled by a call the client gave up on was not measured. Until #941 (the engine
+  fix) is decided, retry a failed parse after a few minutes.
 
 ## The quality judge and its calibration (#158)
 

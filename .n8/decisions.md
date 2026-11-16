@@ -15048,3 +15048,94 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 
   The page is hand-merged (#502), so the tool's own "Unmeasured" line stays above the new text.
   **Issue:** #926
+
+## /n8-release v0.3.0 — 2026-11-16
+
+- **Version:** v0.3.0, a minor bump from v0.2.0. The owner chose it at `/n8-release`. PR #933 bumped `pyproject.toml` and `uv.lock`.
+- **Decision:** the owner accepted the carried M10 bugs #930 (sev:medium), #931 and #924 (sev:low) as known issues. They are listed in the release notes, and they did not block the release.
+  **Why:** `/n8-verify` carried them with gate = 0. #930 is a template over-refusal and alias leak, not a regression in the shipped surfaces.
+  **Issue:** #930, #931, #924
+- **Decision:** the opentelemetry-api/sdk 1.45.2 bump went into #933, and Dependabot's #893 and #882 were closed as superseded.
+  **Why:** the repo requires branches to be up to date before merging, so merging four PRs one at a time would have meant four CI runs in a row, about 51 min each. The fix (Dependabot alert 45, a `traceparent` parsing DoS in a runtime dependency) had to ship in the release. The alert is now `fixed`.
+  **Issue:** #893, #882
+- **Commit:** annotated tag `v0.3.0` on `5326afd`, the merge of #933. Its parent `db57b5b` (#932, `current_milestone = 10`) sits on `c3fcec1`, the commit M10 was verified at.
+- **Milestones included:** M8, M9 and M10. `/n8-verify` closed all three.
+- **What the tag triggered:** `release.yml`, [run 43866222944](https://github.com/nathanpond/Epistrel/actions/runs/43866222944). It took 45 min.
+  - **validate:** success.
+  - **Full CI:** success.
+  - **C-10 smoke:** success.
+  - **Multi-arch publish:** success. `ghcr.io/nathanpond/epistrel` is tagged `0.3.0`, `0.3`, `0` and `latest`. All four point to `sha256:ec163a81803fc7df082c04c2021fa9898b891b1b66c6118ef505c1b750763074` (amd64 and arm64).
+  - **GitHub release:** the workflow created it, and a human summary with the known issues was added on top with `gh release edit`.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.3.0
+
+## /n8-plan M11 — 2026-11-16
+
+- **Decision:** M11 is planned under one new epic, #935 "Model-bound quality floors met on a certified model". It has four new stories: #936 (E-12 direct mode, rungs 1–4), #937 (composition and identity types; certify reads direct rows), #938 (per-type case sets, approved by the owner from a sample) and #939 (NFR-QUAL-7 conformance, added by the coverage check). 23 existing issues gained an "M11 plan" body section and a comment. #474 is retitled to the live measurement with tuning.
+  **Why:** these are the planner changes the owner approved on 2026-11-09 (one epic, the template, the #474 split). The coverage check found that NFR-QUAL-7 had no story with a delivering acceptance criterion.
+  **Issue:** #935
+- **Decision (owner, round one):** #530 option (c) (errors count only in the rates the case's label puts them in). #603/#588/#685 option (ii): the local reference tier is recorded as unable to do three-voice turns, and the row is measured on hosted Haiku. #602 option (a): a new 422. #528 and #529 targets are reported and checked at exit, not gated. #747 may use a separate, stronger judge for entailment; the cost estimate given was about $20 extra per three-preset certification with Sonnet judging entailment only, against about $200 if every judge purpose moved. #474 sets approved by sample (20 per type). #812 option (a), with the rest moved to v2.
+  **Issue:** #530, #603, #602, #528, #529, #747, #938, #812
+- **Decision (owner, round two, "all recs good"):**
+  - R1: the configuration fingerprint gains an engine `MODEL_CALL_REVISION` with a guarded snapshot, so Python-held prompts and constants retire certifications (#818).
+  - R2: a harmless child character must pass the minors policy, fixed by a prompt change with the fixture unchanged (#918).
+  - R3: `age_repair` and `composition_fallback` pass by construction through a per-case identity check, and deterministic rung fixes happen in M11 (#937, #474).
+  - R4: NFR-QUAL-3 counts only when the judge agrees ≥ 75% on E-03's labelled pairs (#747).
+  - R5: #602's 422 fires only on an explicit request deadline.
+  - Gate: repeatability counts toward NFR-QUAL-7 only on hosts that honour temperature 0 (#939, option (b)).
+  **Issue:** #818, #918, #937, #474, #747, #602, #939
+- **Decision (planner, shown at the gate):**
+  - The current-fingerprint guard is a release gate (release.yml and `/n8-verify`), not a PR gate, so tuning PRs can merge between #818 and #819.
+  - #602's in-turn gates also use the per-model estimates.
+  - #918's prompt fix ships as a migration that keeps administrator edits, and no false-negative probe is authored (ADR-182).
+  - #812's version-not-text certification binding is filed separately.
+  - #938's PR waits for the owner's approval, because main CI requires approved sets.
+  **Issue:** #818, #602, #918, #812, #938
+- **Decision (triage):**
+  - #918 and #929 join M11 and block #818. #930, #927 and #931 join M11 as non-blocking; #930 and #931 move from M10's closed epic #860 to #935.
+  - #924, #890 and #891 move to v2.
+  - The edges #603 ← #588 ← #685 are removed (they would deadlock under option (ii)), as are #588's `blocked`/`needs-owner-action` labels.
+  - #819 is now blocked by every other M11 story.
+  **Issue:** #935
+- **Decision:** the Audit (M12) emphases are now final. M11 was the last feature milestone, so the provisional markers on the M9 and M10 entries are removed, and an M11 entry is added.
+  **Issue:** —
+
+## /n8-exec M11 — 2026-11-16
+
+- **Decision:** the milestone branch `milestone/m11-performance-tuning` merges the two open state PRs' branches (#934 `n8/release-v0.3.0-record`, #940 `n8/plan-m11-state`) first. Both only append to `.n8/decisions.md`, and both append at the same spot, so a milestone branch cut from bare `main` would conflict with whichever merged second. The two appends were kept in PR order (release, then plan).
+  **Why:** this keeps the milestone's own log entries after the plan entry and makes both PRs' content arrive with this one if the owner hasn't merged them first.
+  **Issue:** #934, #940
+- **Decision:** this run executes the stories that #818 (the owner's hand-run baseline) does not gate: #737, #530, #918, #929 (the eval-correctness set #818 waits on), #930 → #927 → #931 (the purpose scan), #936 → #937 → #938 (E-12 direct mode), and #588, #685, #754, #785, #812. #474, #528, #529, #540, #602, #603, #735, #747, #748, #749, #750, #939 and #819 are blocked by #818 (directly or via #735) and are not started; the run is therefore a **partial** execution of M11 by construction (epic #935's order: eval fixes → baseline #818 → floors → exit #819).
+  **Issue:** #935, #818
+- **Decision:** the per-story gate is the targeted set run locally: every test file that reads a module the story changed, plus `ruff check`, `ruff format --check`, `mypy`, `lint-imports` and the eval, ADR and part checks the story touches. The full suite is CI's sharded run on the milestone PR.
+  **Why:** `exec.full_suite` is `sequential`, but the full local suite takes about 10 hours (about 5,300 tests). M9 and M10 used CI's 24-shard run as the full-suite gate for the same reason (logged 2026-11-11 and 2026-11-14). A full local run started for #737 was stopped after its first minutes once this was found.
+  **Issue:** #737, #530, #929, #930, #927, #931
+- **Decision:** stories are developed in stacked git worktrees under `.claude/worktrees/` (`wip/m11-<n>` branches, each cut from the previous story's commit), so one story's targeted run can go on while the next is written. The milestone branch is fast-forwarded to each story's commit once its run is green. Each pytest session starts its own Postgres testcontainer, since `EPISTREL_TEST_DATABASE_URL` is unset, so concurrent runs share no database.
+  **Issue:** #935
+- **Process slip:** for #737 and #929 I posted the plan comment after drafting the code, not before. Both comments say so.
+  **Issue:** #737, #929
+- **Decision (#737):** the hook is a harness-only ContextVar sink (`orchestrator/models/call_trace.py`). `ModelAccessLayer._complete` opens an exchange list around the adapter call, and the OpenAI-compatible adapter appends one `Exchange` per HTTP request (a legacy-`max_tokens` or no-sampling retry is a second request, so a second record). The endpoint's protocol probe calls the adapter directly, not `send`, so it is not traced. Records note this instead of adding a probe path.
+  **Why:** these are the planner's discretion notes. A retried request is a separate wire exchange, and the trace exists to show the wire. Tracing the probe would need a second hook outside `send`, for a call that `preflight` already reports.
+  **Issue:** #737
+- **Decision (#737):** `judge: true` is set by a `trace.judging()` context around the harness's own judge calls: `judging._verdict`, `judging.score` and E-03's entailment `judge`. The purpose alone can't say, because `entailment` is also the engine's verifier purpose and E-01's subject under test.
+  **Issue:** #737
+- **Decision (#737):** a case cancelled mid-play (a second Ctrl-C) writes no trace records. It plays again on resume and its records come then, so a resumed trace has no duplicate `(key, purpose, attempt, http)`. A harness-error case writes its records with `complete: false`. Every key the run was given (run, judge, embedding) is also scrubbed from each line, as a second guard. `calibrate-judge` traces to `<judge>/calibration.calls.jsonl.gz`. `run`'s root is the repository's `.evals-results/`, or `--trace-dir` (hidden). The README's DuckDB example runs `uv run --no-project --with duckdb python -c …`, because `uvx duckdb` has no CLI entry point. I checked the query against a two-member gzip file.
+  **Issue:** #737
+- **Decision (#530):** besides `Suite.error_metrics(case)` there is a second hook, `Suite.error_detail(case)`, for aggregates over labelled items. E-05 counts the case's labelled spans as missed, and Q-01 its relevant items as missed with `rr` 0. Before this, Q-01's aggregate raised `KeyError` on an errored case, and E-05 dropped the case's spans from recall's denominator.
+  **Why:** the planner said "an errored case contributes its labelled items as missed — fixed here". The hook's name and signature were delegated.
+  **Issue:** #530
+- **Decision (#530):** the journal's scoring rule is recorded on each line (`scoring`, `SCORING_REVISION` = 2), and `lookup` replays a model-error row with an older revision. It is not part of the lookup key.
+  **Why:** only model-error rows are scored differently under #530, so completed cases' rows stay reusable and keep their paid results. A key component would replay every case of every journal.
+  **Issue:** #530
+- **Decision (#530):** declarations not spelled out by the planner: E-02 by case `kind` (an escalation case's four rows, a promotion case's one); E-04 `scored` and `pivotal_above_median` (as an `Uncertain` answer already observes); E-09's pacing companions count nothing (`_pacing` already treats a `ModelError` as no turn); E-10 both modes' layer rows (every case is in their denominators); Q-03 and smoke every row. Q-02 calls no model and declares nothing. The ADR is ADR-194.
+  **Issue:** #530
+- **Decision (#929):** `runner.Stopped` moved to `evals/busy.py` and is re-exported from the runner under the same name, so a case waiting out `StoryBusy` can end the run as a stop without an import cycle. `scenes.episodes` builds each turn's `Operation` again on a retry, collecting memories per attempt, so a refused commit adds nothing twice. The engine proxy wraps only coroutine methods; every other attribute is the engine's own.
+  **Issue:** #929
+- **Decision (#927):** the walk's definite-assignment set gives a `{% block %}` body no outer bound names, which is conservative because a block renders from the context. The check keeps Jinja's list and drops only a name the walk read solely where it is bound on every path, so a name the walk never read stays refused.
+  **Why:** planner discretion: subtract what the walk proves, which is safer for unmodelled constructs.
+  **Issue:** #927
+- **Decision (#918):** the live runs reach LM Studio at `http://localhost:1235/v1`, because Docker holds `:1234` on this machine. They use the certifications' embedding id, `text-embedding-nomic-embed-text-v1.5`; LM Studio also lists it with an `-embedding` suffix, and both answer with 768 dimensions. `--embedding-api-key lm-studio` is passed so the Anthropic key is never sent to the local server.
+  **Issue:** #918
+- **Blocker (#918):** q01's setup refusal on hosted Haiku is an `Uncertain` failing closed. The model answered `{"violation": false}` with `confidence` 0.1–0.2, and `guardrail_check.j2` never says what `confidence` means. Replaying the traced requests with a one-sentence definition moved the stubborn check from 0.1 to 0.8–0.9. The fix is in the template every guardrail policy shares, which the owner's R2 (a) excluded (only the minors policy's `PROMPT` was to change). It is a guardrail-posture change beyond an owner decision, so #918 is `blocked` + `needs-owner-action` with four options; option 1, define `confidence` in `guardrail_check.j2`, is recommended. #818 stays blocked behind #918. Paid runs used: 1 of 5 (the diagnostic q01 run), plus three cents' worth of direct replay calls.
+  **Issue:** #918, #818
+- **Decision (#785):** the probe measured a cold compile above every threshold for exactly one schema: `RewriteParseResult`, 128.6, 138.8 and 134.1 s; every other schema took 1.9–6.6 s. `RatingSuggestionVerdict` was next at 6.6 s. Applying the plan: `evals.runner.CALL_TIMEOUT_S` 120 → 210 s (1.5 × 138.8 s, eval-harness config; the fingerprint covers model ids and versions, not call params, so no preset moves); a hand-written README section with the table; and, because `rewrite_parse` is clamped by its code deadline (`PARSE_DEADLINE_S` 120 s) so no configuration can absorb it, the engine fix filed as #941 (needs-triage, four options). No turn purpose exceeds 45 s, so no preset changes. Render schemas have no strict wire form and are not probed. Paid run 2 of 5.
+  **Issue:** #785, #941

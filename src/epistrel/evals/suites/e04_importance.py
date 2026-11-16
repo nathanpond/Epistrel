@@ -110,6 +110,10 @@ class E04Suite(Suite):
         scores = [float(o.detail["score"]) for o in scored]
         return {SPEARMAN: Value(spearman(scores, labels), len(scored))}
 
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: as an ``Uncertain`` answer is: not scored, and not above the median."""
+        return frozenset({SCORED, ABOVE_MEDIAN})
+
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, ImportanceCase)  # noqa: S101 - load() validated it as case_model
         return {IMPORTANCE_SCORING.name: case.stub_answer}

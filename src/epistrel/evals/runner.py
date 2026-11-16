@@ -69,11 +69,15 @@ control or a repair, and the suite's floors are judged on its completed cases (t
 rule's 300 cases are completed ones: a seed short of them because of model errors is
 ``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
 decision of 2026-10-24: model-robustness floors belong to M11, ADR-164). Every other suite (M4's)
-observes the error as bad on every metric (#134). Either way the failure record's ``detail``
-carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
-reason, the attempts and the structural error codes). A ``GuardrailViolation`` is the model's
-verdict too (a model-assisted policy check refused the content, FR-GUARD-10,11; #738): during a
-case it fails the case like a ``ModelError`` (``model_error`` ``guardrail_violation``), and
+observes the error as bad on the metrics its case's label puts it in (``Suite.error_metrics``,
+#530, ADR-194: an error on an E-01 case labelled ``supported`` is a missed ``supported``, a
+false contradiction, and never a false support) and leaves the rest unobserved; a suite that
+declares nothing observes it as bad on every metric (#134). Either way the failure record's
+``detail`` carries the error's code and its content-free details (``ERROR_DETAILS``: the
+purpose, the reason, the attempts and the structural error codes). A ``GuardrailViolation``
+is the model's verdict too (a model-assisted policy check refused the content,
+FR-GUARD-10,11; #738): during a case it fails the case like a ``ModelError`` (``model_error``
+``guardrail_violation``), and
 during a suite's setup it fails the suite with no cases (``SuiteResult.refused``), the run going
 on. Any other exception, or a malformed labeled set, is a **harness error**: the suite's verdict
 is ``error``. Each failed case's inputs
@@ -123,8 +127,10 @@ from epistrel.core.seeds import profiles as seeded_profiles
 from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
+from epistrel.evals.busy import CURRENT as BUSY
+from epistrel.evals.busy import BusyRetry, Stopped, busy_engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
-from epistrel.evals.journal import Journal
+from epistrel.evals.journal import Journal, case_digest
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
 from epistrel.evals.presets import (
     DEFAULT_PRESET,
@@ -145,6 +151,7 @@ from epistrel.evals.report import (
     SuiteResult,
 )
 from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite, Summary
+from epistrel.evals.trace import CallTrace, CaseKey
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.access import EVAL_SCOPE, ModelAccessLayer, eval_scope
@@ -172,7 +179,10 @@ PRINCIPAL = "system:evals"
 """The in-process principal every eval operation runs as (no credential: the library path)."""
 SCRATCH_PREFIX = "scratch-eval-"
 SCRATCH_DEADLINE_MS = 300_000
-CALL_TIMEOUT_S = 120.0
+CALL_TIMEOUT_S = 210.0
+"""The harness's per-call timeout (``model_config`` ``default``): 1.5 x the slowest cold strict
+schema compile measured on api.anthropic.com (#785: ``RewriteParseResult``, 138.8 s), so a
+first use of a schema is measured, not cut off. A call's own deadline still clamps it."""
 DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
@@ -194,11 +204,6 @@ class EndpointUnavailable(Exception):
 
 class NotScratch(Exception):
     """The quality judge was asked about a story that is not one of the eval's scratch stories."""
-
-
-class Stopped(Exception):
-    """The run was asked to stop (``SuiteRun.stop``): no new case started, the ones in flight
-    finished and were journalled, and nothing was reported."""
 
 
 class CalibrationMissing(Exception):
@@ -754,6 +759,9 @@ class SuiteRun:
     dials: Mapping[str, Any] | None = None
     """The run's own settings merge patch (#913: ``run --dial``), under each suite's
     ``Suite.dials``; ``None``: the preset as it is."""
+    trace: CallTrace | None = None
+    """The run's per-call trace (#737, ``evals.trace``): each case's calls, written as it
+    ends; ``None``: no trace."""
 
 
 def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
@@ -788,9 +796,22 @@ def planned_cases(
 
 
 async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Played:
-    scratch = Scratch(job.engine, f"{job.run_id}-{case.id}-{seed}")
+    # #929: the case's engine calls (and its scratch stories') retry its story's StoryBusy.
+    engine = busy_engine(job.engine)
+    budget = BusyRetry(stop=job.stop, db=job.engine.db)
+    busy_token = BUSY.set(budget)
+    try:
+        return await _play_case(suite, job, case, seed, engine, budget)
+    finally:
+        BUSY.reset(busy_token)
+
+
+async def _play_case(
+    suite: Suite, job: SuiteRun, case: CaseModel, seed: int, engine: Engine, budget: BusyRetry
+) -> _Played:
+    scratch = Scratch(engine, f"{job.run_id}-{case.id}-{seed}")
     ctx = CaseContext(
-        job.engine,
+        engine,
         scratch,
         seed,
         job.run_id,
@@ -805,7 +826,9 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
         with eval_scope(case.id, seed):
             outcome = await suite.evaluate(ctx, case)
     except (ModelError, GuardrailViolation) as exc:
-        outcome = model_error_outcome(suite, exc)
+        outcome = model_error_outcome(suite, exc, case)
+    except Stopped:
+        raise
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
     finally:
@@ -813,7 +836,10 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
             await scratch.delete_all()
         except Exception as exc:
             error = error or f"case {case.id} seed {seed}: cleanup failed: {type(exc).__name__}"
-    latency = round((time.perf_counter() - started) * 1000)
+    # #929: time spent waiting out StoryBusy is not the case's latency.
+    latency = max(round((time.perf_counter() - started) * 1000) - budget.slept_ms, 0)
+    if outcome is not None and budget.retries:
+        outcome = replace(outcome, detail={**outcome.detail, "story_busy_retries": budget.retries})
     errored = suite.model_error_metric
     if outcome is not None and errored is not None and errored not in outcome.observations:
         outcome = replace(outcome, observations={**outcome.observations, errored: True})
@@ -825,22 +851,32 @@ ERROR_DETAILS = ("purpose", "reason", "provider_status", "attempts", "structural
 and counts, never the model's answer or the prompt (invariant 3)."""
 
 
-def model_error_outcome(suite: Suite, exc: ModelError | GuardrailViolation) -> Outcome:
-    """A case that ended in ``exc``, a model error or a guardrail refusal (module docstring):
-    with the suite's model-error row, that row observes it as bad and nothing else is observed;
-    without one, every metric is bad (#134). ``detail`` names the error: its code, class and
-    ``ERROR_DETAILS``."""
+def model_error_outcome(
+    suite: Suite, exc: ModelError | GuardrailViolation, case: CaseModel | None = None
+) -> Outcome:
+    """A case that ended in ``exc``, a model error or a guardrail refusal (module docstring).
+    With the suite's model-error row, that row observes it as bad. Without one, the metrics
+    ``Suite.error_metrics`` declares for ``case`` observe it as bad and the rest observe
+    nothing (#530); a suite that declares nothing has every metric bad (#134). ``detail``
+    names the error (its code, class and ``ERROR_DETAILS``) and carries
+    ``Suite.error_detail``'s counts."""
     errored = suite.model_error_metric
+    declared = suite.error_metrics(case) if case is not None else None
     observations: dict[str, bool | None]
-    if errored is None:
-        observations = {metric.id: False for metric in suite.metrics}
-    else:
+    if errored is not None:
         observations = {metric.id: None for metric in suite.metrics}
         observations[errored] = False
+    elif declared is None:
+        observations = {metric.id: False for metric in suite.metrics}
+    else:
+        observations = {
+            metric.id: False if metric.id in declared else None for metric in suite.metrics
+        }
     details = {k: exc.details[k] for k in ERROR_DETAILS if k in exc.details}
+    extra = dict(suite.error_detail(case)) if case is not None else {}
     return Outcome(
         observations,
-        detail={"model_error": exc.code, "error_type": type(exc).__name__, **details},
+        detail={**extra, "model_error": exc.code, "error_type": type(exc).__name__, **details},
     )
 
 
@@ -902,7 +938,13 @@ async def _play_seeds(
         async with gate_slots:
             if job.stop is not None and job.stop.is_set():
                 return None
-            played = await _play(suite, job, case, seed)
+            if job.trace is None:
+                played = await _play(suite, job, case, seed)
+            else:
+                key = CaseKey(suite.name, own_fingerprint, case.id, case_digest(case), seed)
+                # A case cancelled mid-play writes nothing: it plays again on resume (#737).
+                with job.trace.case(key) as held:
+                    played = await _play(suite, job, case, seed)
         if job.journal is not None and played.error is None and played.outcome is not None:
             job.journal.record(
                 suite.name,
@@ -915,6 +957,8 @@ async def _play_seeds(
                 model_version=job.model_version,
                 preset=job.config.preset,
             )
+        if job.trace is not None:
+            job.trace.finish(held, complete=played.error is None and played.outcome is not None)
         job.progress.case_done(
             suite.name,
             seed,
@@ -990,11 +1034,11 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     lost: dict[int, int] = {}
     job.progress.suite_started(suite.name, len(cases), len(job.seeds))
     try:
-        await suite.setup(job.engine, _ctx())
+        await suite.setup(busy_engine(job.engine), _ctx())
     except GuardrailViolation as exc:
         # The model's guardrail refused the fixture (#738): a verdict, not a harness error.
         with contextlib.suppress(Exception):
-            await suite.teardown(job.engine, _ctx())
+            await suite.teardown(busy_engine(job.engine), _ctx())
         return SuiteResult.refused(suite, f"setup: {type(exc).__name__}: {exc}", list(job.seeds))
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
@@ -1002,7 +1046,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         await _play_seeds(suite, job, cases, tallies, errors, latencies, gate_slots, every, lost)
     finally:
         try:
-            await suite.teardown(job.engine, _ctx())
+            await suite.teardown(busy_engine(job.engine), _ctx())
         except Exception as exc:
             errors.append(f"teardown: {type(exc).__name__}: {exc}")
     summary = Summary()
@@ -1171,6 +1215,7 @@ async def run_suites(
     stop: asyncio.Event | None = None,
     progress: Progress | None = None,
     dials: Mapping[str, Any] | None = None,
+    trace: CallTrace | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1199,7 +1244,10 @@ async def run_suites(
     ``journal`` (#730, ``evals.journal``): the cases it holds are taken from it and every case
     played is written to it, and the report says so (``Report.resumed``). Once ``stop`` is set,
     no new case starts and ``Stopped`` is raised after the cases in flight end. ``progress``
-    sees each suite start and each case end."""
+    sees each suite start and each case end.
+
+    ``trace`` (#737, ``evals.trace``): the run's per-call trace, on for the run's model calls;
+    the judge calibration's calls are recorded under ``phase: calibration``."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -1241,7 +1289,7 @@ async def run_suites(
         engine_for(config, engine) as live,
         judge_layer_for(config, live) as judging,
     ):
-        with routed(live, config):
+        with routed(live, config), _tracing(trace):
             if probed is not None:
                 report.model_version, judge_version = probed
             else:
@@ -1258,15 +1306,16 @@ async def run_suites(
                     else None,
                 )
             if calibrate:
-                stored = await calibrate_judge(
-                    live,
-                    config,
-                    sets_dir=sets_dir,
-                    model_version=judge_version,
-                    flip=calibration_flip,
-                    seed=seed_base,
-                    judge_layer=judging,
-                )
+                with _phase(trace, "calibration"):
+                    stored = await calibrate_judge(
+                        live,
+                        config,
+                        sets_dir=sets_dir,
+                        model_version=judge_version,
+                        flip=calibration_flip,
+                        seed=seed_base,
+                        judge_layer=judging,
+                    )
                 judges.save(store, stored)
             await sweep(live)
             before = await story_rows(live.db)
@@ -1290,6 +1339,7 @@ async def run_suites(
                 progress=progress or Progress(),
                 model_version=report.model_version,
                 dials=dict(dials) if dials else None,
+                trace=trace,
             )
             preset_token = RUN_PRESET.set(chosen)
             try:
@@ -1316,6 +1366,25 @@ async def run_suites(
         )
     report.finish(datetime.now(UTC))
     return report
+
+
+@contextlib.contextmanager
+def _tracing(trace: CallTrace | None) -> Iterator[None]:
+    """``trace`` on for the calls made inside (nothing for ``None``)."""
+    if trace is None:
+        yield
+        return
+    with trace.active():
+        yield
+
+
+@contextlib.contextmanager
+def _phase(trace: CallTrace | None, name: str) -> Iterator[None]:
+    if trace is None:
+        yield
+        return
+    with trace.phase(name):
+        yield
 
 
 def routed_purposes(config: AdapterConfig) -> list[str] | None:
@@ -1360,21 +1429,24 @@ async def run_calibration(
     sets_dir: Path = DEFAULT_SETS_DIR,
     calibration_file: Path | None = None,
     flip: Collection[str] = (),
+    trace: CallTrace | None = None,
 ) -> judges.Calibration:
     """``calibrate-judge``: preflight the endpoint, calibrate its judge and store the result
-    (``calibration_path`` unless ``calibration_file``)."""
+    (``calibration_path`` unless ``calibration_file``); ``trace`` (#737) records the judge's
+    calls under ``phase: calibration``."""
     async with engine_for(config, engine) as live, judge_layer_for(config, live) as judging:
         version = await preflight(live, config)
         if config.judge_model is not None:
             version = await judge_preflight(judging, config)
-        found = await calibrate_judge(
-            live,
-            config,
-            sets_dir=sets_dir,
-            model_version=version,
-            flip=flip,
-            judge_layer=judging,
-        )
+        with _tracing(trace), _phase(trace, "calibration"):
+            found = await calibrate_judge(
+                live,
+                config,
+                sets_dir=sets_dir,
+                model_version=version,
+                flip=flip,
+                judge_layer=judging,
+            )
     judges.save(calibration_file or calibration_path(config), found)
     return found
 

@@ -38,7 +38,7 @@ from epistrel.core.enums import MemoryKind
 from epistrel.core.memory.consolidation import Window
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.core.tables.memories import memories
-from epistrel.evals import scenes
+from epistrel.evals import scenes, trace
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.orchestrator.budget import TurnBudget
@@ -109,13 +109,16 @@ def cast_of(actor: str, other: str) -> list[CharacterSpec]:
 
 async def judge(models: ModelAccessLayer, claim: str, sources: list[str]) -> bool:
     """Whether the ``entailment`` purpose finds ``claim`` entailed by ``sources``."""
-    answer = await models.structured_call(
-        ENTAILMENT.name,
-        EntailmentVerdict,
-        EntailmentInputs(claim=claim[:1000], records=[EntailmentRecord(text=s) for s in sources]),
-        deterministic_first=lambda: None,
-        budget=TurnBudget(deadline_s=JUDGE_DEADLINE_S),
-    )
+    with trace.judging():  # #737: the harness's judge, marked in the call trace
+        answer = await models.structured_call(
+            ENTAILMENT.name,
+            EntailmentVerdict,
+            EntailmentInputs(
+                claim=claim[:1000], records=[EntailmentRecord(text=s) for s in sources]
+            ),
+            deterministic_first=lambda: None,
+            budget=TurnBudget(deadline_s=JUDGE_DEADLINE_S),
+        )
     if isinstance(answer, Uncertain):
         return False
     return answer.verdict == "supported" and answer.confidence >= MIN_CONFIDENCE
@@ -204,6 +207,12 @@ class E03Suite(Suite):
             "entailed": entailed,
         }
         return Outcome(observations, output=json.dumps(reflections), detail=detail)
+
+    def error_metrics(self, case: CaseModel) -> frozenset[str]:
+        """#530: a window the model errored on produced no reflection, so it counts against
+        ``produced`` and faithfulness (a reflection was owed); the judge's agreement with the
+        labels was not measured."""
+        return frozenset({PRODUCED, FAITHFULNESS})
 
     def script_stub(self, case: CaseModel, stub: StubAdapter) -> None:
         assert isinstance(case, ConsolidationCase)  # noqa: S101 - load() validated it

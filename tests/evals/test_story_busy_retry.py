@@ -11,6 +11,7 @@ No test here carries a part marker: this is harness tooling, not a requirement's
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -174,10 +175,17 @@ class LockedEpisodeSuite(SyntheticZeroSuite):
 
 @pytest.mark.integration
 async def test_a_commit_refused_on_a_held_story_lock_is_retried(
-    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    pg_url: str,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Reproduced first on the pre-fix harness (a harness error ``StoryBusy: … another commit
-    held its lock``); now the episode is written once, after one retry."""
+    held its lock``); now the episode is written once, after one retry, and the retry logs a
+    warning naming the story and what held a ``stories`` lock then (here the holder may already
+    have let go, so only the warning itself is asserted)."""
+    caplog.set_level(logging.WARNING, logger="epistrel.evals.busy")
     monkeypatch.setattr(operation, "LOCK_RETRY_AFTER_S", 0)
     suite = LockedEpisodeSuite(monkeypatch)
     journal = Journal.open(tmp_path / "l.jsonl", model=STUB_MODEL, fingerprint=FINGERPRINT)
@@ -195,6 +203,9 @@ async def test_a_commit_refused_on_a_held_story_lock_is_retried(
     assert (metric.sample_size, metric.violations) == (1, 0)
     (row,) = journal.entries.values()
     assert row.outcome.detail["story_busy_retries"] == 1
+    warned = [r.getMessage() for r in caplog.records if r.name == "epistrel.evals.busy"]
+    assert len(warned) == 1
+    assert "busy (lock_timeout); retrying. Holders of a stories lock:" in warned[0]
 
 
 def test_the_proxy_passes_plain_attributes_through() -> None:

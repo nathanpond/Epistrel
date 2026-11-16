@@ -798,7 +798,7 @@ def planned_cases(
 async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Played:
     # #929: the case's engine calls (and its scratch stories') retry its story's StoryBusy.
     engine = busy_engine(job.engine)
-    budget = BusyRetry(stop=job.stop)
+    budget = BusyRetry(stop=job.stop, db=job.engine.db)
     busy_token = BUSY.set(budget)
     try:
         return await _play_case(suite, job, case, seed, engine, budget)

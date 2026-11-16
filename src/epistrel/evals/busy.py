@@ -15,7 +15,10 @@ configuration problem, not contention, and is never retried. Any other error is 
 
 It covers every call a case makes on its ``Engine`` (``BusyEngine``, the proxy ``CaseContext``,
 the case's scratch stories and a suite's setup and teardown are given) and the harness's own
-commits (``scenes.episodes``). Backoff time is not case latency (``slept_ms``), and the number
+commits (``scenes.episodes``). A ``lock_timeout`` logs, at warning, the backends then holding
+a lock on ``stories`` (``log_holders``: state, the first 80 characters of the statement and the
+transaction's age; SQL, never content), so a run that meets one names what held the row.
+Backoff time is not case latency (``slept_ms``), and the number
 of retries goes into the case's ``detail`` (``story_busy_retries``) when there were any. Once a
 run's ``stop`` is set (Ctrl-C), a case waiting in backoff ends with ``Stopped``.
 """
@@ -26,20 +29,26 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import text
+
 from epistrel.core.errors import StoryBusy
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
     from epistrel.engine import Engine
 
 BOUND_S = 30.0
 """The most a case spends retrying ``StoryBusy``: calls and backoff together."""
 FIRST_WAIT_S = 0.25
 MAX_WAIT_S = 5.0
+log = logging.getLogger(__name__)
 RETRIED = frozenset({"lock_timeout", "in_flight"})
 """The ``StoryBusy`` reasons that mean contention (``queue_full`` is not)."""
 
@@ -59,10 +68,12 @@ class BusyRetry:
         bound_s: float | None = None,
         stop: asyncio.Event | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        db: AsyncEngine | None = None,
     ) -> None:
         self.bound_s = BOUND_S if bound_s is None else bound_s
         self.stop = stop
         self._sleep = sleep
+        self.db = db
         self.retries = 0
         self.slept_s = 0.0
         self._started: float | None = None
@@ -83,6 +94,8 @@ class BusyRetry:
             except StoryBusy as exc:
                 if exc.details.get("reason") not in RETRIED:
                     raise
+                if exc.details.get("reason") == "lock_timeout" and self.db is not None:
+                    await log_holders(self.db, exc)
                 left = self.bound_s - (time.monotonic() - self._started)
                 pause = min(max(float(exc.retry_after or 0), wait), MAX_WAIT_S)
                 if left <= 0 or pause > left:
@@ -110,6 +123,34 @@ class BusyRetry:
                 raise Stopped("stopped while a case waited for its story")
         finally:
             self.slept_s += time.monotonic() - started
+
+
+HOLDERS = text(
+    "SELECT a.pid, a.state, a.wait_event_type, left(a.query, 80) AS query, "
+    "round(extract(epoch FROM now() - a.xact_start)::numeric, 1) AS xact_s "
+    "FROM pg_stat_activity a WHERE a.pid <> pg_backend_pid() AND a.xact_start IS NOT NULL "
+    "AND a.pid IN (SELECT l.pid FROM pg_locks l WHERE l.granted "
+    "AND l.relation = 'stories'::regclass)"
+)
+"""#929: the backends holding a lock on ``stories`` when a commit timed out on its story's row:
+their state, the first 80 characters of their current or last statement (parameterized SQL,
+never story content) and their transaction's age."""
+
+
+async def log_holders(db: AsyncEngine, exc: StoryBusy) -> None:
+    """Log what held the story's row when a case's commit was refused (#929), so a CI run that
+    meets ``lock_timeout`` names the holder. Best effort: a failed look is logged as such."""
+    try:
+        async with db.connect() as conn:
+            rows = [dict(r._mapping) for r in await conn.execute(HOLDERS)]
+    except Exception as failed:
+        log.warning("evals: story busy (lock_timeout); holders unknown: %s", type(failed).__name__)
+        return
+    log.warning(
+        "evals: story %s busy (lock_timeout); retrying. Holders of a stories lock: %s",
+        exc.details.get("story_id"),
+        rows or "none left",
+    )
 
 
 CURRENT: ContextVar[BusyRetry | None] = ContextVar("BUSY_RETRY", default=None)

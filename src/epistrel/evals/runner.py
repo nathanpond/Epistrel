@@ -179,7 +179,10 @@ PRINCIPAL = "system:evals"
 """The in-process principal every eval operation runs as (no credential: the library path)."""
 SCRATCH_PREFIX = "scratch-eval-"
 SCRATCH_DEADLINE_MS = 300_000
-CALL_TIMEOUT_S = 120.0
+CALL_TIMEOUT_S = 210.0
+"""The harness's per-call timeout (``model_config`` ``default``): 1.5 x the slowest cold strict
+schema compile measured on api.anthropic.com (#785: ``RewriteParseResult``, 138.8 s), so a
+first use of a schema is measured, not cut off. A call's own deadline still clamps it."""
 DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"

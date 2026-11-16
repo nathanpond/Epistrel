@@ -440,6 +440,64 @@ uv run python -m epistrel.evals run --suite q06 --suite q01 --suite q03 --suite 
 Each run writes its report to `docs/evals/full-<fingerprint>-<date>.md` and regenerates
 `INDEX.md`. Commit both reports, and post the per-kind rows of each run side by side on #868.
 
+## First use of a strict schema on api.anthropic.com (#785)
+
+api.anthropic.com compiles a strict `json_schema` into a grammar the first time it sees it and
+caches it, so a structured purpose's first call after the cache expires can be much slower than
+the next. `epistrel.tools.schema_compile_probe` measures this. For every schema a structured
+call may send strictly (render schemas have no strict wire form and are never sent strictly), it
+sends a cold call and then a warm call. A per-round nonce property makes each round's schemas
+new to the endpoint. The assumption is that the cache is keyed on the schema itself, so no
+expiry wait is needed:
+
+```sh
+uv run python -m epistrel.tools.schema_compile_probe \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 --rounds 3
+```
+
+Measured 2026-11-16 (one run, sequential, 600 s client timeout, `max_tokens` 64):
+
+Model `claude-haiku-5-5`, 3 rounds, cold then warm per schema, sequential (seconds; cold = a schema new to the endpoint, by a per-round nonce property).
+
+| Schema | Cold (each round) | Warm (each round) | Max cold |
+|---|---|---|---|
+| `BeliefAdjudicationResult` | 2.6, 2.5, 2.5 | 1.7, 1.7, 1.7 | 2.6 |
+| `ConsolidationResult` | 3.3, 2.8, 2.7 | 2.2, 1.7, 1.8 | 3.3 |
+| `DirectorOrder` | 2.2, 2.2, 2.1 | 1.6, 2.1, 1.6 | 2.2 |
+| `DirectorTiebreak` | 2.2, 2.8, 3.1 | 1.8, 1.7, 1.7 | 3.1 |
+| `EntailmentVerdict` | 1.9, 1.9, 2.2 | 1.6, 1.7, 1.8 | 2.2 |
+| `ExtractionResult` | 3.3, 3.2, 3.2 | 1.9, 1.7, 1.7 | 3.3 |
+| `GuardrailVerdict` | 2.7, 2.1, 2.5 | 1.5, 1.5, 1.5 | 2.7 |
+| `ImagePromptResult` | 2.2, 2.2, 2.6 | 1.7, 1.5, 1.5 | 2.6 |
+| `ImportanceScore` | 2.3, 2.1, 2.4 | 1.8, 1.8, 1.5 | 2.4 |
+| `LiteRewriteParseResult` | 2.6, 2.5, 2.4 | 1.7, 0.8, 0.9 | 2.6 |
+| `LiteRewriteReachResult` | 2.5, 3.4, 2.4 | 1.8, 1.5, 2.2 | 3.4 |
+| `QualityJudgeVerdict` | 2.6, 2.2, 2.3 | 1.6, 1.9, 1.5 | 2.6 |
+| `RatingSuggestionVerdict` | 6.0, 5.9, 6.6 | 1.9, 1.8, 2.0 | 6.6 |
+| `RewriteParseResult` | 128.6, 138.8, 134.1 | 1.8, 2.0, 1.7 | 138.8 |
+| `RewrittenRecord` | 2.3, 2.3, 2.3 | 1.4, 1.6, 1.5 | 2.3 |
+| `SalienceResult` | 3.7, 3.2, 2.9 | 1.7, 1.7, 1.6 | 3.7 |
+| `TimeEstimate` | 2.4, 2.9, 2.4 | 1.8, 1.7, 1.6 | 2.9 |
+
+Largest cold call: 138.8 s.
+- It exceeds 45 s, Standard's and Full's per-call deadline.
+- It exceeds 60 s, the default per-call timeout (`DEFAULT_TIMEOUT_S`).
+- It exceeds 120 s, the eval harness's per-call timeout (`CALL_TIMEOUT_S`) when measured; it is now 210 s (below).
+
+**What it means.** Only `rewrite_parse` (`RewriteParseResult`) is slow, at about 2.2 minutes
+cold, every round, against about 2 s warm. Every other schema compiles in under 7 s. A turn's
+structured calls are within Standard's and Full's 45 s per-call bound.
+
+- **The eval harness** sets every purpose's timeout to `evals.runner.CALL_TIMEOUT_S`, now 210 s
+  (1.5 x 138.8 s), so a certification run measures a schema's first use instead of losing the
+  case to it. No suite calls `rewrite_parse` today.
+- **A deployment on api.anthropic.com:** the first `POST …/rewrites` parse after the grammar
+  cache expires is likely to fail with 503 `model_unavailable` (`timeout`). Raising
+  `rewrite_parse`'s `params.timeout` in `/admin/model-config` does not help, because the parse's
+  own deadline (`rewrite.parse.PARSE_DEADLINE_S`, 120 s) clamps the call. Whether the provider
+  keeps a grammar compiled by a call the client gave up on was not measured. Until #941 (the engine
+  fix) is decided, retry a failed parse after a few minutes.
+
 ## The quality judge and its calibration (#158)
 
 E-12 is judged by the `quality_judge` purpose (the `default` model unless `/admin/model-config`

@@ -1111,6 +1111,23 @@ READ_NOT_CALLED: list[tuple[str, str]] = [
         "ASH",
     ),
     ("{% set p = inputs['pop'] %}{% set p, q = [inputs.voter.lower, 1] %}{{ p() }}", "ash"),
+    # #931: a loop target shadows a live outer alias.
+    (
+        "{% set p = inputs['pop'] %}{% for p in [inputs.voter.upper] %}{{ p() }}{% endfor %}",
+        "ASH",
+    ),
+    # #931: a for body's bindings end with the loop (its else sees the outer name).
+    (
+        "{% set p = inputs.voter.upper %}{% for x in [] %}{% set p = inputs['pop'] %}"
+        "{% else %}{{ p() }}{% endfor %}",
+        "ASH",
+    ),
+    # #931: a missing else is a branch of the if-merge, which leaves the outer name.
+    (
+        "{% set p = inputs.voter.upper %}{% if not inputs.c %}{% set p = inputs['pop'] %}"
+        "{% endif %}{{ p() }}",
+        "ASH",
+    ),
     # #930: a rebinding inside a set block or a filter block does not reach the call.
     (
         "{% set p = inputs.voter.upper %}{% set q %}{% set p = inputs['pop'] %}{% endset %}"
@@ -1138,7 +1155,9 @@ def test_i_29__m9_mutating_calls() -> None:
     the key's value; and (#923) a name that is not that alias on every path to its call (a
     ``with`` scope ended, an ``if`` branch rebound it, a loop target shadows it) is accepted and
     renders. #930: a set block, filter block or autoescape block is a scope, so a rebinding
-    inside one neither hides the outer alias nor clears it."""
+    inside one neither hides the outer alias nor clears it. #931: one row pins each of the
+    walk's loop-target shadowing, loop-body scope and missing-else merge rules (each fails
+    when its rule is removed)."""
     inputs = {
         "voter": "Ash",
         "list": [1, 2, 3],

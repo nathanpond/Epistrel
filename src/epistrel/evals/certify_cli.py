@@ -506,6 +506,7 @@ async def _certify_one(
             sample=args.sample,
             full=args.full,
             seed_base=args.seed_base,
+            live=adapter != "stub",
         )
         for n in names
     )

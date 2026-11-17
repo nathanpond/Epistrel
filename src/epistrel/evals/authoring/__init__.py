@@ -6,7 +6,8 @@ from hand-written templates (no model), one module per set.
 ``python -m epistrel.evals author`` writes every generated set under ``evals/sets/``;
 ``--check-sets`` (CI's lint job) fails when a committed set differs from what its module
 generates, so a set changes only through its reviewed authoring module. The smoke and E-02 sets
-(#134, #155) are hand-written and not generated here.
+(#134, #155) are hand-written and not generated here. #938's per-type E-12 intervention sets
+(``interventions``) are sized by their directory's ``sizing.json``, so ``generated`` reads it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from epistrel.evals.authoring import (
     entailment,
     entailment_viewpoint,
     importance,
+    interventions,
     judge_calibration,
     relationships,
     retrieval,
@@ -67,13 +69,23 @@ def render(cases: list[dict[str, Any]]) -> str:
     return "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cases)
 
 
+def generated(sets_dir: Path) -> dict[str, str]:
+    """Every generated set's path under ``sets_dir`` → its text: ``GENERATORS``' sets, and
+    #938's per-type E-12 intervention sets at the sizes their ``sizing.json`` derives
+    (``interventions.generators``)."""
+    found = {relative: render(generate()) for relative, generate in GENERATORS.items()}
+    for relative, rows in interventions.generators(sets_dir).items():
+        found[relative] = render(list(rows))
+    return found
+
+
 def write(sets_dir: Path) -> list[Path]:
     """Write every generated set; the paths written."""
     written = []
-    for relative, generate in GENERATORS.items():
+    for relative, text in generated(sets_dir).items():
         path = sets_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render(generate()), encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
         written.append(path)
     return written
 
@@ -84,9 +96,9 @@ def stale(sets_dir: Path) -> list[str]:
     regenerated here; instead every line of its manifest, when there is one, must validate
     (the schema and the safety rule, ``evals.e11_safety``)."""
     found = []
-    for relative, generate in GENERATORS.items():
+    for relative, text in generated(sets_dir).items():
         path = sets_dir / relative
-        if not path.is_file() or path.read_text(encoding="utf-8") != render(generate()):
+        if not path.is_file() or path.read_text(encoding="utf-8") != text:
             found.append(f"{relative} differs from what its authoring module generates")
     return found + e11_manifest_problems(sets_dir)
 
@@ -105,4 +117,12 @@ def e11_manifest_problems(sets_dir: Path) -> list[str]:
     return []
 
 
-__all__ = ["E11_MANIFEST", "GENERATORS", "e11_manifest_problems", "render", "stale", "write"]
+__all__ = [
+    "E11_MANIFEST",
+    "GENERATORS",
+    "e11_manifest_problems",
+    "generated",
+    "render",
+    "stale",
+    "write",
+]

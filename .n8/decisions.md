@@ -15196,3 +15196,30 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #935, #953
 - **Decision (#953, planner discretion):** the lock is one `asyncio.Lock` per running event loop (`runner.scratch_ddl_lock`, a `WeakKeyDictionary` keyed by the loop). An eval process runs one loop, so the lock covers the whole run across suites, and a test on a fresh loop never meets a lock bound to another loop (a module-level lock would). It covers only `Engine.create_story` and `Engine.delete_story`: the profile-override write after a create, and every turn and commit, stay outside, so cases still overlap. `sweep` takes it too. The suite-level setup stories go through `Scratch`, so they share it.
   **Issue:** #953
+- **Decision:** #938 goes on its own branch (`milestone/m11-run4-sets`, from `milestone/m11-run4`) and its own PR. Its PR waits for your approval of the samples, and one shared PR would have held #953 too.
+  **Issue:** #938, #953
+- **Fix (Rule 3, blocker; found by #938's live smoke):** E-12 direct mode's render pin never held on a live run. On an endpoint not in JSON-schema mode (hosted Haiku for the render schema), `structured_messages` sends `response_schema=None` and puts the schema in the prompt, so `runner.pinned_call`'s schema-class check never matched. Every direct case on Haiku played the model's own render, not the prepared draft (probe: finals unrelated to the drafts; a routing trace showed `generation schema=NoneType … real=True`). The fix: `call_trace.STRUCTURED_MODEL` (beside `STRUCTURED_SCHEMA`) carries the schema class the call is for, set by `structured_messages`, and `pinned_call` reads it when no schema is sent. Regression tests in `tests/evals/test_pinned_render.py` (a routed run of one direct case with JSON-schema mode off); both fail without the fix. #936's stub tests could not see this: on the stub every call goes to the stub. The change in `epistrel.orchestrator` is one context variable, set and reset where `STRUCTURED_SCHEMA` already is.
+  **Issue:** #938, #936
+- **Fix (Rule 1, #937's rule; found live):** `direct_outcome` counted an identity case as `broken` (raising `IdentityBroken`) whenever its type fired and the prose changed, even when another intervention made the change (live: a rung-3 repair of a beat beside the introduction, or the polish). Such a case is now a `mismatch`. `broken` is kept for an identity type that fired alone and changed the prose. Tests added to `test_e_12__direct_outcome_and_mode`.
+  **Issue:** #938, #937
+- **Decision (#938, planner discretion, recipe from live probes):** The rung recipes are one `do` beat with no `say`. A line of Bobby's beside the trigger carried claims that were repaired in their own right (a second rung on another beat), and a single beat is never polished, so the pair compares the draft with the declared rung's change alone.
+  - **Rung 4:** two contradicting beats and the per-case dial `repair.max_attempts: 1`. The planned `max_attempts: 0` switches the repair module off (`pipeline.repair_on`), so nothing fired. With one attempt for two beats, at least one falls to the safe fallback, the path a turn out of attempts takes. The dial is part of the case and the set's digest.
+  - **Age repair:** Bobby names the newcomer in one short `say` line. In a `do` beat the newcomer's claims (at the door, into the parlor) were unresolved entities and got repaired, which changed the prose.
+  - **Probes** (7 + 7 + 6 cases on hosted Haiku, before the pilot): rung 1, 2, 3 and 4 each fired alone; the fallback fired as identity; age repair fired alone on the short-line recipe; `composition_polished` fired on both two- and three-beat turns.
+  **Issue:** #938
+- **Evidence (#938, paid runs):** the pilot `pilot-2026-11-16-e12` (hosted Haiku, Full, `structured`, self-judged, one seed; the first 40 cases per judged type, 60 per identity type; no harness errors).
+  - rung 1: tie 0.300, mismatch 0.100 → size 575.
+  - rung 2: tie 1.000 → no size.
+  - rung 3: tie 0.100, mismatch 0.475 → size 812.
+  - rung 4: tie 0.025 → size 360 (the floor).
+  - polished (first recipe): not triggered 0.225, mismatch 0.175, tie 0.375 → 1,534, over the ceiling. After the recipe fix, the re-pilot `pilot-2026-11-16-e12-polished`: not triggered 0.425, mismatch 0.250, tie 0.175 → about 2,300, still over.
+  - Identity: composition fallback 41 of 60 clean (first recipe), age repair 53 of 60.
+  - The committed sets' first cases are byte-identical to the piloted ones (checked). Both reports are committed under `evals/sets/interventions/pilots/`.
+  - Paid usage this run: three CLI runs (a 14-case smoke, the pilot, the re-pilot) and five in-process probes of 1 to 7 cases each, all hosted Haiku.
+  **Issue:** #938
+- **Decision (#938):** a `sizing.json` with `"size": null` and a `blocked` reason (rung 2, polished) passes `--check-sets` on a branch and fails where approval is required (`EPISTREL_REQUIRE_APPROVED_SETS=1`), as a `pending` PROVENANCE does. So an unsized set can never reach `main`. The blocked types keep their 40 piloted cases.
+  **Issue:** #938
+- **Blocker (#938, needs-owner-action):** `repair_rung_2` can never give a non-tied pair. A substitution changes only the place name, and the judge sees the passages masked and otherwise identical. Options on #938 (recommended (a): make rung 2 an identity-like row, amending ADR-196 and NFR-QUAL-14). `composition_polished` still has no size after one re-pilot (usable share 0.15); options on #938 (recommended (a): a diagnostic pass on why the polish so often changes nothing, then one more pilot). Also posted: on Haiku the judge preferred the draft in 24/24 rung-1 pairs and 24/39 rung-4 pairs, which is #474's tuning work. #474 stays blocked on #938.
+  **Issue:** #938, #474
+- **Hold:** PR for `milestone/m11-run4-sets` (#938). Waiting on the owner's calls for `repair_rung_2` and `composition_polished`, and the owner's approval of the sized sets from their `SAMPLE.md`. **Lifts when:** the owner answers both options on #938 and adds the `approved by owner YYYY-MM-DD` lines.
+  **Issue:** #938

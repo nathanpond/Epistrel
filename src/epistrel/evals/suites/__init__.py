@@ -153,7 +153,22 @@ class Suite:
 
     def load(self, sets_dir: Path) -> list[CaseModel]:
         """The suite's cases from ``<sets_dir>/<set_file>``."""
-        path = sets_dir / self.set_file
+        cases = self.load_file(sets_dir, self.set_file)
+        ids = [case.id for case in cases]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise MalformedCase(f"{self.name}: duplicate case ids {duplicates}")
+        return cases
+
+    def load_for(self, sets_dir: Path, *, live: bool) -> list[CaseModel]:
+        """The cases a run plays: ``load`` by default. A suite whose stub run and real-model run
+        play different sets overrides it (#938's E-12 direct mode: the scripted CI examples on
+        the stub, the per-type live sets otherwise)."""
+        return self.load(sets_dir)
+
+    def load_file(self, sets_dir: Path, set_file: str) -> list[CaseModel]:
+        """``set_file``'s cases, validated as ``load`` validates the suite's own set."""
+        path = sets_dir / set_file
         if not path.is_file():
             raise MalformedCase(f"{self.name}: no labeled set at {path}")
         cases: list[CaseModel] = []
@@ -165,10 +180,6 @@ class Suite:
             except (ValueError, ValidationError) as exc:
                 reason = exc.errors()[0]["msg"] if isinstance(exc, ValidationError) else str(exc)
                 raise MalformedCase(f"{self.name}: {path.name} line {number}: {reason}") from None
-        ids = [case.id for case in cases]
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicates:
-            raise MalformedCase(f"{self.name}: duplicate case ids {duplicates}")
         if not cases:
             raise MalformedCase(f"{self.name}: {path} holds no cases")
         return cases

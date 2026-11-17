@@ -40,6 +40,7 @@ from epistrel.evals.report import (
     render_markdown,
 )
 from epistrel.evals.runner import CalibrationMissing
+from epistrel.evals.suites import e12_direct, scenario_play
 from epistrel.evals.suites.e12_direct import (
     DIRECT_COMPLETED,
     E12_DIRECT,
@@ -322,25 +323,27 @@ _HOOKED = (
 )
 
 
+# One say beat, nothing else scripted: age_repair alone fires (#938).
 _BROKEN = (
     '{"id": "direct-test-broken", "type": "age_repair", "say": "Who knocked?", "beats": '
-    '[{"kind": "say", "text": "A courier, boss.", "intent": "sincere"}, {"kind": "do", "text": '
-    '"A courier waits on the step."}], "introduces": [{"name": "a courier", "age_range": [20, '
-    '60]}], "stub": {"composition": "{\\"text\\": \\"\\\\\\"A courier, boss,\\\\\\" Bobby '
-    'says. A courier waits on the step.\\"}"}}'
+    '[{"kind": "say", "text": "A courier, boss.", "intent": "sincere"}], "introduces": [{"name": '
+    '"a courier", "age_range": [20, 60]}]}'
 )
 
 
 @pytest.mark.part("M11", "NFR-QUAL-14")
-async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+async def test_e_12__direct_mode(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """#936, #937: the direct suite plays every example case once through the real turn
     pipeline (only the render pinned to the prepared draft). Every judged type yields pairs,
     the scripted judge's sides are the rows' rates, a tie adds no pair, and each row is
     ``insufficient_evidence`` under 300 pairs. Each identity type fired on five cases, every one
     released unchanged: its row counts them and is ``insufficient_evidence`` below 50.
     Complements: a draft that contradicts nothing is ``not_triggered`` and adds no pair, and
-    so is an introduction that gave its age; an identity case whose polish is forced to alter
-    the text is a harness error naming the case."""
+    so is an introduction that gave its age; an identity case that fired alone and whose
+    released text is forced to differ from its draft is a harness error naming the case (a
+    change another intervention made beside it is a mismatch, #938)."""
     suite = SUITES[E12_DIRECT]
     cases = [c for c in suite.load(SETS) if isinstance(c, DirectCase)]
     by_type = Counter(c.type for c in cases)
@@ -387,8 +390,17 @@ async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Pat
     assert any("E-12 direct fingerprint `structured`" in n for n in result.notes)
     assert any("enough evidence on this run" in n and n.endswith("none.") for n in result.notes)
 
-    # Complement: an identity intervention that changed the prose fails loudly.
+    # Complement: an identity intervention that changed the prose fails loudly. On the stub
+    # pipeline only another intervention changes the text (a mismatch, #938), so the draft the
+    # turn report gives is altered: age_repair fired alone, and the release differs from it.
     broken = DirectCase.model_validate_json(_BROKEN)
+    real = scenario_play.first_draft
+
+    async def altered(*args: Any, **kwargs: Any) -> Any:
+        draft, *rest = await real(*args, **kwargs)
+        return (f"{draft} Altered.", *rest)
+
+    monkeypatch.setattr(e12_direct, "first_draft", altered)
     async with stub_engine(pg_url, engine) as lib:
         bad = await run(
             suite,
@@ -456,6 +468,12 @@ def test_e_12__direct_outcome_and_mode() -> None:
     assert direct_outcome("repair_rung_1", ("repair_rung_1",), changed=False) == "not_triggered"
     assert direct_outcome("repair_rung_1", ("repair_rung_1", "age_repair"), changed=True) == "pair"
     assert direct_outcome("repair_rung_2", ("repair_rung_1",), changed=True) == "mismatch"
+    # #938: an identity type's case counts its own change only.
+    assert direct_outcome("age_repair", ("age_repair",), changed=False) == "identity"
+    assert direct_outcome("age_repair", ("age_repair",), changed=True) == "broken"
+    assert direct_outcome("age_repair", ("repair_rung_3", "age_repair"), changed=True) == "mismatch"
+    assert direct_outcome("age_repair", ("repair_rung_3",), changed=True) == "mismatch"
+    assert direct_outcome("composition_fallback", (), changed=False) == "not_triggered"
     every = ["e01", "e12", "e12_direct", "q01"]
     assert select_mode(every, None, default="full") == ["e01", "e12", "q01"]
     assert select_mode(every, "direct", default="full") == ["e01", "e12_direct", "q01"]

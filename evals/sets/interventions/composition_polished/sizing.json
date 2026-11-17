@@ -1,0 +1,17 @@
+{
+  "type": "composition_polished",
+  "pilot_report": "pilot-2026-11-16-e12-polished",
+  "model": "claude-haiku-5-5",
+  "preset": "full",
+  "configuration": "structured",
+  "judge": "self (claude-haiku-5-5)",
+  "seeds": 1,
+  "n": 40,
+  "non_tied_pairs": 6,
+  "tie_rate": 0.175,
+  "not_triggered_rate": 0.425,
+  "mismatch_rate": 0.25,
+  "formula": "ceil(300 / (1 - tie - not_triggered - mismatch) * 1.15), at least 360, at most 1500",
+  "size": null,
+  "blocked": "the derived size passes the 1,500 ceiling after the recipe fix and one re-pilot (usable share 0.15); the owner decides (#938)"
+}

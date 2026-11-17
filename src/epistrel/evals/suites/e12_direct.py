@@ -21,9 +21,10 @@ The observed types come from the turn report (``scenario_play.first_draft``). Ho
   observation of ``nfr_qual_14.direct.<type>`` (the relative rule: mean + SD ≤ 55 % on at least
   300 non-tied pairs a seed);
 - **identity types** (``age_repair``, ``composition_fallback``; the owner's R3, 2026-11-16):
-  these release the draft's prose unchanged by construction. A fired case whose released prose
-  differs from the draft under ``normalized`` raises ``IdentityBroken``, a harness error naming
-  the case; a fired, unchanged case is a good observation of ``nfr_qual_14.direct.<type>``,
+  these release the draft's prose unchanged by construction. A case where the type fired alone
+  and the released prose differs from the draft under ``normalized`` raises ``IdentityBroken``,
+  a harness error naming the case (a change another intervention also made is a ``mismatch``,
+  #938); a fired, unchanged case is a good observation of ``nfr_qual_14.direct.<type>``,
   judged by ``Rule.identity`` (at least 50 fired cases over at least two seeds, none differing).
   No judge call is made and the row is not judge-gated. A case where the type did not fire is
   ``not_triggered`` (``mismatch`` when something else changed it).
@@ -31,13 +32,16 @@ The observed types come from the turn report (``scenario_play.first_draft``). Ho
 The rows run on the ``structured`` configuration only and are never pooled with the full-mode
 rows. ``--e12-mode full|direct|both`` selects the suites (``select_mode``). On the stub the
 examples (``evals/sets/interventions/examples.jsonl``, CI only) script the regeneration, the
-polish and the judge's side.
+polish and the judge's side; a real-model run plays the seven per-type live sets instead
+(``LIVE_SET_PATHS``, ``authoring.interventions``; #938), never the examples. A case's ``dials``
+patch its story's settings over the configuration (rung 4's ``repair.max_attempts: 1``).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -45,12 +49,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from epistrel.core.mutation import FactRequest
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import StorySpec
 from epistrel.evals import scenes
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.judging import Preference, mask, normalized, script_pair
 from epistrel.evals.metrics import wilson
-from epistrel.evals.suites import Aggregate, CaseModel, Counts, Outcome, Suite, Summary, register
+from epistrel.evals.suites import (
+    Aggregate,
+    CaseModel,
+    Counts,
+    MalformedCase,
+    Outcome,
+    Suite,
+    Summary,
+    register,
+)
 from epistrel.evals.suites.e12_interventions import E12, FLOOR
 from epistrel.evals.suites.scenario_play import (
     CAST,
@@ -92,6 +106,11 @@ IDENTITY_TYPES: frozenset[str] = frozenset({"age_repair", "composition_fallback"
 """The types that release the draft's prose unchanged by construction (R3, #937)."""
 JUDGED_TYPES: tuple[str, ...] = tuple(t for t in DIRECT_TYPES if t not in IDENTITY_TYPES)
 DIRECT_SET_PATH = "interventions/examples.jsonl"
+"""The CI examples a stub run plays (scripted answers; #936)."""
+LIVE_SET_PATHS: tuple[str, ...] = tuple(
+    f"interventions/{t}/cases.jsonl" for t in INTERVENTION_TYPES
+)
+"""The per-type live sets a real-model run plays (#938; ``authoring.interventions``)."""
 DIRECT_MIN_PER_TYPE = 5
 E12_MODES = ("full", "direct", "both")
 DIRECT_COMPLETED = "e12.direct.completed"
@@ -169,8 +188,17 @@ class DirectStub(BaseModel):
 class DirectCase(CaseModel):
     """A prepared first draft with its trigger in it (module docstring)."""
 
-    id: str = Field(pattern=r"^direct-[A-Za-z0-9_.:-]{1,72}$")
+    id: str = Field(pattern=r"^(direct|interventions)-[A-Za-z0-9_.:-]{1,72}$")
+    """``direct-…`` for a CI example, ``interventions-<type>-<nnnn>`` for a live set's (#938)."""
     type: DirectType
+    family: str | None = None
+    """A live set's envelope (#938): its type, its origin and its trigger variant (the digest's
+    stratum)."""
+    origin: str | None = None
+    template: str | None = None
+    dials: dict[str, Any] | None = None
+    """A settings merge patch the case's story runs over the configuration (#938: rung 4's
+    ``repair.max_attempts: 0``); part of the set, so of its digest."""
     say: str = Field(min_length=1, max_length=500)
     beats: list[DirectBeat] = Field(min_length=1, max_length=8)
     introduces: list[DirectIntroduction] = Field(default_factory=list, max_length=4)
@@ -191,6 +219,8 @@ class DirectCase(CaseModel):
             raise ValueError("a composition_fallback case, and only one, has a prepared polish")
         if any(i.name in NAMES for i in self.introduces):
             raise ValueError("introduces names a character or place the story already has")
+        if self.family is not None and self.family != self.type:
+            raise ValueError("a live case's family is its type")
         if self.type == "age_repair" and not self.introduces:
             raise ValueError("an age_repair case introduces a new character")
         if any(i.age is None and (i.age_range or [0])[0] < ADULT for i in self.introduces):
@@ -207,12 +237,16 @@ class DirectCase(CaseModel):
 
 def direct_outcome(declared: str, types: Sequence[str], changed: bool) -> str:
     """How a played direct case counts (module docstring): ``pair``, ``identity``,
-    ``not_triggered``, ``mismatch``, or ``broken`` (an identity type fired and the prose
-    changed)."""
+    ``not_triggered``, ``mismatch``, or ``broken`` (an identity type fired alone and the prose
+    changed). An identity case whose prose another intervention also changed is a
+    ``mismatch``: the change is not the identity type's (#938, found live: a repair of a beat
+    beside the introduction)."""
     if declared in IDENTITY_TYPES:
-        if declared in types:
-            return "broken" if changed else "identity"
-        return "mismatch" if changed else "not_triggered"
+        if declared not in types:
+            return "mismatch" if changed else "not_triggered"
+        if not changed:
+            return "identity"
+        return "mismatch" if any(t != declared for t in types) else "broken"
     if not changed:
         return "not_triggered"
     return "pair" if declared in types else "mismatch"
@@ -294,11 +328,24 @@ class E12DirectSuite(Suite):
     def __init__(self) -> None:
         self._pinned: set[tuple[int, str]] = set()
 
+    def load_for(self, sets_dir: Path, *, live: bool) -> list[CaseModel]:
+        """A stub run plays the scripted CI examples; a real-model run the seven per-type live
+        sets (#938), never the examples (a missing set is a malformed suite)."""
+        if not live:
+            return self.load(sets_dir)
+        cases = [case for path in LIVE_SET_PATHS for case in self.load_file(sets_dir, path)]
+        ids = [case.id for case in cases]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise MalformedCase(f"{self.name}: duplicate case ids {duplicates}")
+        return cases
+
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, DirectCase)  # noqa: S101 - load() validated it
         created = await ctx.story(StorySpec(characters=list(CAST)))
         story_id = created.story_id
-        await scenes.structured(ctx.engine, ctx.principal, story_id, CONFIG_DIALS[DIRECT_CONFIG])
+        dials = merge_patch(dict(CONFIG_DIALS[DIRECT_CONFIG]), case.dials or {})
+        await scenes.structured(ctx.engine, ctx.principal, story_id, dials)
         await ctx.engine.update_story_settings(ctx.principal, story_id, {"player_view": "story"})
         found = await plant(ctx, story_id, [c.id for c in created.characters])
         ids = {c.name: c.id for c in created.characters}
@@ -489,6 +536,7 @@ __all__ = [
     "E12_MODES",
     "IDENTITY_TYPES",
     "JUDGED_TYPES",
+    "LIVE_SET_PATHS",
     "DirectCase",
     "E12DirectSuite",
     "IdentityBroken",

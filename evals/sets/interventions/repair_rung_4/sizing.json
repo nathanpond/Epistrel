@@ -1,0 +1,16 @@
+{
+  "type": "repair_rung_4",
+  "pilot_report": "pilot-2026-11-16-e12",
+  "model": "claude-haiku-5-5",
+  "preset": "full",
+  "configuration": "structured",
+  "judge": "self (claude-haiku-5-5)",
+  "seeds": 1,
+  "n": 40,
+  "non_tied_pairs": 39,
+  "tie_rate": 0.025,
+  "not_triggered_rate": 0.0,
+  "mismatch_rate": 0.0,
+  "formula": "ceil(300 / (1 - tie - not_triggered - mismatch) * 1.15), at least 360, at most 1500",
+  "size": 360
+}

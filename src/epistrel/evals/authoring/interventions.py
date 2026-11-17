@@ -15,8 +15,9 @@ a prepared first draft (``e12_direct.DirectCase``) whose trigger is built in:
 - ``repair_rung_4`` (the safe fallback): two such beats and the per-case dial
   ``repair.max_attempts: 1`` (``RUNG_4_DIALS``), so one regeneration is left for two beats and
   at least one becomes Bobby's fallback line, the path a turn out of attempts takes;
-- ``composition_polished``: three consistent beats (a line, an action, a line; lines from
-  ``QUIET_LINES``, which assert nothing checkable), which the composition polishes;
+- ``composition_polished``: three consistent beats (a line, an action, a line; from
+  ``POLISH_LINES`` and ``POLISH_ACTIONS``, which assert nothing checkable and name nothing
+  outside canon), which the composition polishes;
 - ``composition_fallback``: the same, with a prepared polish (pinned) that adds the armchair
   claim, which the composition's check refuses, so the draft is released unchanged;
 - ``age_repair``: an adult introduction with no concrete age (``age_range`` from 18) that Bobby
@@ -174,6 +175,16 @@ ACTIONS = (
     "Bobby fiddles with his cuffs.",
     "Bobby hums a few bars of a song.",
 )
+_OUTSIDE_CANON = ("table", "window", "chair", "sleeve", "cushion", "ceiling", "cuffs", "neck")
+POLISH_ACTIONS = tuple(a for a in ACTIONS if not any(w in a for w in _OUTSIDE_CANON))
+"""``composition_polished``'s actions: none naming an object outside S-COAT's canon (the
+diagnostic on #938: an unresolved object in a ``do`` beat is repaired under Full, a mismatch;
+"rubs his neck" fell to rung 4 too)."""
+POLISH_LINES = tuple(
+    line for line in QUIET_LINES if line not in ("If you insist.", "Right you are, boss.")
+)
+"""``composition_polished``'s lines: no agreement to the player's ask, which the verifier
+denied as unpermitted and regenerated (rung 3) in the diagnostic on #938."""
 NAMED_ARMCHAIR = (
     "The coat sits on the armchair.",
     "The coat lies across the armchair.",
@@ -309,8 +320,9 @@ def _draw(kind: str, attempt: int) -> tuple[str, dict[str, Any]]:
         }
         return "unnamed-x2", body
     if kind in ("composition_polished", "composition_fallback"):
-        action = pick.pick(ACTIONS)
-        first, last = pick.picks(QUIET_LINES, 2)
+        polished = kind == "composition_polished"
+        action = pick.pick(POLISH_ACTIONS if polished else ACTIONS)
+        first, last = pick.picks(POLISH_LINES if polished else QUIET_LINES, 2)
         beats = [_say(first), _do(action), _say(last)]
         template = "say+do+say"
         body = {"say": say, "beats": beats}
@@ -403,6 +415,8 @@ __all__ = [
     "IDENTITY_TYPES",
     "PAIR_TYPES",
     "PILOT_SIZE",
+    "POLISH_ACTIONS",
+    "POLISH_LINES",
     "RUNG_4_DIALS",
     "SIZING",
     "TYPES",

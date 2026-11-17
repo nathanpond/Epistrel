@@ -12,156 +12,156 @@ Canon in every case (S-COAT): the coat is on the hook, the hook is in the hallwa
 - **Draft:**
   - say: "Sure, why not."
   - do: "Bobby raises an eyebrow."
-  - say: "Probably. Maybe. Ask me tomorrow."
+  - say: "Not a clue, boss."
 
 ## `interventions-composition_polished-0002` (say+do+say)
 
 - **Wren says:** "Are you cold in here?"
 - **Draft:**
-  - say: "Depends who's asking."
-  - do: "Bobby tilts his head at you."
-  - say: "Right you are, boss."
+  - say: "You'd be surprised."
+  - do: "Bobby sighs theatrically."
+  - say: "Couldn't tell you."
 
 ## `interventions-composition_polished-0005` (say+do+say)
 
 - **Wren says:** "Did you finish the washing up?"
 - **Draft:**
-  - say: "Not a clue, boss."
-  - do: "Bobby sighs theatrically."
-  - say: "If you insist."
+  - say: "Funny you should mention that."
+  - do: "Bobby hums a few bars of a song."
+  - say: "Hard to say, boss."
 
 ## `interventions-composition_polished-0006` (say+do+say)
 
 - **Wren says:** "Are you cold in here?"
 - **Draft:**
-  - say: "Sure, why not."
-  - do: "Bobby rubs his neck."
   - say: "Couldn't tell you."
+  - do: "Bobby hums a few bars of a song."
+  - say: "Sure, why not."
 
 ## `interventions-composition_polished-0009` (say+do+say)
 
 - **Wren says:** "What are you reading?"
 - **Draft:**
-  - say: "Funny you should mention that."
-  - do: "Bobby glances at the window."
-  - say: "You'd be surprised."
+  - say: "Probably. Maybe. Ask me tomorrow."
+  - do: "Bobby stretches and yawns."
+  - say: "Later, boss. Definitely later."
 
 ## `interventions-composition_polished-0010` (say+do+say)
 
 - **Wren says:** "Is the kettle on?"
 - **Draft:**
-  - say: "Not a clue, boss."
-  - do: "Bobby picks at a loose thread on his sleeve."
   - say: "Mm. Could be."
+  - do: "Bobby folds his arms."
+  - say: "Depends who's asking."
 
 ## `interventions-composition_polished-0012` (say+do+say)
 
 - **Wren says:** "Have you seen the post today?"
 - **Draft:**
-  - say: "Funny you should mention that."
-  - do: "Bobby hides a smile behind his hand."
-  - say: "Not a clue, boss."
+  - say: "Probably. Maybe. Ask me tomorrow."
+  - do: "Bobby sighs theatrically."
+  - say: "Hard to say, boss."
 
 ## `interventions-composition_polished-0013` (say+do+say)
 
 - **Wren says:** "Could you turn the radio down?"
 - **Draft:**
-  - say: "Right you are, boss."
-  - do: "Bobby picks at a loose thread on his sleeve."
+  - say: "Couldn't tell you."
+  - do: "Bobby folds his arms."
   - say: "Sure, why not."
 
 ## `interventions-composition_polished-0015` (say+do+say)
 
 - **Wren says:** "Did you water the plants?"
 - **Draft:**
-  - say: "Right you are, boss."
+  - say: "Couldn't tell you."
   - do: "Bobby scratches his chin."
-  - say: "Depends who's asking."
+  - say: "You'd be surprised."
 
 ## `interventions-composition_polished-0017` (say+do+say)
 
 - **Wren says:** "Who left the window open?"
 - **Draft:**
-  - say: "Right you are, boss."
-  - do: "Bobby glances at the window."
+  - say: "Couldn't tell you."
+  - do: "Bobby stretches and yawns."
   - say: "No idea, boss."
 
 ## `interventions-composition_polished-0019` (say+do+say)
 
 - **Wren says:** "Could you take the bins out?"
 - **Draft:**
-  - say: "Depends who's asking."
-  - do: "Bobby taps his fingers on the table."
-  - say: "Funny you should mention that."
+  - say: "You'd be surprised."
+  - do: "Bobby stretches and yawns."
+  - say: "Probably. Maybe. Ask me tomorrow."
 
 ## `interventions-composition_polished-0020` (say+do+say)
 
 - **Wren says:** "Have you got a minute?"
 - **Draft:**
-  - say: "No idea, boss."
-  - do: "Bobby picks at a loose thread on his sleeve."
-  - say: "Couldn't tell you."
+  - say: "Funny you should mention that."
+  - do: "Bobby folds his arms."
+  - say: "You'd be surprised."
 
 ## `interventions-composition_polished-0021` (say+do+say)
 
 - **Wren says:** "Did you water the plants?"
 - **Draft:**
-  - say: "Right you are, boss."
-  - do: "Bobby sighs theatrically."
-  - say: "Not a clue, boss."
+  - say: "Couldn't tell you."
+  - do: "Bobby raises an eyebrow."
+  - say: "No idea, boss."
 
 ## `interventions-composition_polished-0027` (say+do+say)
 
 - **Wren says:** "Are you cold in here?"
 - **Draft:**
-  - say: "Depends who's asking."
-  - do: "Bobby glances at the window."
-  - say: "Later, boss. Definitely later."
+  - say: "You'd be surprised."
+  - do: "Bobby stretches and yawns."
+  - say: "Give me a moment."
 
 ## `interventions-composition_polished-0028` (say+do+say)
 
 - **Wren says:** "Are you staying for supper?"
 - **Draft:**
-  - say: "Funny you should mention that."
-  - do: "Bobby glances at the window."
-  - say: "Later, boss. Definitely later."
+  - say: "Give me a moment."
+  - do: "Bobby hums a few bars of a song."
+  - say: "Probably. Maybe. Ask me tomorrow."
 
 ## `interventions-composition_polished-0032` (say+do+say)
 
 - **Wren says:** "Did anyone call while I was out?"
 - **Draft:**
-  - say: "Not a clue, boss."
-  - do: "Bobby hides a smile behind his hand."
+  - say: "You'd be surprised."
+  - do: "Bobby hums a few bars of a song."
   - say: "Mm. Could be."
 
 ## `interventions-composition_polished-0033` (say+do+say)
 
 - **Wren says:** "Have you seen the post today?"
 - **Draft:**
-  - say: "Right you are, boss."
-  - do: "Bobby looks out of the window."
-  - say: "Depends who's asking."
+  - say: "Couldn't tell you."
+  - do: "Bobby scratches his chin."
+  - say: "You'd be surprised."
 
 ## `interventions-composition_polished-0035` (say+do+say)
 
 - **Wren says:** "Is it still raining out there?"
 - **Draft:**
-  - say: "No idea, boss."
-  - do: "Bobby leans back and closes his eyes."
   - say: "Give me a moment."
+  - do: "Bobby leans back and closes his eyes."
+  - say: "Hard to say, boss."
 
 ## `interventions-composition_polished-0036` (say+do+say)
 
 - **Wren says:** "Have you got a minute?"
 - **Draft:**
   - say: "Sure, why not."
-  - do: "Bobby taps his fingers on the table."
-  - say: "Probably. Maybe. Ask me tomorrow."
+  - do: "Bobby stretches and yawns."
+  - say: "Not a clue, boss."
 
 ## `interventions-composition_polished-0038` (say+do+say)
 
 - **Wren says:** "Could you turn the radio down?"
 - **Draft:**
+  - say: "Depends who's asking."
+  - do: "Bobby hides a smile behind his hand."
   - say: "Hard to say, boss."
-  - do: "Bobby fiddles with his cuffs."
-  - say: "If you insist."

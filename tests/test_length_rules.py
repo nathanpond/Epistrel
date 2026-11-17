@@ -7,7 +7,13 @@ import json
 from types import SimpleNamespace
 
 from epistrel.evals.suites.structured_turns import render_key
-from epistrel.orchestrator.compose.compose import LENGTH_FACTOR, longest_polish
+from epistrel.orchestrator.compose.compose import (
+    LENGTH_FACTOR,
+    MIN_POLISH_TOKENS,
+    longest_polish,
+    polish_params,
+)
+from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.registry import EXTRACTION_MAX_CLAIMS, ExtractedClaim
 from epistrel.orchestrator.structured.render import (
     RenderedBeats,
@@ -88,6 +94,21 @@ def test_a_polish_may_not_pass_the_requested_length() -> None:
     assert longest_polish(draft, 120) == 120
     assert longest_polish(draft, 80) == 100  # never shorter than the draft itself
     assert longest_polish(draft, 1_000) == LENGTH_FACTOR * 100
+
+
+def test_the_polish_cap_holds_the_longest_polish_in_its_json_answer() -> None:
+    """#956: on hosted Haiku a 107-134-character draft's polish was cut off at the old cap
+    (twice the plain draft at four characters a token, so the 64-token minimum). The cap now
+    holds the longest polish accepted, JSON-escaped, at two characters a token."""
+    draft = 'Bobby: "That sounds like a chore."\n\n*Bobby picks at a thread.*\n\nBobby: "No idea."'
+    longest = draft + " " * int(longest_polish(draft) - len(draft))
+    answer = json.dumps({"text": longest}, ensure_ascii=False)
+    found = polish_params(ModelParams(temperature=0.7, top_p=0.9), draft)
+    assert found.max_tokens is not None
+    assert found.max_tokens * 2 >= len(answer)
+    assert found.max_tokens > MIN_POLISH_TOKENS
+    assert (found.temperature, found.top_p) == (0.7, 0.9)
+    assert polish_params(ModelParams(), "Hi.").max_tokens == MIN_POLISH_TOKENS
 
 
 def test_extraction_cap_fits_its_schema() -> None:

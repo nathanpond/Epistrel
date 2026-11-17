@@ -18,7 +18,8 @@ it after the repair ladder (#151), on the post-repair beats, before the turn's s
 (``composition.j2``: the rating guidance first, FR-RATE-4) through ``structured_call`` with a
 ``{text}`` schema (``ComposedMessage``), given only the viewpoint's beats (index, kind, actor's
 name, text) and their deterministic assembly as the draft. The request's prompt parameters
-apply; ``max_tokens`` is twice the draft's token estimate. It runs only when the profile's
+apply; ``max_tokens`` holds the longest polish accepted in its JSON answer (``polish_params``,
+#956). It runs only when the profile's
 polish pass is on (``repair.polish.enabled``, the switch #106's module and Lite's output-policy
 regenerations share), the turn has more than one beat, and the budget's unreserved remainder
 can pay for it and its re-check by every model-assisted output policy; under budget pressure
@@ -83,6 +84,7 @@ only (invariant 3). A rejected polish is recorded by the pipeline as an ``audit`
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -134,6 +136,8 @@ ALIGN_THRESHOLD = 0.6
 SHINGLE = 4
 """The word shingle a private thought is matched by."""
 MIN_POLISH_TOKENS = 64
+POLISH_CHARS_PER_TOKEN = 2
+"""The polish answer's token estimate: two characters a token (escaped short dialogue, #956)."""
 DRAFT_MAX = 40_000
 
 FailureKind = Literal[
@@ -798,12 +802,18 @@ def longest_polish(draft: str, max_chars: int | None = None) -> float:
 
 
 def polish_params(base: ModelParams, draft: str) -> ModelParams:
-    """The polish's parameters: the request's temperature and top-p, ``max_tokens`` twice the
-    draft's token estimate (four characters a token)."""
+    """The polish's parameters: the request's temperature and top-p, and ``max_tokens`` enough
+    for the longest polish accepted (``LENGTH_FACTOR`` times the draft) in its JSON answer, every
+    quote and newline escaped, at ``POLISH_CHARS_PER_TOKEN`` (#956: at four characters a token
+    of the plain draft, a hosted model's answers to short drafts were cut off one call in five).
+    A cap only: the model spends what it writes."""
+    answer = len(json.dumps({"text": draft}, ensure_ascii=False))
     return ModelParams(
         temperature=base.temperature,
         top_p=base.top_p,
-        max_tokens=max(MIN_POLISH_TOKENS, 2 * math.ceil(len(draft) / 4)),
+        max_tokens=max(
+            MIN_POLISH_TOKENS, math.ceil(LENGTH_FACTOR * answer / POLISH_CHARS_PER_TOKEN)
+        ),
     )
 
 

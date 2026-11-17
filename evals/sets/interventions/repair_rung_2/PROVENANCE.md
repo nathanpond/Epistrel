@@ -1,6 +1,6 @@
 # `interventions/repair_rung_2`: provenance (#938)
 
-E-12 direct mode's live set for `repair_rung_2` (40 cases), played by `e12_direct` on a real-model run (a stub run plays the CI examples instead).
+E-12 direct mode's live set for `repair_rung_2` (60 cases), played by `e12_direct` on a real-model run (a stub run plays the CI examples instead).
 
 ## Recipe
 
@@ -14,17 +14,11 @@ Every case validates as `e12_direct.DirectCase` and passes `authoring.lint` (`--
 
 ## Pilot
 
-Report `pilots/pilot-2026-11-16-e12.md`: hosted `claude-haiku-5-5`, Full preset, `structured`, self-judged, one seed, the set's first 40 cases.
+An identity type since the owner's call on #938 (ADR-197): no pilot sizing. The set holds 60 cases (`IDENTITY_SIZE`), at least the 50 the identity rule needs. A fired case passes when its released prose equals the draft once every S-COAT item and place is one label (`e12_direct.object_blind`): the substitution swaps only the claim's object.
 
-| Tie | Not triggered | Mismatch | Non-tied pairs | Size |
-|---|---|---|---|---|
-| 1.000 | 0.000 | 0.000 | 0 | blocked |
-
-Size rule: ceil(300 / (1 - tie - not_triggered - mismatch) * 1.15), at least 360, at most 1500 (`sizing.json`).
+Report `pilots/pilot-2026-11-16-e12.md` (hosted `claude-haiku-5-5`, Full, one seed, the first 40 cases, still judged then): every pair tied (1.000), 0 not triggered, 0 mismatched. The judge saw both passages masked and otherwise word for word the same, which is why the type became an identity row.
 
 ## Known weaknesses
-
-**Blocked.** Every pilot pair tied: the substitution changes only the place name, and the judge sees both names masked (`[PLACE_2]`, `[PLACE_3]`), so the passages read alike. No recipe changes that. The options are on #938. The committed set is the pilot's 40 cases.
 
 One story, one item and four places: the variety is in the wording, not the situation.
 

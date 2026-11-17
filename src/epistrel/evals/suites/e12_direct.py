@@ -14,15 +14,19 @@ the composition are the production pipeline's own, on the run's model. A
 The observed types come from the turn report (``scenario_play.first_draft``). How a case counts
 (``direct_outcome``):
 
-- **judged types** (``repair_rung_1``..``repair_rung_4``, ``composition_polished``): a draft the
+- **judged types** (``repair_rung_1``, ``repair_rung_3``, ``repair_rung_4``,
+  ``composition_polished``): a draft the
   turn left unchanged is ``e12.direct.not_triggered.<type>``; one changed while its declared
   type did not fire is ``e12.direct.mismatch.<type>``; otherwise the masked draft and final
   message are judged in both orders, as in full mode, and a non-tied judgement is an
   observation of ``nfr_qual_14.direct.<type>`` (the relative rule: mean + SD ≤ 55 % on at least
   300 non-tied pairs a seed);
-- **identity types** (``age_repair``, ``composition_fallback``; the owner's R3, 2026-11-16):
-  these release the draft's prose unchanged by construction. A case where the type fired alone
-  and the released prose differs from the draft under ``normalized`` raises ``IdentityBroken``,
+- **identity types** (``age_repair``, ``composition_fallback``; the owner's R3, 2026-11-16;
+  ``repair_rung_2``, the owner's call on #938, ADR-197): these release the draft's prose
+  unchanged by construction, rung 2 save the claim's object (``object_blind``: every S-COAT
+  item and place is one label, so a substitution compares equal and nothing else does). A
+  case where the type fired alone and the released prose differs from the draft under
+  ``normalized`` (rung 2: of ``object_blind``) raises ``IdentityBroken``,
   a harness error naming the case (a change another intervention also made is a ``mismatch``,
   #938); a fired, unchanged case is a good observation of ``nfr_qual_14.direct.<type>``,
   judged by ``Rule.identity`` (at least 50 fired cases over at least two seeds, none differing).
@@ -40,6 +44,7 @@ patch its story's settings over the configuration (rung 4's ``repair.max_attempt
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -102,8 +107,13 @@ DirectType = Literal[
     "age_repair",
 ]
 DIRECT_TYPES: tuple[DirectType, ...] = INTERVENTION_TYPES
-IDENTITY_TYPES: frozenset[str] = frozenset({"age_repair", "composition_fallback"})
-"""The types that release the draft's prose unchanged by construction (R3, #937)."""
+IDENTITY_TYPES: frozenset[str] = frozenset({"age_repair", "composition_fallback", "repair_rung_2"})
+"""The types that release the draft's prose unchanged by construction (R3, #937), rung 2 save
+the claim's object (#938, ADR-197)."""
+OBJECT_ONLY: frozenset[str] = frozenset({"repair_rung_2"})
+"""Identity types compared under ``object_blind``: a substitution only swaps the object."""
+_PLACE_LABEL = re.compile(r"\[PLACE_\d+\]")
+_ARTICLE = re.compile(r"\b(?:a|an)\s+\[OBJECT\]", re.IGNORECASE)
 JUDGED_TYPES: tuple[str, ...] = tuple(t for t in DIRECT_TYPES if t not in IDENTITY_TYPES)
 DIRECT_SET_PATH = "interventions/examples.jsonl"
 """The CI examples a stub run plays (scripted answers; #936)."""
@@ -233,6 +243,14 @@ class DirectCase(CaseModel):
         if self.introduces:
             found["introduces"] = [i.model_dump(exclude_none=True) for i in self.introduces]
         return json.dumps(found)
+
+
+def object_blind(text: str) -> str:
+    """``text`` normalized with every S-COAT item and place one ``[OBJECT]`` label (an article
+    before it ``a``): rung 2's substitution swaps only the claim's object, so its released prose
+    equals the draft under this and any other change does not (#938, ADR-197)."""
+    masked = _PLACE_LABEL.sub("[OBJECT]", mask(text, (), (*ITEMS, *PLACES)))
+    return normalized(_ARTICLE.sub("a [OBJECT]", masked))
 
 
 def direct_outcome(declared: str, types: Sequence[str], changed: bool) -> str:
@@ -379,7 +397,10 @@ class E12DirectSuite(Suite):
         names = {c.id: c.name for c in created.characters}
         draft, _, types, _ = await first_draft(ctx, result, names)
         final = result.message.text
-        counted = direct_outcome(case.type, types, normalized(draft) != normalized(final))
+        changed = normalized(draft) != normalized(final)
+        if changed and case.type in OBJECT_ONLY and case.type in types:
+            changed = object_blind(draft) != object_blind(final)
+        counted = direct_outcome(case.type, types, changed)
         if counted == "broken":
             raise IdentityBroken(
                 f"{case.id}: {case.type} fired and the released prose differs from the draft"
@@ -537,6 +558,7 @@ __all__ = [
     "IDENTITY_TYPES",
     "JUDGED_TYPES",
     "LIVE_SET_PATHS",
+    "OBJECT_ONLY",
     "DirectCase",
     "E12DirectSuite",
     "IdentityBroken",
@@ -544,5 +566,6 @@ __all__ = [
     "direct_outcome",
     "mismatch_id",
     "not_triggered_id",
+    "object_blind",
     "select_mode",
 ]

@@ -544,8 +544,10 @@ case has a `polish`: the prepared polish, pinned like the draft, which the compo
 must refuse. `stub` is for CI's examples only (the scripted regeneration, polish and judge's
 side).
 
-**Identity types** (#937, ADR-196). The age repair and the composition fallback never change
-the prose, so they are not judged. Their row (`Rule.identity`) counts the cases where they fired
+**Identity types** (#937, ADR-196; ADR-197). The age repair and the composition fallback never
+change the prose, and repair rung 2 changes only the claim's object, which a masked judge
+cannot tell apart (#938's pilot: every pair tied). So none of them is judged. Rung 2's prose is
+compared under `object_blind`: every S-COAT item and place becomes one label. Their row (`Rule.identity`) counts the cases where they fired
 and the released message equalled the draft. It passes at 50 such cases over at least two
 seeds. A fired case whose prose changed stops the case with a harness error that names it
 (`IdentityBroken`), unless another intervention fired on the same turn: then the change is not

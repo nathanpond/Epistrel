@@ -51,6 +51,7 @@ from epistrel.evals.suites.e12_direct import (
     direct_outcome,
     mismatch_id,
     not_triggered_id,
+    object_blind,
     select_mode,
 )
 from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
@@ -282,14 +283,14 @@ def test_e_12__m7() -> None:
     assert [f.metric_id for f in record.floors_passed] == ["NFR-QUAL-14"]
 
     six = _e12_report(
-        "calibrated", _all_seven(repair_rung_2=[SeedTally(s, 120, 30) for s in SEEDS])
+        "calibrated", _all_seven(repair_rung_3=[SeedTally(s, 120, 30) for s in SEEDS])
     )
     passed, failed, insufficient, covered, lacking, _ = floors_of(six)
     assert passed == []
     assert failed == []
     assert [f.metric_id for f in insufficient] == ["NFR-QUAL-14"]
-    assert lacking == ["repair_rung_2"]
-    assert "repair_rung_2" not in covered
+    assert lacking == ["repair_rung_3"]
+    assert "repair_rung_3" not in covered
     assert len(covered) == 6
     assert _record(six) is None  # no floor passed: no record
 
@@ -474,6 +475,14 @@ def test_e_12__direct_outcome_and_mode() -> None:
     assert direct_outcome("age_repair", ("repair_rung_3", "age_repair"), changed=True) == "mismatch"
     assert direct_outcome("age_repair", ("repair_rung_3",), changed=True) == "mismatch"
     assert direct_outcome("composition_fallback", (), changed=False) == "not_triggered"
+    # ADR-197: rung 2 is an identity type compared under object_blind (a substitution only).
+    assert "repair_rung_2" in IDENTITY_TYPES
+    assert object_blind("Bobby drops the coat on an armchair.") == object_blind(
+        "Bobby drops the coat on a hook."
+    )
+    assert object_blind("Bobby drops the coat on a hook.") != object_blind(
+        "Bobby drops it on a hook."
+    )
     every = ["e01", "e12", "e12_direct", "q01"]
     assert select_mode(every, None, default="full") == ["e01", "e12", "q01"]
     assert select_mode(every, "direct", default="full") == ["e01", "e12_direct", "q01"]

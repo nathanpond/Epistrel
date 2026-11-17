@@ -15223,3 +15223,30 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #938, #474
 - **Hold:** PR for `milestone/m11-run4-sets` (#938). Waiting on the owner's calls for `repair_rung_2` and `composition_polished`, and the owner's approval of the sized sets from their `SAMPLE.md`. **Lifts when:** the owner answers both options on #938 and adds the `approved by owner YYYY-MM-DD` lines.
   **Issue:** #938
+- **Owner decision (#938, 2026-11-16, in session):** "recs good, and approved". The owner took (a) for both questions and approved the samples.
+  - Rung 2 becomes an identity-like row (ADR-197).
+  - `composition_polished` gets a diagnostic, then one more pilot.
+  - The approval covers the sets as of PR #955 @ 639887b (their `SAMPLE.md`).
+  **Issue:** #938
+- **Hold lifted (part):** PR #955. Both calls are answered (the owner's message above). The `approved by owner` lines follow for the sets whose content the owner saw. `repair_rung_2` grew from 40 to 60 cases, and `composition_polished` will be re-piloted, so their approval is confirmed with the owner again before the lines go in.
+  **Issue:** #938
+- **Decision (#938, ADR-197):** rung 2's identity check compares under `e12_direct.object_blind`. Every S-COAT item and place becomes one `[OBJECT]` label, and "a"/"an" before it becomes "a", so "on an armchair" equals "on a hook". Anything else differing fails.
+  - Rejected: comparing the propositions only. That would pass any rewording.
+  - Rejected: requiring the canon object in the final. That ties the check to S-COAT's single canon fact and adds nothing the repair report doesn't already say.
+  - Rung 2's set is now `IDENTITY_SIZE` (60). The `sizing.json` is removed, and the pilot's rates move into its PROVENANCE.
+  - `test_e_12__m7` used rung 2 as its "short of pairs" judged type; it now uses rung 3.
+  **Issue:** #938
+- **Diagnostic (#938, `composition_polished`; paid, one 12-case in-process probe on hosted Haiku):** the low usable share is mostly an engine bug, not a counting artifact.
+  - **Cut-off polishes (engine bug):** in the re-pilot's call trace, 30 of 133 polish calls stopped at `finish_reason: length`. `polish_params` caps at twice a four-chars-a-token estimate of the plain draft, so 64 tokens for these drafts. The JSON answer, with every quote escaped, runs at about two characters a token. The truncated answer fails to parse and the turn falls back with `cause: "model"` (6 of 12 probe cases). Filed as #956 and fixed in this run on its own PR, because the re-pilot depends on it (scope rule: a separate issue, not inline in #938).
+  - **Recipe noise:** some `ACTIONS` ("picks at a loose thread on his sleeve", "rubs his neck") were contradicted and fell to rung 4. Some short lines answering the player's question ("Right you are, boss.", "If you insist.") were denied as unpermitted and regenerated (rung 3). These count as mismatches.
+  - **Inherent:** about 1 in 12 polishes return the draft unchanged (not triggered), and a polish that only drops formatting tends to tie.
+  **Issue:** #938, #956
+
+## Ad-hoc — 2026-11-16 (repair rung 2 is an identity intervention; ADR-197)
+
+- **Change:** NFR-QUAL-14 names three identity types: the age repair, the composition fallback and now repair rung 2 (substitution). Rung 2 passes on at least 50 fired cases over at least two seeds whose released prose equals the draft but for the replaced object. It is no longer judged in pairs. The owner chose this on #938 on 2026-11-16 (option (a)). ADR-197 amends ADR-196, and docs/03 (NFR-QUAL-14) and docs/04 (E-12) were updated with it.
+  **Why:** #938's pilot gave rung 2 a tie rate of 1.000. A substitution swaps only the object, which the masked judge cannot see, so no set size could reach 300 non-tied pairs. Under ADR-196's "all seven types", NFR-QUAL-14 could never pass.
+  **Affects:**
+  - M11: #474 (judge tuning: rung 2 is no longer a judged type) and #818 (the hand baseline run reads the direct rows).
+  - Any later certification or report that lists judged types.
+  - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).

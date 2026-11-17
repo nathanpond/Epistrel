@@ -18,6 +18,8 @@ An identity type since the owner's call on #938 (ADR-197): no pilot sizing. The 
 
 Report `pilots/pilot-2026-11-16-e12.md` (hosted `claude-haiku-5-5`, Full, one seed, the first 40 cases, still judged then): every pair tied (1.000), 0 not triggered, 0 mismatched. The judge saw both passages masked and otherwise word for word the same, which is why the type became an identity row.
 
+The identity check live (`pilots/pilot-2026-11-17-e12-polished.md`, the first 20 cases): 19 fired and were unchanged under `object_blind`, 1 was changed by another intervention (a mismatch), and none differed otherwise.
+
 ## Known weaknesses
 
 One story, one item and four places: the variety is in the wording, not the situation.

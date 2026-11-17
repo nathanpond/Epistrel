@@ -15250,3 +15250,16 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - M11: #474 (judge tuning: rung 2 is no longer a judged type) and #818 (the hand baseline run reads the direct rows).
   - Any later certification or report that lists judged types.
   - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).
+
+## /n8-exec M11 run 4 (continued: #938 polished re-pilot, #956) — 2026-11-17
+
+- **Evidence (#938, paid: one CLI run, hosted Haiku, Full, one seed):** `pilot-2026-11-17-e12-polished` ran with the #956 fix cherry-picked and the canon-only polished recipe. It played 40 polished cases, the first 20 rung-2 cases and one case of each other type.
+  - **Rung 2 (identity under `object_blind`):** 19 clean, 1 mismatch, 0 broken. The check holds live.
+  - **Polished:** not triggered 0.375, mismatch 0.100 (was 0.250), tie 0.375, 6 non-tied pairs. The usable share is still 0.15.
+  - **Polish calls:** 0 of 41 stopped at `length` (the old trace had 30 of 133), so #956 works.
+  - **The cause now:** Haiku's polish kept the draft's words in 40 of 41 calls (16 verbatim, 24 only dropping `*` markup and paragraph breaks, 1 reworded). A words-kept polish is not triggered or a tie. No set size reaches 300 reworded pairs on this model.
+  **Issue:** #938, #956
+- **Blocker (#938, needs-owner-action):** `composition_polished` has no size after the diagnostic and one more pilot, as the owner's option (a) allowed. The new options are on #938 (recommended (a): a polish that keeps the draft's words counts as identity, a rewording one is judged). `sizing.json` records it as blocked with this pilot's rates.
+  **Issue:** #938
+- **Hold (continues):** PR #955 (#938). Waiting on the owner's call on the polished options, and the owner's confirmation of `repair_rung_2` (60 cases) and `composition_polished` samples. **Lifts when:** the owner answers on #938 and those two `approved by owner` lines are in.
+  **Issue:** #938

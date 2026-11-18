@@ -15288,3 +15288,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Affects:**
   - M11: #474 (judge tuning: polished is mostly unjudged now) and #818/#819 (certification runs read the new row and note).
   - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).
+- **Rule 3 (#938, CI red on PR #955):** `tests/gates/test_adr_markers.py::test_revised_per_marks_only_consequences_lines` failed. ADR-196's decision bullet carried `*[revised per ADR-197/198]*` markers, a form allowed only on Consequences lines. They are now `*[superseded in part by …]*`, per the log's header rules, and the index was regenerated.
+  **Issue:** #938

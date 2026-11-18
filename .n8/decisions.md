@@ -15263,3 +15263,28 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #938
 - **Hold (continues):** PR #955 (#938). Waiting on the owner's call on the polished options, and the owner's confirmation of `repair_rung_2` (60 cases) and `composition_polished` samples. **Lifts when:** the owner answers on #938 and those two `approved by owner` lines are in.
   **Issue:** #938
+  **Resolved:** 2026-11-17 — the owner's answers on #938 (comment 6964147901): option (a), and the rung 2 and polished samples approved. The lines went in during run 5.
+
+## /n8-exec M11 run 5 (#938 finished) — 2026-11-17
+
+- **Owner decision (#938, 2026-11-17, given in session and posted on #938):** `composition_polished` takes option (a): a polish that keeps the draft's words is an identity observation, and only a rewording polish is judged. The `repair_rung_2` sample (redrawn over 60 cases) is approved. The `composition_polished` recipe is approved, including the redraw after growing the set to about 60 cases.
+  **Issue:** #938
+- **Hold lifted:** PR #955. Evidence: the owner's answers on #938 (comment 6964147901, 2026-11-17), dated after the Hold entry. All seven sets now carry `approved by owner` lines (rung 2 and polished dated 2026-11-17), and `EPISTREL_REQUIRE_APPROVED_SETS=1 --check-sets` passes.
+  **Issue:** #938
+- **Decision (#938, planner discretion):** "kept" means the polish ran (`turn_report.composition.mode == "polished"`) and the released text has the draft's words in order (`same_words`: lower-cased word tokens, so markup, punctuation and white space don't count), with no other type firing. The turn report's own `composition_polished` type needs the text to differ from the assembly, so a verbatim polish shows no type. That's why the mode is read directly.
+  **Why:** the pilot's 16 verbatim polishes are exactly the words-kept case the owner's option covers.
+  **Issue:** #938
+- **Decision (#938, planner discretion):** the identity pass is applied in `E12DirectSuite.summarize`, which overrides the row's verdict (`Summary.metrics[...]["verdict"]`, the hook the runner already merges). `gate.judge` is unchanged and so is the row's `Rule.relative`. A new informational row `e12.direct.kept.composition_polished` counts kept against reworded polishes. Thresholds: 50 polishes summed over at least two seeds (`IDENTITY_MIN_CASES`), and reworded strictly under 5 % (`KEPT_MAX_REWORDED`).
+  **Why:** a new `Rule` would ripple through the report, certification and every rule check for one row. The summary hook keeps the change inside E-12.
+  **Known limit:** the row stays in `judge_metrics`, so an uncalibrated judge still makes it report-only even when it passes as identity. A certification needs a calibrated judge for rungs 1, 3 and 4 anyway, so no certification outcome changes. It's logged in ADR-198.
+  **Issue:** #938
+- **Decision (#938):** the polished set is sized like an identity type (`authoring.interventions.KEPT_TYPES` uses `IDENTITY_SIZE`, 60 cases), and its `sizing.json` is deleted. Prefix-stable: the regenerated file appends cases 41 to 60 and the first 40 are unchanged.
+  **Issue:** #938
+
+## Ad-hoc — 2026-11-17 (a words-kept composition polish is an identity observation; ADR-198)
+
+- **Change:** NFR-QUAL-14's `composition_polished` type passes as identity when at least 50 polishes ran, over at least two seeds, and under 5 % of them reworded the draft. Otherwise only the rewording polishes are judged, and the type needs 300 non-tied pairs a seed. The owner chose this on #938 on 2026-11-17 (option (a)). ADR-198 amends ADR-196, and docs/03 (NFR-QUAL-14), docs/04 (E-12) and docs/evals/README were updated with it.
+  **Why:** Haiku's polish kept the draft's words in 40 of 41 calls, so no set size could reach 300 non-tied pairs. NFR-QUAL-14 ("all seven types") could otherwise never pass on such a model.
+  **Affects:**
+  - M11: #474 (judge tuning: polished is mostly unjudged now) and #818/#819 (certification runs read the new row and note).
+  - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).

@@ -302,9 +302,9 @@ def intervention_problems(
     sets_dir: Path, *, require_approved: bool = False
 ) -> tuple[list[str], set[Path]]:
     """#938's per-type E-12 sets: each loads as a ``DirectCase``, is at least its size (a pair
-    type's ``sizing.json``, which it must have; ``IDENTITY_MIN`` for an identity type), passes
-    the content lint and has a current ``SAMPLE.md``. A ``sizing.json`` that records the type as
-    ``blocked`` (the pilot gave no size the rule allows; the owner decides) passes like a
+    type's ``sizing.json``, which it must have; ``IDENTITY_MIN`` for an identity or kept type),
+    passes the content lint and has a current ``SAMPLE.md``. A ``sizing.json`` that records the
+    type as ``blocked`` (the pilot gave no size the rule allows; the owner decides) passes like a
     ``pending`` approval: on a branch, not where approval is required. Also the directories
     whose ``PROVENANCE.md`` the caller checks."""
     suite = SUITES["e12_direct"]

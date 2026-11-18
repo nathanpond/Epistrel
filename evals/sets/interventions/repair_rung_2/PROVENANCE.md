@@ -28,4 +28,4 @@ One story, one item and four places: the variety is in the wording, not the situ
 
 `SAMPLE.md` beside this file holds 20 cases for the owner's review.
 
-approved by owner: pending
+approved by owner 2026-11-17

@@ -1,6 +1,6 @@
 # `interventions/composition_polished`: provenance (#938)
 
-E-12 direct mode's live set for `composition_polished` (40 cases), played by `e12_direct` on a real-model run (a stub run plays the CI examples instead).
+E-12 direct mode's live set for `composition_polished` (60 cases), played by `e12_direct` on a real-model run (a stub run plays the CI examples instead).
 
 ## Recipe
 
@@ -16,15 +16,15 @@ Every case validates as `e12_direct.DirectCase` and passes `authoring.lint` (`--
 
 Report `pilots/pilot-2026-11-17-e12-polished.md`: hosted `claude-haiku-5-5`, Full preset, `structured`, self-judged, one seed, the set's first 40 cases, after the #956 fix and with the canon-only recipe.
 
-| Tie | Not triggered | Mismatch | Non-tied pairs | Size |
+| Tie | Not triggered | Mismatch | Non-tied pairs | Polishes that kept the words |
 |---|---|---|---|---|
-| 0.375 | 0.375 | 0.100 | 6 | blocked |
+| 0.375 | 0.375 | 0.100 | 6 | 40 of 41 |
 
-Size rule: ceil(300 / (1 - tie - not_triggered - mismatch) * 1.15), at least 360, at most 1500 (`sizing.json`).
+Size: 60 cases (`IDENTITY_SIZE`), as for an identity type. The owner's call on #938 (2026-11-17, option (a); ADR-198): a polish that keeps the draft's words is an identity observation and only a rewording polish is judged. The type passes on at least 50 polishes that ran, over at least two seeds, while under 5 % of them reworded; otherwise it needs 300 non-tied pairs a seed. On this pilot about 36 of 40 cases ran a polish with nothing else firing, so 60 cases give about 54 a seed.
 
 ## Known weaknesses
 
-**Blocked.** Earlier pilots (`pilot-2026-11-16-e12`, `pilot-2026-11-16-e12-polished`) had usable shares of 0.225 and 0.15. They lost most cases to polish answers cut off by the token cap (#956, fixed) and to beats repaired in their own right (fixed by the recipe). In this pilot no polish was cut off, but Haiku's polish kept the draft's words in 40 of 41 calls: 16 returned it verbatim (not triggered) and 24 only dropped the formatting, which the judge ties. The options are on #938. The committed set is the recipe's first 40 cases.
+Earlier pilots (`pilot-2026-11-16-e12`, `pilot-2026-11-16-e12-polished`) had usable shares of 0.225 and 0.15. They lost most cases to polish answers cut off by the token cap (#956, fixed) and to beats repaired in their own right (fixed by the recipe). In this pilot no polish was cut off, but Haiku's polish kept the draft's words in 40 of 41 calls: 16 returned it verbatim (not triggered) and 24 only dropped the formatting, which the judge ties. Under the owner's option (a), both now count as identity observations (the verbatim ones too: the turn report says the polish ran). The set grew from the pilot's 40 to 60 cases with the same recipe.
 
 One story, one item and four places: the variety is in the wording, not the situation.
 
@@ -32,4 +32,4 @@ One story, one item and four places: the variety is in the wording, not the situ
 
 `SAMPLE.md` beside this file holds 20 cases for the owner's review.
 
-approved by owner: pending
+approved by owner 2026-11-17

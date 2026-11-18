@@ -40,7 +40,7 @@ from epistrel.evals.report import (
     render_markdown,
 )
 from epistrel.evals.runner import CalibrationMissing
-from epistrel.evals.suites import e12_direct, scenario_play
+from epistrel.evals.suites import Outcome, e12_direct, scenario_play
 from epistrel.evals.suites.e12_direct import (
     DIRECT_COMPLETED,
     E12_DIRECT,
@@ -49,9 +49,12 @@ from epistrel.evals.suites.e12_direct import (
     DirectCase,
     direct_metric_id,
     direct_outcome,
+    kept_id,
+    kept_outcome,
     mismatch_id,
     not_triggered_id,
     object_blind,
+    same_words,
     select_mode,
 )
 from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
@@ -490,6 +493,59 @@ def test_e_12__direct_outcome_and_mode() -> None:
     assert select_mode(["e12_direct"], None, default="full") == ["e12_direct"]
     with pytest.raises(ValueError, match="needs e12"):
         select_mode(["q01"], "direct", default="full")
+
+
+def _polished(seed: int, counted: str) -> Outcome:
+    detail = {"seed": seed, "type": "composition_polished", "counted": counted}
+    if counted == "pair":
+        detail["preferred"] = "final"
+    return Outcome({}, detail=detail)
+
+
+def test_e_12__a_words_kept_polish_is_identity() -> None:
+    """#938, ADR-198 (the owner's option (a)): a polish that ran and kept the draft's words is
+    ``kept``, never judged; the type's row passes as identity on at least 50 polishes over two
+    seeds with under 5 % rewording, and is otherwise the relative rule over the rewording ones."""
+    assert same_words('*Bobby folds his arms.*\n\n"Mm."', 'Bobby folds his arms. "Mm."')
+    assert not same_words("Bobby folds his arms.", "Bobby crosses his arms.")
+    polished = ("composition_polished",)
+    # A verbatim polish records no type (its text equals the assembly), yet it ran: kept.
+    assert kept_outcome("composition_polished", (), False, polished=True, kept=True) == "kept"
+    assert kept_outcome("composition_polished", polished, True, polished=True, kept=True) == "kept"
+    assert kept_outcome("composition_polished", polished, True, polished=True, kept=False) == "pair"
+    # Something else fired: the words-kept rule does not apply.
+    both = ("repair_rung_3", "composition_polished")
+    assert kept_outcome("composition_polished", both, True, polished=True, kept=True) == "pair"
+    assert (
+        kept_outcome("composition_polished", ("repair_rung_3",), True, polished=True, kept=True)
+        == "mismatch"
+    )
+    assert (
+        kept_outcome("composition_polished", (), False, polished=False, kept=True)
+        == "not_triggered"
+    )
+    suite = SUITES[E12_DIRECT]
+    row = direct_metric_id("composition_polished")
+    (kept_metric,) = (m for m in suite.metrics if m.id == kept_id("composition_polished"))
+    assert kept_metric.rule is Rule.informational
+
+    def summary(kept: int, reworded: int, seeds: tuple[int, ...] = (1, 2)) -> dict[str, Any]:
+        outcomes = [
+            _polished(seed, "kept" if i < kept else "pair")
+            for seed in seeds
+            for i in range(kept + reworded)
+        ]
+        totals = suite.aggregate(outcomes)
+        assert totals[kept_id("composition_polished")].good == kept * len(seeds)  # type: ignore[union-attr]
+        return dict(suite.summarize(outcomes, "m").metrics.get(row, {}))
+
+    passed = summary(25, 1)  # 50 kept of 52 polishes, 3.8 % reworded
+    assert passed["verdict"] is Verdict.passed
+    assert passed["note"] == "identity: words kept in 50 of 52 polishes"
+    assert "verdict" not in summary(24, 2)  # 7.7 % reworded: the relative rule judges
+    assert "verdict" not in summary(24, 0)  # 48 polishes: short of 50
+    assert "verdict" not in summary(50, 0, seeds=(1,))  # one seed
+    assert summary(24, 0)["note"] == "words kept in 48 of 48 polishes"
 
 
 def test_e_12__one_section() -> None:

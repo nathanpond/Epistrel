@@ -17,7 +17,9 @@ a prepared first draft (``e12_direct.DirectCase``) whose trigger is built in:
   at least one becomes Bobby's fallback line, the path a turn out of attempts takes;
 - ``composition_polished``: three consistent beats (a line, an action, a line; from
   ``POLISH_LINES`` and ``POLISH_ACTIONS``, which assert nothing checkable and name nothing
-  outside canon), which the composition polishes;
+  outside canon), which the composition polishes; sized like an identity type
+  (``IDENTITY_SIZE``), since a polish that keeps the draft's words is an identity observation
+  (``KEPT_TYPES``; the owner's call on #938, ADR-198);
 - ``composition_fallback``: the same, with a prepared polish (pinned) that adds the armchair
   claim, which the composition's check refuses, so the draft is released unchanged;
 - ``age_repair``: an adult introduction with no concrete age (``age_range`` from 18) that Bobby
@@ -30,8 +32,8 @@ compares the draft with the declared rung's change alone (#938's live probe on h
 A type's cases are draws in a fixed order (each draw its own ``Chooser``), a draw repeating
 an earlier case skipped, so a set has no duplicates and is prefix-stable: the pilot's first
 cases are the final set's first cases. The pair types' sizes
-come from each directory's ``sizing.json`` (the pilot's rates; #938's rule), the identity types'
-from ``IDENTITY_SIZE``; before a pilot, or while its ``sizing.json`` records the type as
+come from each directory's ``sizing.json`` (the pilot's rates; #938's rule), the identity and
+kept types' from ``IDENTITY_SIZE``; before a pilot, or while its ``sizing.json`` records the type as
 ``blocked`` (no size the rule allows, waiting on the owner), a pair type has ``PILOT_SIZE``
 cases.
 """
@@ -59,7 +61,9 @@ TYPES = (
 )
 IDENTITY_TYPES = ("repair_rung_2", "composition_fallback", "age_repair")
 """Measured as identity (ADR-196; rung 2 by the owner's call on #938, ADR-197)."""
-PAIR_TYPES = tuple(t for t in TYPES if t not in IDENTITY_TYPES)
+KEPT_TYPES = ("composition_polished",)
+"""Judged only when the polish rewords; a words-kept polish is identity (#938, ADR-198)."""
+PAIR_TYPES = tuple(t for t in TYPES if t not in (*IDENTITY_TYPES, *KEPT_TYPES))
 PILOT_SIZE = 40
 """The pilot's cases per pair type (#938: the first 40 ids, one seed)."""
 IDENTITY_SIZE = 60
@@ -356,7 +360,7 @@ def sizing(sets_dir: Path, kind: str) -> Mapping[str, Any] | None:
 
 def size_of(sets_dir: Path, kind: str) -> int:
     """How many cases ``kind``'s set holds (module docstring)."""
-    if kind in IDENTITY_TYPES:
+    if kind in IDENTITY_TYPES or kind in KEPT_TYPES:
         return IDENTITY_SIZE
     found = sizing(sets_dir, kind)
     if found is None or found.get("size") is None:
@@ -413,6 +417,7 @@ __all__ = [
     "FLOOR",
     "IDENTITY_SIZE",
     "IDENTITY_TYPES",
+    "KEPT_TYPES",
     "PAIR_TYPES",
     "PILOT_SIZE",
     "POLISH_ACTIONS",

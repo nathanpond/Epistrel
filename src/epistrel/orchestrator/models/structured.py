@@ -62,7 +62,7 @@ from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import Policy, Target
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.adapter import REQUEST_FIELDS, Message, ModelParams, ModelResult
-from epistrel.orchestrator.models.call_trace import STRUCTURED_SCHEMA
+from epistrel.orchestrator.models.call_trace import STRUCTURED_MODEL, STRUCTURED_SCHEMA
 from epistrel.orchestrator.models.errors import ModelUnavailable, ResponseFormatRejected
 from epistrel.orchestrator.models.prompts import payload_fields
 from epistrel.orchestrator.models.provider_schema import json_schema_mode
@@ -311,6 +311,7 @@ async def structured_messages[T: BaseModel](
     token = REQUEST_FIELDS.set(fields)
     # #737: an eval trace names the schema even when the prompt carries it.
     schema_token = STRUCTURED_SCHEMA.set(schema.__name__)
+    model_token = STRUCTURED_MODEL.set(schema)
     try:
         while True:
             if budget.expired():
@@ -376,6 +377,7 @@ async def structured_messages[T: BaseModel](
                 else (params or ModelParams()).merged(ModelParams(temperature=0.0))
             )
     finally:
+        STRUCTURED_MODEL.reset(model_token)
         STRUCTURED_SCHEMA.reset(schema_token)
         REQUEST_FIELDS.reset(token)
 

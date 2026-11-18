@@ -40,6 +40,7 @@ from epistrel.evals.report import (
     render_markdown,
 )
 from epistrel.evals.runner import CalibrationMissing
+from epistrel.evals.suites import Outcome, e12_direct, scenario_play
 from epistrel.evals.suites.e12_direct import (
     DIRECT_COMPLETED,
     E12_DIRECT,
@@ -48,8 +49,12 @@ from epistrel.evals.suites.e12_direct import (
     DirectCase,
     direct_metric_id,
     direct_outcome,
+    kept_id,
+    kept_outcome,
     mismatch_id,
     not_triggered_id,
+    object_blind,
+    same_words,
     select_mode,
 )
 from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
@@ -281,14 +286,14 @@ def test_e_12__m7() -> None:
     assert [f.metric_id for f in record.floors_passed] == ["NFR-QUAL-14"]
 
     six = _e12_report(
-        "calibrated", _all_seven(repair_rung_2=[SeedTally(s, 120, 30) for s in SEEDS])
+        "calibrated", _all_seven(repair_rung_3=[SeedTally(s, 120, 30) for s in SEEDS])
     )
     passed, failed, insufficient, covered, lacking, _ = floors_of(six)
     assert passed == []
     assert failed == []
     assert [f.metric_id for f in insufficient] == ["NFR-QUAL-14"]
-    assert lacking == ["repair_rung_2"]
-    assert "repair_rung_2" not in covered
+    assert lacking == ["repair_rung_3"]
+    assert "repair_rung_3" not in covered
     assert len(covered) == 6
     assert _record(six) is None  # no floor passed: no record
 
@@ -322,25 +327,27 @@ _HOOKED = (
 )
 
 
+# One say beat, nothing else scripted: age_repair alone fires (#938).
 _BROKEN = (
     '{"id": "direct-test-broken", "type": "age_repair", "say": "Who knocked?", "beats": '
-    '[{"kind": "say", "text": "A courier, boss.", "intent": "sincere"}, {"kind": "do", "text": '
-    '"A courier waits on the step."}], "introduces": [{"name": "a courier", "age_range": [20, '
-    '60]}], "stub": {"composition": "{\\"text\\": \\"\\\\\\"A courier, boss,\\\\\\" Bobby '
-    'says. A courier waits on the step.\\"}"}}'
+    '[{"kind": "say", "text": "A courier, boss.", "intent": "sincere"}], "introduces": [{"name": '
+    '"a courier", "age_range": [20, 60]}]}'
 )
 
 
 @pytest.mark.part("M11", "NFR-QUAL-14")
-async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+async def test_e_12__direct_mode(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """#936, #937: the direct suite plays every example case once through the real turn
     pipeline (only the render pinned to the prepared draft). Every judged type yields pairs,
     the scripted judge's sides are the rows' rates, a tie adds no pair, and each row is
     ``insufficient_evidence`` under 300 pairs. Each identity type fired on five cases, every one
     released unchanged: its row counts them and is ``insufficient_evidence`` below 50.
     Complements: a draft that contradicts nothing is ``not_triggered`` and adds no pair, and
-    so is an introduction that gave its age; an identity case whose polish is forced to alter
-    the text is a harness error naming the case."""
+    so is an introduction that gave its age; an identity case that fired alone and whose
+    released text is forced to differ from its draft is a harness error naming the case (a
+    change another intervention made beside it is a mismatch, #938)."""
     suite = SUITES[E12_DIRECT]
     cases = [c for c in suite.load(SETS) if isinstance(c, DirectCase)]
     by_type = Counter(c.type for c in cases)
@@ -387,8 +394,17 @@ async def test_e_12__direct_mode(pg_url: str, engine: AsyncEngine, tmp_path: Pat
     assert any("E-12 direct fingerprint `structured`" in n for n in result.notes)
     assert any("enough evidence on this run" in n and n.endswith("none.") for n in result.notes)
 
-    # Complement: an identity intervention that changed the prose fails loudly.
+    # Complement: an identity intervention that changed the prose fails loudly. On the stub
+    # pipeline only another intervention changes the text (a mismatch, #938), so the draft the
+    # turn report gives is altered: age_repair fired alone, and the release differs from it.
     broken = DirectCase.model_validate_json(_BROKEN)
+    real = scenario_play.first_draft
+
+    async def altered(*args: Any, **kwargs: Any) -> Any:
+        draft, *rest = await real(*args, **kwargs)
+        return (f"{draft} Altered.", *rest)
+
+    monkeypatch.setattr(e12_direct, "first_draft", altered)
     async with stub_engine(pg_url, engine) as lib:
         bad = await run(
             suite,
@@ -456,6 +472,20 @@ def test_e_12__direct_outcome_and_mode() -> None:
     assert direct_outcome("repair_rung_1", ("repair_rung_1",), changed=False) == "not_triggered"
     assert direct_outcome("repair_rung_1", ("repair_rung_1", "age_repair"), changed=True) == "pair"
     assert direct_outcome("repair_rung_2", ("repair_rung_1",), changed=True) == "mismatch"
+    # #938: an identity type's case counts its own change only.
+    assert direct_outcome("age_repair", ("age_repair",), changed=False) == "identity"
+    assert direct_outcome("age_repair", ("age_repair",), changed=True) == "broken"
+    assert direct_outcome("age_repair", ("repair_rung_3", "age_repair"), changed=True) == "mismatch"
+    assert direct_outcome("age_repair", ("repair_rung_3",), changed=True) == "mismatch"
+    assert direct_outcome("composition_fallback", (), changed=False) == "not_triggered"
+    # ADR-197: rung 2 is an identity type compared under object_blind (a substitution only).
+    assert "repair_rung_2" in IDENTITY_TYPES
+    assert object_blind("Bobby drops the coat on an armchair.") == object_blind(
+        "Bobby drops the coat on a hook."
+    )
+    assert object_blind("Bobby drops the coat on a hook.") != object_blind(
+        "Bobby drops it on a hook."
+    )
     every = ["e01", "e12", "e12_direct", "q01"]
     assert select_mode(every, None, default="full") == ["e01", "e12", "q01"]
     assert select_mode(every, "direct", default="full") == ["e01", "e12_direct", "q01"]
@@ -463,6 +493,59 @@ def test_e_12__direct_outcome_and_mode() -> None:
     assert select_mode(["e12_direct"], None, default="full") == ["e12_direct"]
     with pytest.raises(ValueError, match="needs e12"):
         select_mode(["q01"], "direct", default="full")
+
+
+def _polished(seed: int, counted: str) -> Outcome:
+    detail = {"seed": seed, "type": "composition_polished", "counted": counted}
+    if counted == "pair":
+        detail["preferred"] = "final"
+    return Outcome({}, detail=detail)
+
+
+def test_e_12__a_words_kept_polish_is_identity() -> None:
+    """#938, ADR-198 (the owner's option (a)): a polish that ran and kept the draft's words is
+    ``kept``, never judged; the type's row passes as identity on at least 50 polishes over two
+    seeds with under 5 % rewording, and is otherwise the relative rule over the rewording ones."""
+    assert same_words('*Bobby folds his arms.*\n\n"Mm."', 'Bobby folds his arms. "Mm."')
+    assert not same_words("Bobby folds his arms.", "Bobby crosses his arms.")
+    polished = ("composition_polished",)
+    # A verbatim polish records no type (its text equals the assembly), yet it ran: kept.
+    assert kept_outcome("composition_polished", (), False, polished=True, kept=True) == "kept"
+    assert kept_outcome("composition_polished", polished, True, polished=True, kept=True) == "kept"
+    assert kept_outcome("composition_polished", polished, True, polished=True, kept=False) == "pair"
+    # Something else fired: the words-kept rule does not apply.
+    both = ("repair_rung_3", "composition_polished")
+    assert kept_outcome("composition_polished", both, True, polished=True, kept=True) == "pair"
+    assert (
+        kept_outcome("composition_polished", ("repair_rung_3",), True, polished=True, kept=True)
+        == "mismatch"
+    )
+    assert (
+        kept_outcome("composition_polished", (), False, polished=False, kept=True)
+        == "not_triggered"
+    )
+    suite = SUITES[E12_DIRECT]
+    row = direct_metric_id("composition_polished")
+    (kept_metric,) = (m for m in suite.metrics if m.id == kept_id("composition_polished"))
+    assert kept_metric.rule is Rule.informational
+
+    def summary(kept: int, reworded: int, seeds: tuple[int, ...] = (1, 2)) -> dict[str, Any]:
+        outcomes = [
+            _polished(seed, "kept" if i < kept else "pair")
+            for seed in seeds
+            for i in range(kept + reworded)
+        ]
+        totals = suite.aggregate(outcomes)
+        assert totals[kept_id("composition_polished")].good == kept * len(seeds)  # type: ignore[union-attr]
+        return dict(suite.summarize(outcomes, "m").metrics.get(row, {}))
+
+    passed = summary(25, 1)  # 50 kept of 52 polishes, 3.8 % reworded
+    assert passed["verdict"] is Verdict.passed
+    assert passed["note"] == "identity: words kept in 50 of 52 polishes"
+    assert "verdict" not in summary(24, 2)  # 7.7 % reworded: the relative rule judges
+    assert "verdict" not in summary(24, 0)  # 48 polishes: short of 50
+    assert "verdict" not in summary(50, 0, seeds=(1,))  # one seed
+    assert summary(24, 0)["note"] == "words kept in 48 of 48 polishes"
 
 
 def test_e_12__one_section() -> None:

@@ -53,6 +53,10 @@ class CallTraceSink(Protocol):
 CALL_TRACE: ContextVar[CallTraceSink | None] = ContextVar("CALL_TRACE", default=None)
 EXCHANGES: ContextVar[list[Exchange] | None] = ContextVar("EXCHANGES", default=None)
 STRUCTURED_SCHEMA: ContextVar[str | None] = ContextVar("STRUCTURED_SCHEMA", default=None)
+STRUCTURED_MODEL: ContextVar[type[Any] | None] = ContextVar("STRUCTURED_MODEL", default=None)
+"""The schema class a structured call is for (``structured_messages`` sets it with
+``STRUCTURED_SCHEMA``): an adapter that routes by schema (the eval harness's render pin, #938)
+still sees it when the call sends no ``response_format`` and the schema rides in the prompt."""
 
 
 def exchange(body: dict[str, Any]) -> Exchange | None:
@@ -84,6 +88,7 @@ def error_of(exc: BaseException) -> dict[str, Any]:
 __all__ = [
     "CALL_TRACE",
     "EXCHANGES",
+    "STRUCTURED_MODEL",
     "STRUCTURED_SCHEMA",
     "CallTraceSink",
     "Exchange",

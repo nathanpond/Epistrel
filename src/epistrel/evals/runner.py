@@ -166,6 +166,7 @@ from epistrel.orchestrator.models.adapter import (
     ModelResult,
     ProbeResult,
 )
+from epistrel.orchestrator.models.call_trace import STRUCTURED_MODEL
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES
 from epistrel.orchestrator.models.registry import (
@@ -345,9 +346,15 @@ to the case's prepared draft; every other call of the turn stays on the run's mo
 
 
 def pinned_call(response_schema: type[Any] | None) -> bool:
-    """Whether a call with ``response_schema`` is pinned to the stub (``PINNED``)."""
+    """Whether a call with ``response_schema`` is pinned to the stub (``PINNED``). A structured
+    call that sends no ``response_format`` (an endpoint not in JSON-schema mode, the schema in
+    the prompt) passes ``None``; its schema is then the one ``STRUCTURED_MODEL`` names (#938:
+    without it, a live run's render was never pinned)."""
     pins = PINNED.get()
-    return bool(pins) and isinstance(response_schema, type) and issubclass(response_schema, pins)
+    if not pins:
+        return False
+    schema = response_schema if response_schema is not None else STRUCTURED_MODEL.get()
+    return isinstance(schema, type) and issubclass(schema, pins)
 
 
 class RoutedAdapter:
@@ -809,6 +816,11 @@ class SuiteRun:
     """The run's per-call trace (#737, ``evals.trace``): each case's calls, written as it
     ends; ``None``: no trace."""
 
+    @property
+    def live(self) -> bool:
+        """A real-model run (not the stub): what ``Suite.load_for`` loads for (#938)."""
+        return self.config.adapter != "stub"
+
 
 def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
     """The sample size ``suite_name`` runs at: ``None`` (its full set) when ``full`` names it."""
@@ -829,12 +841,13 @@ def planned_cases(
     sample: int | None = None,
     full: Collection[str] = (),
     seed_base: int = DEFAULT_SEED_BASE,
+    live: bool = True,
 ) -> int:
     """How many cases ``suite`` plays per seed, as ``run_suite`` selects them (0 for a malformed
-    set: the run reports it)."""
+    set: the run reports it); ``live``: a real-model run's sets (``Suite.load_for``)."""
     chosen = sample_for(suite.name, sample, full)
     try:
-        return len(_select(suite.load(sets_dir), chosen, seed_base)) + len(
+        return len(_select(suite.load_for(sets_dir, live=live), chosen, seed_base)) + len(
             suite.companions(sets_dir, chosen)
         )
     except MalformedCase:
@@ -1058,7 +1071,9 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         loaded = job.cases.get(suite.name)
         sample = sample_for(suite.name, job.sample, job.full)
         cases = _select(
-            loaded if loaded is not None else suite.load(job.sets_dir), sample, job.seed_base
+            loaded if loaded is not None else suite.load_for(job.sets_dir, live=job.live),
+            sample,
+            job.seed_base,
         )
         if loaded is None:
             cases += suite.companions(job.sets_dir, sample)

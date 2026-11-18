@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -259,7 +259,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 193 | A retrieved profile carries the relationships among the message's people, by default | Current | — |
 | 194 | A model error counts only in the rates its case's label puts it in | Current | — |
 | 195 | NFR-QUAL-14 is measured on prepared drafts, beside the full-turn rows | Current | — |
-| 196 | Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types | Current | — |
+| 196 | Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types | Partly superseded | 197, 198 |
+| 197 | Repair rung 2 is an identity intervention | Current | — |
+| 198 | A composition polish that keeps the draft's words is an identity observation | Current | — |
 
 ---
 
@@ -2163,16 +2165,42 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-196 — Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types
 **Status:** Accepted.
+**Amended by:** ADR-197 — repair rung 2 is a third identity type, compared with every item and place one label. ADR-198 — a composition polish that keeps the draft's words is an identity observation; only a rewording polish is judged.
 **Context:** NFR-QUAL-14 compares a first draft with the final message wherever an intervention changed it. Two of E-12's seven types never change the prose. The age repair answers an introduced character's age, which a turn's text does not carry, and the composition fallback releases the deterministic assembly of the verified beats, which is the draft when no rung fired. Neither can give a judged pair, so neither could ever reach 300. The owner decided on 2026-11-16 (R3) that both pass by construction. #233's certification record passed NFR-QUAL-14 when any one type was covered, so a certification could claim the floor on one rung.
 **Decision:** Applied by #937 (NFR-QUAL-14, FR-PROF-15). Amends ADR-115: certifications still list the types the floor covers, and claim NFR-QUAL-14 only when all seven pass.
 - `gate.Rule.identity` has no floor. A row passes when at least `IDENTITY_MIN_CASES` (50) fired cases, summed over at least two seeds, released the draft unchanged; one that changed fails it; fewer is `insufficient_evidence`. Its report row shows the floor as "identity" and the measure as "identity (n cases)", with no interval. It makes no judge call and is not judge-gated.
-- E-12's direct mode (ADR-195) measures `age_repair` (a draft introducing an ageless adult) and `composition_fallback` (a polish, pinned like the draft, that the composition's check refuses) as identity rows. A fired case whose released prose differs from the draft under `normalized` raises `IdentityBroken`, a harness error naming the case. `composition_polished` is judged in pairs, like the rungs.
+- E-12's direct mode (ADR-195) measures `age_repair` (a draft introducing an ageless adult) and `composition_fallback` (a polish, pinned like the draft, that the composition's check refuses) as identity rows. *[superseded in part by ADR-197: `repair_rung_2` is a third identity row]* A fired case whose released prose differs from the draft under `normalized` raises `IdentityBroken`, a harness error naming the case. `composition_polished` is judged in pairs, like the rungs. *[superseded in part by ADR-198: only a polish that rewords the draft is judged; one that keeps its words is an identity observation]*
 - A certification reads NFR-QUAL-14 from E-12's direct rows only; the full-turn rows are the realism check. NFR-QUAL-14 is a floor passed only when all seven types pass. A failing type is a floor failed, as before. Short of seven passing with none failing, NFR-QUAL-14 is a floor insufficient. `intervention_types_covered` lists every passing type, and a record's new `identity_types` lists the identity types among them. The record's `schema_version` is 2. A version 1 record keeps its verdicts as recorded. `identity_types` is kept in the record only, with no column and nothing in the certification API.
 - The report shows one E-12 section: the direct rows first, then the full-turn rows beside them.
 **Alternatives considered:** Judging the identity types' pairs would compare a text with itself, so every judgement would be a tie, never counted. Leaving them uncovered would keep NFR-QUAL-14 from ever passing under "all seven". Keeping "one type covers the floor" lets a certification claim NFR-QUAL-14 while most interventions are unmeasured.
 **Consequences:**
 - A certification before #937 that passed NFR-QUAL-14 on fewer than seven types stays as recorded, version 1. From #937 on, the claim needs all seven, so certifications will report NFR-QUAL-14 insufficient until the live sets (#938) reach 300 pairs a judged type and 50 cases an identity type.
 - `tests/eval/test_e_12.py::test_e_12__m7` pins the certification rule (all seven pass; six plus one insufficient does not; a failing type is a floor failed; an uncalibrated judge leaves only the identity types covered). `test_e_12__direct_mode` plays the identity examples and forces a polish that changes an identity case's text, which must fail the case by name.
+
+### ADR-197 — Repair rung 2 is an identity intervention
+**Status:** Accepted.
+**Context:** #938's pilot (hosted `claude-haiku-5-5`, Full, one seed, 40 cases) gave `repair_rung_2` a tie rate of 1.000: zero non-tied pairs, so no set size could ever reach NFR-QUAL-14's 300. A substitution replaces only the contradicted claim's object with canon's ("the armchair" becomes "the hook"). The judge sees places masked (`[PLACE_3]`, `[PLACE_2]`), with the passages otherwise word for word the same, so it can only call a tie. No recipe changes that: rung 2 swaps the object by definition. Unmasking places for rung 2 would give a judge with no canon an arbitrary preference, and leaving rung 2 judged would mean ADR-196's "all seven types" could never pass. The owner chose to make it an identity row on #938 (2026-11-16).
+**Decision:** Applied by #938 (NFR-QUAL-14). Amends ADR-196.
+- `repair_rung_2` joins `age_repair` and `composition_fallback` as an identity type (`e12_direct.IDENTITY_TYPES`). It has the same rule: at least 50 fired cases over at least two seeds pass, a changed one fails, and fewer is `insufficient_evidence`. No judge call is made.
+- Its released prose is compared with the draft under `e12_direct.object_blind`. That is the text with every S-COAT item and place replaced by one `[OBJECT]` label, and an article before the label written `a`, compared under `normalized`. A substitution then compares equal, and any other change does not. A fired rung-2 case that differs under it raises `IdentityBroken`, unless another intervention fired too, which makes it a `mismatch` (#938).
+- Its live set is sized as an identity type (`IDENTITY_SIZE`, 60 cases), with no pilot sizing.
+**Alternatives considered:** Unmask places for rung 2's pairs: the judge has no canon, so preferring "armchair" or "hook" would be arbitrary. Keep rung 2 judged and accept that it never certifies: NFR-QUAL-14 could then never pass under ADR-196.
+**Consequences:**
+- NFR-QUAL-14 names three identity types. A certification's `identity_types` can list `repair_rung_2`.
+- `tests/eval/test_e_12.py` pins `object_blind` (a substitution compares equal, a reworded beat does not), and `tests/evals/test_intervention_sets.py` checks the set's identity size.
+
+### ADR-198 — A composition polish that keeps the draft's words is an identity observation
+**Status:** Accepted.
+**Context:** #938 sized `composition_polished` from two pilots on hosted `claude-haiku-5-5` (Full, one seed, 40 cases). After the polish's token cap was fixed (#956: no polish cut off) and the recipe kept to canon, Haiku's polish still kept the draft's words in 40 of 41 calls. 16 returned it verbatim, which the turn report does not mark as a polish, so the case counted as not triggered. 24 only dropped the `*` markup and paragraph breaks, which the masked judge ties. One reworded the draft. Only 6 of 40 cases gave a non-tied pair, so no set size could reach NFR-QUAL-14's 300, and under ADR-196's "all seven types" NFR-QUAL-14 could never pass on such a model. A polish that changes no word cannot degrade voice or readability. The owner chose option (a) on #938 (2026-11-17).
+**Decision:** Applied by #938 (NFR-QUAL-14). Amends ADR-196.
+- A `composition_polished` case whose polish ran (`turn_report.composition.mode` is `polished`) and released the draft's words in order (`e12_direct.same_words`: case, punctuation, markup and white space aside), with no other type firing, counts as `kept`. It is never judged. A polish that reworded the draft is judged in pairs as before.
+- `e12.direct.kept.composition_polished` (informational) counts the polishes that ran as kept or reworded. Over at least two seeds, when at least 50 polishes ran (`IDENTITY_MIN_CASES`) and under 5 % of them reworded (`KEPT_MAX_REWORDED`), the suite's summary passes `nfr_qual_14.direct.composition_polished` as an identity observation, with the note "identity: words kept in k of n polishes". Otherwise the row stays the relative rule over the rewording polishes' pairs: 300 non-tied pairs a seed.
+- The live set is sized like an identity type (`authoring.interventions.KEPT_TYPES`, `IDENTITY_SIZE`: 60 cases), with no pilot sizing.
+- The row stays judge-gated: an uncalibrated judge leaves it report-only, as for the other judged rows. A certification needs a calibrated judge for the judged rungs anyway.
+**Alternatives considered:** Keep the type judged only: on models whose polish keeps the words, NFR-QUAL-14 could never be established. Strengthen the polish prompt so it rewords: that changes production behaviour for real stories, to suit an eval, and would be a story of its own.
+**Consequences:**
+- NFR-QUAL-14 names the words-kept polish rule beside the three identity types. A model whose polish rewords more than 5 % of the time still needs 300 non-tied pairs a seed for `composition_polished`.
+- `tests/eval/test_e_12.py::test_e_12__a_words_kept_polish_is_identity` pins `same_words`, the `kept` outcome (a verbatim polish counts) and the summary's thresholds (50 polishes, two seeds, under 5 %). `tests/evals/test_intervention_sets.py` checks the set's identity size.
 
 ---
 

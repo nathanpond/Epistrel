@@ -10,7 +10,11 @@ lint job) and ``python -m epistrel.evals digest``.
   YYYY-MM-DD``, or ``approved by owner: pending`` while the owner has not reviewed it yet.
   ``pending`` passes on a branch and fails where approval is required
   (``EPISTREL_REQUIRE_APPROVED_SETS=1``: CI on ``main``), so no unapproved set reaches a release;
-- ``docs/evals/sets-digest.md`` is not what ``digest`` writes.
+- ``docs/evals/sets-digest.md`` is not what ``digest`` writes;
+- one of #938's per-type E-12 intervention sets (``interventions/<type>/cases.jsonl``) does not
+  load as a direct case, is smaller than its ``sizing.json`` derives (50 for an identity type),
+  fails the content lint (``authoring.lint``: no minor, real person or explicit content), or its
+  ``SAMPLE.md`` (the owner's review sample, written by ``digest``) is stale.
 
 A suite whose set is optional (``Suite.set_optional``: #270's E-11, whose images are generated
 on the owner's machine and never committed) is skipped while its set file is absent, and held
@@ -40,6 +44,8 @@ from typing import Any
 
 import epistrel.evals.judging as judges
 from epistrel.evals import authoring
+from epistrel.evals.authoring import interventions
+from epistrel.evals.authoring import lint as content_lint
 from epistrel.evals.suites import SUITES, MalformedCase, Suite
 from epistrel.tools.generated import REPO_ROOT
 
@@ -56,6 +62,7 @@ STRATIFIED = frozenset(
         "think_leak/cases.jsonl",
         "entailment_viewpoint/cases.jsonl",
         "time_estimation/cases.jsonl",
+        *(interventions.set_file(kind) for kind in interventions.TYPES),
     }
 )
 """#179's sets, whose digest sample is stratified by family (the fixture, the category) and
@@ -133,7 +140,8 @@ def _row_label(row: dict[str, Any]) -> str:
 def _stratum(row: dict[str, Any]) -> tuple[str, str]:
     inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
     assert isinstance(inputs, dict)  # noqa: S101 - narrowed above
-    return str(row.get("family", "")), str(inputs.get("template", ""))
+    # #938's intervention cases carry their trigger variant at the top level.
+    return str(row.get("family", "")), str(inputs.get("template", row.get("template", "")))
 
 
 def stratified(rows: list[dict[str, Any]], rnd: random.Random) -> list[dict[str, Any]]:
@@ -173,11 +181,13 @@ def digest_text(sets_dir: Path) -> str:
         shown_sets.append((suite.set_file, suite.name))
     for set_file in (judges.CALIBRATION_SET,):
         shown_sets.append((set_file, "judge calibration"))
+    for kind in interventions.TYPES:
+        shown_sets.append((interventions.set_file(kind), f"e12_direct live, {kind}"))
     for set_file, owner in shown_sets:
         sharing = [s.name for s in labeled_suites() if s.set_file == set_file]
         owner = ", ".join(sharing) or owner
         path = sets_dir / set_file
-        if not path.is_file() and _optional(set_file):
+        if not path.is_file() and (_optional(set_file) or set_file.startswith(_LIVE_PREFIX)):
             continue
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
         families = Counter(str(r.get("family", "")) for r in rows)
@@ -203,9 +213,139 @@ def digest_text(sets_dir: Path) -> str:
     return "\n".join(lines)
 
 
+_LIVE_PREFIX = f"{interventions.SET}/"
+SAMPLE = "SAMPLE.md"
+IDENTITY_MIN = 50
+"""The fewest cases an identity type's set holds (owner R3, #938)."""
+EXPECTED = {
+    "repair_rung_1": "narrowing: the sentence putting the coat on the armchair is dropped",
+    "repair_rung_2": "substitution: the armchair is replaced by canon's place, the hook",
+    "repair_rung_3": "regeneration: the run's model rewrites the beat without the armchair claim",
+    "repair_rung_4": (
+        "safe fallback (one attempt for two contradicting beats): a beat becomes Bobby's "
+        "fallback line"
+    ),
+    "composition_polished": "the composition polishes the beats into one message",
+    "composition_fallback": (
+        "the prepared polish adds the armchair claim, the check refuses it, and the draft is "
+        "released unchanged"
+    ),
+    "age_repair": "the age repair gives the newcomer a concrete adult age; the prose is unchanged",
+}
+"""What each type's case expects, as the review sample states it."""
+
+
+def _quoted(text: str) -> str:
+    return '"' + text.replace("\n", " ") + '"'
+
+
+def sample_text(sets_dir: Path, kind: str) -> str:
+    """``interventions/<kind>/SAMPLE.md``: the owner's review sample (#938): ``DIGEST_SAMPLES``
+    cases drawn with ``DIGEST_SEED``, stratified by trigger variant, each shown as its draft,
+    its trigger and the intervention it expects."""
+    rows = [
+        json.loads(line)
+        for line in (sets_dir / interventions.set_file(kind)).read_text("utf-8").splitlines()
+        if line
+    ]
+    rnd = random.Random(f"{DIGEST_SEED}:{interventions.SET}:{kind}")  # noqa: S311 - a sample
+    picked = sorted(stratified(rows, rnd), key=_row_id)
+    variants = Counter(str(r.get("template", "")) for r in rows)
+    lines = [
+        f"# `{interventions.SET}/{kind}`: review sample",
+        "",
+        "Generated by `uv run python -m epistrel.evals digest` (#938); `--check-sets` fails "
+        f"when it is stale. The set holds {len(rows)} cases; these {len(picked)} were drawn "
+        f"with seed {DIGEST_SEED}, stratified by trigger variant ("
+        + ", ".join(f"{k} {v}" for k, v in sorted(variants.items()))
+        + "). `PROVENANCE.md` beside this file has the recipe, the pilot's rates and the size.",
+        "",
+        f"**Expected intervention:** `{kind}`: {EXPECTED[kind]}.",
+        "",
+        "Canon in every case (S-COAT): the coat is on the hook, the hook is in the hallway, the "
+        "armchair is in the parlor, and Wren (the player) and Bobby are in the parlor.",
+        "",
+    ]
+    for row in picked:
+        lines += [f"## `{_row_id(row)}` ({row.get('template', '')})", ""]
+        lines.append(f"- **Wren says:** {_quoted(str(row['say']))}")
+        lines.append("- **Draft:**")
+        for beat in row["beats"]:
+            claims = "".join(
+                f" (declares {c['subject']} {c['relation']} {c['object']})"
+                for c in beat.get("propositions", [])
+            )
+            lines.append(f"  - {beat['kind']}: {_quoted(beat['text'])}{claims}")
+        for intro in row.get("introduces", []):
+            span = intro.get("age_range")
+            age = f"age {span[0]} to {span[1]}" if span else f"age {intro.get('age')}"
+            lines.append(f"- **Introduces:** {intro['name']} ({age}; {intro.get('clue', '')})")
+        if row.get("polish"):
+            lines.append(f"- **Prepared polish:** {_quoted(str(row['polish']))}")
+        if row.get("dials"):
+            lines.append(f"- **Dials:** `{json.dumps(row['dials'])}`")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def write_digest(sets_dir: Path, path: Path = DIGEST) -> Path:
+    """The digest, and each intervention type's review sample (#938)."""
     path.write_text(digest_text(sets_dir), encoding="utf-8")
+    for kind in interventions.TYPES:
+        if (sets_dir / interventions.set_file(kind)).is_file():
+            sample = sets_dir / interventions.SET / kind / SAMPLE
+            sample.write_text(sample_text(sets_dir, kind), encoding="utf-8")
     return path
+
+
+def intervention_problems(
+    sets_dir: Path, *, require_approved: bool = False
+) -> tuple[list[str], set[Path]]:
+    """#938's per-type E-12 sets: each loads as a ``DirectCase``, is at least its size (a pair
+    type's ``sizing.json``, which it must have; ``IDENTITY_MIN`` for an identity or kept type),
+    passes the content lint and has a current ``SAMPLE.md``. A ``sizing.json`` that records the
+    type as ``blocked`` (the pilot gave no size the rule allows; the owner decides) passes like a
+    ``pending`` approval: on a branch, not where approval is required. Also the directories
+    whose ``PROVENANCE.md`` the caller checks."""
+    suite = SUITES["e12_direct"]
+    found: list[str] = []
+    directories: set[Path] = set()
+    for kind in interventions.TYPES:
+        relative = interventions.set_file(kind)
+        directory = sets_dir / interventions.SET / kind
+        try:
+            cases = suite.load_file(sets_dir, relative)
+        except MalformedCase as exc:
+            found.append(str(exc))
+            continue
+        directories.add(directory)
+        if any(getattr(c, "type", None) != kind for c in cases):
+            found.append(f"{relative}: holds a case of another type")
+        if kind in interventions.PAIR_TYPES:
+            sized = interventions.sizing(sets_dir, kind)
+            least = None if sized is None or sized.get("size") is None else int(sized["size"])
+            if sized is None:
+                found.append(f"{relative}: no {interventions.SIZING} (run the pilot, #938)")
+            elif least is None and (require_approved or not sized.get("blocked")):
+                reason = sized.get("blocked") or "no size"
+                found.append(f"{relative}: not sized ({reason})")
+        else:
+            least = IDENTITY_MIN
+        if least is not None and len(cases) < least:
+            found.append(f"{relative}: {len(cases)} cases, fewer than its {least}")
+        rows = [
+            json.loads(line)
+            for line in (sets_dir / relative).read_text("utf-8").splitlines()
+            if line
+        ]
+        for row in rows:
+            found += content_lint.problems(row)
+        sample = directory / SAMPLE
+        if not sample.is_file() or sample.read_text("utf-8") != sample_text(sets_dir, kind):
+            found.append(
+                f"{relative}: {SAMPLE} is stale: run `uv run python -m epistrel.evals digest`"
+            )
+    return found, directories
 
 
 def problems(
@@ -241,6 +381,9 @@ def problems(
                 f"judge calibration: {len(pairs)} pairs, fewer than {judges.CALIBRATION_MIN_PAIRS}"
             )
         directories.add((sets_dir / judges.CALIBRATION_SET).parent)
+    live, live_directories = intervention_problems(sets_dir, require_approved=require_approved)
+    found += live
+    directories |= live_directories
     for directory in sorted(directories):
         problem = provenance_problem(directory, require_approved=require_approved)
         if problem is not None:
@@ -256,12 +399,16 @@ def problems(
 __all__ = [
     "APPROVED",
     "DIGEST",
+    "IDENTITY_MIN",
     "PENDING",
     "PROVENANCE",
     "REQUIRE_APPROVED",
+    "SAMPLE",
     "digest_text",
+    "intervention_problems",
     "labeled_suites",
     "problems",
     "provenance_problem",
+    "sample_text",
     "write_digest",
 ]

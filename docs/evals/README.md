@@ -278,7 +278,7 @@ measures.
 | `q02` | Q-02: referential and temporal resolution (the retrieval pipeline's resolve stage) | report only | `retrieval/resolution.jsonl` (120) | #139, #157 |
 | `q03` | Q-03: abstract-query recall with vs without the reflection tier | report only | `retrieval/abstract.jsonl` (60) | #143, #157 |
 | `e12` | E-12 (M4): engine interventions and prose. Every turn where a repair rung, the composition or its polish changed the first draft is a pair; the masked pair is judged by `quality_judge` in both orders. First-draft preference rate per intervention type and fingerprint, with its Wilson 95 % interval. | mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed, else insufficient evidence (relative) | `scenarios/` (21 scenarios × 4 turns) | #158 |
-| `e12_direct` | E-12 direct mode (M11, ADR-195): one prepared first draft per case, played as one real turn with only the render pinned to the draft. A pair when the case's declared intervention changed it; the age repair and the composition fallback are identity rows; `e12.direct.not_triggered.<type>` and `e12.direct.mismatch.<type>` count the cases that add nothing. Selected with `--e12-mode` (below). | `nfr_qual_14.direct.<type>`: mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed (relative), or 50 unchanged fired cases (identity); else insufficient evidence | `interventions/examples.jsonl` (CI examples, 5 or more per type; live sets #938) | #936, #937 |
+| `e12_direct` | E-12 direct mode (M11, ADR-195): one prepared first draft per case, played as one real turn with only the render pinned to the draft. A pair when the case's declared intervention changed it; the age repair, the composition fallback and repair rung 2 are identity rows, and a polish that keeps the draft's words is an identity observation (ADR-198); `e12.direct.not_triggered.<type>` and `e12.direct.mismatch.<type>` count the cases that add nothing. Selected with `--e12-mode` (below). | `nfr_qual_14.direct.<type>`: mean + SD ≤ 55 % on ≥ 300 non-tied pairs per seed (relative), or 50 unchanged fired cases (identity); else insufficient evidence | `interventions/examples.jsonl` (CI examples, 5 or more per type; live sets #938) | #936, #937 |
 | `e13` | E-13 (M4): text-quality signals per fingerprint: repetition, repeated openings, length accuracy (model-free), voice consistency and story-driver adherence (judge scores, uncalibrated in M4), and the Spearman correlation with users' ratings | report only (no gate) | `scenarios/` | #158 |
 | `e01_viewpoint` | E-01 (M5): a character's own claims through `Verifier.verify` against canon and its belief partition, with the declared intent: lies, false beliefs and belief-consistent claims, none of which may be repaired | false contradiction ≤ 2 %, false support ≤ 1 % (rate; NFR-QUAL-2's floors gate from M9, ADR-164); accuracy reported | `entailment_viewpoint/` (300) | #179 |
 | `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
@@ -544,11 +544,39 @@ case has a `polish`: the prepared polish, pinned like the draft, which the compo
 must refuse. `stub` is for CI's examples only (the scripted regeneration, polish and judge's
 side).
 
-**Identity types** (#937, ADR-196). The age repair and the composition fallback never change
-the prose, so they are not judged. Their row (`Rule.identity`) counts the cases where they fired
+**Identity types** (#937, ADR-196; ADR-197). The age repair and the composition fallback never
+change the prose, and repair rung 2 changes only the claim's object, which a masked judge
+cannot tell apart (#938's pilot: every pair tied). So none of them is judged. Rung 2's prose is
+compared under `object_blind`: every S-COAT item and place becomes one label. Their row
+(`Rule.identity`) counts the cases where they fired
 and the released message equalled the draft. It passes at 50 such cases over at least two
 seeds. A fired case whose prose changed stops the case with a harness error that names it
-(`IdentityBroken`). The report shows these rows as "identity (n cases)".
+(`IdentityBroken`), unless another intervention fired on the same turn: then the change is not
+the identity type's, and the case counts as a mismatch (#938). The report shows these rows as
+"identity (n cases)".
+
+**A words-kept polish** (#938, ADR-198). On hosted Haiku the composition's polish kept the
+draft's words in 40 of 41 calls: it returned the draft, or dropped only its markup. A
+`composition_polished` case whose polish ran and kept the words (`same_words`: case,
+punctuation, markup and white space aside), with no other type firing, counts as `kept` and is
+not judged. `e12.direct.kept.composition_polished` counts the polishes that ran as kept or
+reworded. With at least 50 polishes over at least two seeds and under 5 % reworded, the
+summary passes `nfr_qual_14.direct.composition_polished` with the note "identity: words kept in
+k of n polishes". Otherwise the row is the relative rule over the rewording polishes' pairs.
+
+**The live sets** (#938). A stub run plays the CI examples (`interventions/examples.jsonl`); a
+real-model run plays the seven per-type sets, `interventions/<type>/cases.jsonl`, generated by
+`authoring.interventions` (templates and pools over S-COAT, no model) and never falls back to the
+examples. Each type's directory holds its `PROVENANCE.md` (the recipe, the pilot's rates, the
+owner's approval line), a `SAMPLE.md` (20 cases drawn with the digest's seed, stratified by
+trigger variant, for the owner's review) and, for a judged type, a `sizing.json`: the pilot's
+tie, not-triggered and mismatch rates and the size derived from them,
+`ceil(300 / (1 − tie − not_triggered − mismatch) × 1.15)`, at least 360 and at most 1,500. An
+identity type's set, and the polished set (ADR-198), holds at least 50 cases (60 generated). `--check-sets` checks each set against the direct
+case model, its size, the generator, its `SAMPLE.md` and a content lint (`authoring.lint`: names
+from the cast and `authoring.names` only, ages only in structured fields and at least 18, no
+explicit words). A rung-4 case carries the dial `repair.max_attempts: 1` and two contradicting
+beats, so one has no attempt left and falls to the safe fallback.
 
 **Certification** (#937). A certification reads NFR-QUAL-14 from the direct rows only. It
 passes only when all seven types pass. A failing type is a floor failed, and anything else

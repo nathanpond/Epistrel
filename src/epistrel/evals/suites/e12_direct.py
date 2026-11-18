@@ -14,30 +14,49 @@ the composition are the production pipeline's own, on the run's model. A
 The observed types come from the turn report (``scenario_play.first_draft``). How a case counts
 (``direct_outcome``):
 
-- **judged types** (``repair_rung_1``..``repair_rung_4``, ``composition_polished``): a draft the
+- **judged types** (``repair_rung_1``, ``repair_rung_3``, ``repair_rung_4``,
+  ``composition_polished``'s rewording polishes): a draft the
   turn left unchanged is ``e12.direct.not_triggered.<type>``; one changed while its declared
   type did not fire is ``e12.direct.mismatch.<type>``; otherwise the masked draft and final
   message are judged in both orders, as in full mode, and a non-tied judgement is an
   observation of ``nfr_qual_14.direct.<type>`` (the relative rule: mean + SD ≤ 55 % on at least
   300 non-tied pairs a seed);
-- **identity types** (``age_repair``, ``composition_fallback``; the owner's R3, 2026-11-16):
-  these release the draft's prose unchanged by construction. A fired case whose released prose
-  differs from the draft under ``normalized`` raises ``IdentityBroken``, a harness error naming
-  the case; a fired, unchanged case is a good observation of ``nfr_qual_14.direct.<type>``,
+- **identity types** (``age_repair``, ``composition_fallback``; the owner's R3, 2026-11-16;
+  ``repair_rung_2``, the owner's call on #938, ADR-197): these release the draft's prose
+  unchanged by construction, rung 2 save the claim's object (``object_blind``: every S-COAT
+  item and place is one label, so a substitution compares equal and nothing else does). A
+  case where the type fired alone and the released prose differs from the draft under
+  ``normalized`` (rung 2: of ``object_blind``) raises ``IdentityBroken``,
+  a harness error naming the case (a change another intervention also made is a ``mismatch``,
+  #938); a fired, unchanged case is a good observation of ``nfr_qual_14.direct.<type>``,
   judged by ``Rule.identity`` (at least 50 fired cases over at least two seeds, none differing).
   No judge call is made and the row is not judge-gated. A case where the type did not fire is
   ``not_triggered`` (``mismatch`` when something else changed it).
 
+- **a words-kept polish** (``composition_polished``; the owner's call on #938, ADR-198): a
+  polish that ran (``turn_report.composition.mode`` is ``polished``) and released the draft's
+  words unchanged (``same_words``: case, punctuation, markup and white space aside), with no
+  other type firing, is ``kept``, never judged, and counts toward
+  ``e12.direct.kept.composition_polished``. Over at least two seeds, when at least
+  ``IDENTITY_MIN_CASES`` (50) polishes ran and under ``KEPT_MAX_REWORDED`` (5 %) of them
+  reworded the draft, ``summarize`` passes the type's row
+  (``nfr_qual_14.direct.composition_polished``) as an identity observation; otherwise the row
+  is the relative rule over the rewording polishes' pairs (300 non-tied pairs a seed).
+
 The rows run on the ``structured`` configuration only and are never pooled with the full-mode
 rows. ``--e12-mode full|direct|both`` selects the suites (``select_mode``). On the stub the
 examples (``evals/sets/interventions/examples.jsonl``, CI only) script the regeneration, the
-polish and the judge's side.
+polish and the judge's side; a real-model run plays the seven per-type live sets instead
+(``LIVE_SET_PATHS``, ``authoring.interventions``; #938), never the examples. A case's ``dials``
+patch its story's settings over the configuration (rung 4's ``repair.max_attempts: 1``).
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -45,12 +64,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from epistrel.core.mutation import FactRequest
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import StorySpec
 from epistrel.evals import scenes
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.judging import Preference, mask, normalized, script_pair
 from epistrel.evals.metrics import wilson
-from epistrel.evals.suites import Aggregate, CaseModel, Counts, Outcome, Suite, Summary, register
+from epistrel.evals.suites import (
+    Aggregate,
+    CaseModel,
+    Counts,
+    MalformedCase,
+    Outcome,
+    Suite,
+    Summary,
+    register,
+)
 from epistrel.evals.suites.e12_interventions import E12, FLOOR
 from epistrel.evals.suites.scenario_play import (
     CAST,
@@ -88,10 +117,25 @@ DirectType = Literal[
     "age_repair",
 ]
 DIRECT_TYPES: tuple[DirectType, ...] = INTERVENTION_TYPES
-IDENTITY_TYPES: frozenset[str] = frozenset({"age_repair", "composition_fallback"})
-"""The types that release the draft's prose unchanged by construction (R3, #937)."""
+IDENTITY_TYPES: frozenset[str] = frozenset({"age_repair", "composition_fallback", "repair_rung_2"})
+"""The types that release the draft's prose unchanged by construction (R3, #937), rung 2 save
+the claim's object (#938, ADR-197)."""
+OBJECT_ONLY: frozenset[str] = frozenset({"repair_rung_2"})
+"""Identity types compared under ``object_blind``: a substitution only swaps the object."""
+_PLACE_LABEL = re.compile(r"\[PLACE_\d+\]")
+_ARTICLE = re.compile(r"\b(?:a|an)\s+\[OBJECT\]", re.IGNORECASE)
+KEPT_TYPES: frozenset[str] = frozenset({"composition_polished"})
+"""Judged types whose words-kept change is an identity observation (#938, ADR-198)."""
+KEPT_MAX_REWORDED = 0.05
+"""A kept type passes as identity while under this share of its fired cases reworded."""
+_WORD = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)*")
 JUDGED_TYPES: tuple[str, ...] = tuple(t for t in DIRECT_TYPES if t not in IDENTITY_TYPES)
 DIRECT_SET_PATH = "interventions/examples.jsonl"
+"""The CI examples a stub run plays (scripted answers; #936)."""
+LIVE_SET_PATHS: tuple[str, ...] = tuple(
+    f"interventions/{t}/cases.jsonl" for t in INTERVENTION_TYPES
+)
+"""The per-type live sets a real-model run plays (#938; ``authoring.interventions``)."""
 DIRECT_MIN_PER_TYPE = 5
 E12_MODES = ("full", "direct", "both")
 DIRECT_COMPLETED = "e12.direct.completed"
@@ -117,6 +161,10 @@ def not_triggered_id(kind: str) -> str:
 
 def mismatch_id(kind: str) -> str:
     return f"e12.direct.mismatch.{kind}"
+
+
+def kept_id(kind: str) -> str:
+    return f"e12.direct.kept.{kind}"
 
 
 NAMES = frozenset({PLAYER, RENDERER, *ITEMS, *PLACES})
@@ -169,8 +217,17 @@ class DirectStub(BaseModel):
 class DirectCase(CaseModel):
     """A prepared first draft with its trigger in it (module docstring)."""
 
-    id: str = Field(pattern=r"^direct-[A-Za-z0-9_.:-]{1,72}$")
+    id: str = Field(pattern=r"^(direct|interventions)-[A-Za-z0-9_.:-]{1,72}$")
+    """``direct-…`` for a CI example, ``interventions-<type>-<nnnn>`` for a live set's (#938)."""
     type: DirectType
+    family: str | None = None
+    """A live set's envelope (#938): its type, its origin and its trigger variant (the digest's
+    stratum)."""
+    origin: str | None = None
+    template: str | None = None
+    dials: dict[str, Any] | None = None
+    """A settings merge patch the case's story runs over the configuration (#938: rung 4's
+    ``repair.max_attempts: 0``); part of the set, so of its digest."""
     say: str = Field(min_length=1, max_length=500)
     beats: list[DirectBeat] = Field(min_length=1, max_length=8)
     introduces: list[DirectIntroduction] = Field(default_factory=list, max_length=4)
@@ -191,6 +248,8 @@ class DirectCase(CaseModel):
             raise ValueError("a composition_fallback case, and only one, has a prepared polish")
         if any(i.name in NAMES for i in self.introduces):
             raise ValueError("introduces names a character or place the story already has")
+        if self.family is not None and self.family != self.type:
+            raise ValueError("a live case's family is its type")
         if self.type == "age_repair" and not self.introduces:
             raise ValueError("an age_repair case introduces a new character")
         if any(i.age is None and (i.age_range or [0])[0] < ADULT for i in self.introduces):
@@ -205,14 +264,44 @@ class DirectCase(CaseModel):
         return json.dumps(found)
 
 
+def object_blind(text: str) -> str:
+    """``text`` normalized with every S-COAT item and place one ``[OBJECT]`` label (an article
+    before it ``a``): rung 2's substitution swaps only the claim's object, so its released prose
+    equals the draft under this and any other change does not (#938, ADR-197)."""
+    masked = _PLACE_LABEL.sub("[OBJECT]", mask(text, (), (*ITEMS, *PLACES)))
+    return normalized(_ARTICLE.sub("a [OBJECT]", masked))
+
+
+def same_words(draft: str, final: str) -> bool:
+    """Whether ``final`` keeps ``draft``'s words in order: case, punctuation, markup (``*``)
+    and white space aside (#938, ADR-198: a polish that only drops formatting kept them)."""
+    return _WORD.findall(draft.lower()) == _WORD.findall(final.lower())
+
+
+def kept_outcome(
+    declared: str, types: Sequence[str], changed: bool, *, polished: bool, kept: bool
+) -> str:
+    """How a played ``composition_polished`` case counts (module docstring): a polish that ran
+    (``polished``) and kept the draft's words (``kept``) with nothing else firing is ``kept``;
+    otherwise ``direct_outcome``'s (a verbatim polish shows no type, so is matched here)."""
+    others = [t for t in types if t != declared]
+    if polished and kept and not others:
+        return "kept"
+    return direct_outcome(declared, types, changed)
+
+
 def direct_outcome(declared: str, types: Sequence[str], changed: bool) -> str:
     """How a played direct case counts (module docstring): ``pair``, ``identity``,
-    ``not_triggered``, ``mismatch``, or ``broken`` (an identity type fired and the prose
-    changed)."""
+    ``not_triggered``, ``mismatch``, or ``broken`` (an identity type fired alone and the prose
+    changed). An identity case whose prose another intervention also changed is a
+    ``mismatch``: the change is not the identity type's (#938, found live: a repair of a beat
+    beside the introduction)."""
     if declared in IDENTITY_TYPES:
-        if declared in types:
-            return "broken" if changed else "identity"
-        return "mismatch" if changed else "not_triggered"
+        if declared not in types:
+            return "mismatch" if changed else "not_triggered"
+        if not changed:
+            return "identity"
+        return "mismatch" if any(t != declared for t in types) else "broken"
     if not changed:
         return "not_triggered"
     return "pair" if declared in types else "mismatch"
@@ -250,6 +339,15 @@ def _direct_metrics() -> tuple[Metric, ...]:
                 description=f"direct {kind} cases where {label} did not fire",
             )
         )
+        if kind in KEPT_TYPES:
+            found.append(
+                Metric(
+                    kept_id(kind),
+                    Rule.informational,
+                    direction=Direction.at_least,
+                    description=f"direct {kind} polishes that ran and kept the draft's words",
+                )
+            )
         found.append(
             Metric(
                 mismatch_id(kind),
@@ -286,19 +384,34 @@ class E12DirectSuite(Suite):
     reading_notes = (
         "E-12 direct mode (M11) plays one prepared first draft per case through the real turn "
         "pipeline (only the render is pinned to the draft) and pairs the draft with the final "
-        "message when the case's declared intervention changed it. Age repair and composition "
-        "fallback are identity rows: every fired case released the draft unchanged. The direct "
+        "message when the case's declared intervention changed it. Age repair, composition "
+        "fallback and repair rung 2 are identity rows: every fired case released the draft "
+        "unchanged. A composition polish that kept the draft's words is an identity "
+        "observation; one that reworded it is judged. The direct "
         "rows are reported beside the full-turn rows, never pooled with them.",
     )
 
     def __init__(self) -> None:
         self._pinned: set[tuple[int, str]] = set()
 
+    def load_for(self, sets_dir: Path, *, live: bool) -> list[CaseModel]:
+        """A stub run plays the scripted CI examples; a real-model run the seven per-type live
+        sets (#938), never the examples (a missing set is a malformed suite)."""
+        if not live:
+            return self.load(sets_dir)
+        cases = [case for path in LIVE_SET_PATHS for case in self.load_file(sets_dir, path)]
+        ids = [case.id for case in cases]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise MalformedCase(f"{self.name}: duplicate case ids {duplicates}")
+        return cases
+
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, DirectCase)  # noqa: S101 - load() validated it
         created = await ctx.story(StorySpec(characters=list(CAST)))
         story_id = created.story_id
-        await scenes.structured(ctx.engine, ctx.principal, story_id, CONFIG_DIALS[DIRECT_CONFIG])
+        dials = merge_patch(dict(CONFIG_DIALS[DIRECT_CONFIG]), case.dials or {})
+        await scenes.structured(ctx.engine, ctx.principal, story_id, dials)
         await ctx.engine.update_story_settings(ctx.principal, story_id, {"player_view": "story"})
         found = await plant(ctx, story_id, [c.id for c in created.characters])
         ids = {c.name: c.id for c in created.characters}
@@ -330,9 +443,18 @@ class E12DirectSuite(Suite):
         with ctx.pinned(pins):
             result = await ctx.engine.respond(ctx.principal, story_id, request)
         names = {c.id: c.name for c in created.characters}
-        draft, _, types, _ = await first_draft(ctx, result, names)
+        draft, _, types, report = await first_draft(ctx, result, names)
         final = result.message.text
-        counted = direct_outcome(case.type, types, normalized(draft) != normalized(final))
+        changed = normalized(draft) != normalized(final)
+        if changed and case.type in OBJECT_ONLY and case.type in types:
+            changed = object_blind(draft) != object_blind(final)
+        if case.type in KEPT_TYPES:
+            ran = (report.get("composition") or {}).get("mode") == "polished"
+            counted = kept_outcome(
+                case.type, types, changed, polished=ran, kept=same_words(draft, final)
+            )
+        else:
+            counted = direct_outcome(case.type, types, changed)
         if counted == "broken":
             raise IdentityBroken(
                 f"{case.id}: {case.type} fired and the released prose differs from the draft"
@@ -367,8 +489,9 @@ class E12DirectSuite(Suite):
 
     def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
         """Per judged type, the seed's non-tied pairs as (final preferred, draft preferred); per
-        identity type, its fired cases (all unchanged: a changed one raised); per type, its
-        not-triggered and mismatched cases as a share of its played cases."""
+        identity type, its fired cases (all unchanged: a changed one raised); per kept type,
+        its polishes that ran as (kept the words, reworded); per type, its not-triggered and
+        mismatched cases as a share of its played cases."""
         prefer: dict[str, list[int]] = {m.id: [0, 0] for m in self.metrics}
         for outcome in outcomes:
             kind = outcome.detail.get("type")
@@ -380,6 +503,8 @@ class E12DirectSuite(Suite):
             # Both are ``at_most`` shares: the case they name is the bad side.
             prefer[not_triggered_id(str(kind))][1 if counted == "not_triggered" else 0] += 1
             prefer[mismatch_id(str(kind))][1 if counted == "mismatch" else 0] += 1
+            if kind in KEPT_TYPES and counted in ("kept", "pair"):
+                prefer[kept_id(str(kind))][0 if counted == "kept" else 1] += 1
             side = outcome.detail.get("preferred")
             if counted == "identity":
                 prefer[direct_metric_id(str(kind))][0] += 1
@@ -388,9 +513,15 @@ class E12DirectSuite(Suite):
         return {key: Counts(good, bad) for key, (good, bad) in prefer.items()}
 
     def summarize(self, outcomes: Sequence[Outcome], model: str) -> Summary:
-        """Each judged row's pooled Wilson interval, the fingerprint and the types the floor
+        """Each judged row's pooled Wilson interval, a kept type's identity verdict when its
+        polishes kept the words (module docstring), the fingerprint and the types the floor
         covers on this run."""
-        from epistrel.evals.gate import IDENTITY_MIN_CASES, MIN_SEEDS, RELATIVE_MIN_PAIRS
+        from epistrel.evals.gate import (
+            IDENTITY_MIN_CASES,
+            MIN_SEEDS,
+            RELATIVE_MIN_PAIRS,
+            Verdict,
+        )
         from epistrel.evals.runner import run_fingerprint
 
         totals = self.aggregate(outcomes)
@@ -416,6 +547,19 @@ class E12DirectSuite(Suite):
             if per_seed
             and min(_n(found[direct_metric_id(kind)]) for found in per_seed) >= RELATIVE_MIN_PAIRS
         )
+        for kind in sorted(KEPT_TYPES):
+            ran = totals[kept_id(kind)]
+            assert isinstance(ran, Counts)  # noqa: S101 - aggregate gives counts
+            fired = ran.good + ran.bad
+            note = f"words kept in {ran.good} of {fired} polishes"
+            row = metrics.setdefault(direct_metric_id(kind), {})
+            enough = len(per_seed) >= MIN_SEEDS and fired >= IDENTITY_MIN_CASES
+            if enough and ran.bad < KEPT_MAX_REWORDED * fired:
+                row.update(verdict=Verdict.passed, note=f"identity: {note}")
+                if kind not in covered:
+                    covered.append(kind)
+            else:
+                row["note"] = note
         covered += sorted(
             kind
             for kind in IDENTITY_TYPES
@@ -426,7 +570,7 @@ class E12DirectSuite(Suite):
         notes = [
             f"E-12 direct fingerprint `{DIRECT_CONFIG}`: `{fingerprint}`.",
             "E-12 direct types with enough evidence on this run (300 non-tied pairs per seed; "
-            "50 fired cases for an identity type): "
+            "50 fired cases for an identity type, or for a polish that kept the words): "
             + (", ".join(f"`{k}`" for k in covered) or "none")
             + ".",
         ]
@@ -489,12 +633,20 @@ __all__ = [
     "E12_MODES",
     "IDENTITY_TYPES",
     "JUDGED_TYPES",
+    "KEPT_MAX_REWORDED",
+    "KEPT_TYPES",
+    "LIVE_SET_PATHS",
+    "OBJECT_ONLY",
     "DirectCase",
     "E12DirectSuite",
     "IdentityBroken",
     "direct_metric_id",
     "direct_outcome",
+    "kept_id",
+    "kept_outcome",
     "mismatch_id",
     "not_triggered_id",
+    "object_blind",
+    "same_words",
     "select_mode",
 ]

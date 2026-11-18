@@ -15196,3 +15196,97 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #935, #953
 - **Decision (#953, planner discretion):** the lock is one `asyncio.Lock` per running event loop (`runner.scratch_ddl_lock`, a `WeakKeyDictionary` keyed by the loop). An eval process runs one loop, so the lock covers the whole run across suites, and a test on a fresh loop never meets a lock bound to another loop (a module-level lock would). It covers only `Engine.create_story` and `Engine.delete_story`: the profile-override write after a create, and every turn and commit, stay outside, so cases still overlap. `sweep` takes it too. The suite-level setup stories go through `Scratch`, so they share it.
   **Issue:** #953
+- **Decision:** #938 goes on its own branch (`milestone/m11-run4-sets`, from `milestone/m11-run4`) and its own PR. Its PR waits for your approval of the samples, and one shared PR would have held #953 too.
+  **Issue:** #938, #953
+- **Fix (Rule 3, blocker; found by #938's live smoke):** E-12 direct mode's render pin never held on a live run. On an endpoint not in JSON-schema mode (hosted Haiku for the render schema), `structured_messages` sends `response_schema=None` and puts the schema in the prompt, so `runner.pinned_call`'s schema-class check never matched. Every direct case on Haiku played the model's own render, not the prepared draft (probe: finals unrelated to the drafts; a routing trace showed `generation schema=NoneType … real=True`). The fix: `call_trace.STRUCTURED_MODEL` (beside `STRUCTURED_SCHEMA`) carries the schema class the call is for, set by `structured_messages`, and `pinned_call` reads it when no schema is sent. Regression tests in `tests/evals/test_pinned_render.py` (a routed run of one direct case with JSON-schema mode off); both fail without the fix. #936's stub tests could not see this: on the stub every call goes to the stub. The change in `epistrel.orchestrator` is one context variable, set and reset where `STRUCTURED_SCHEMA` already is.
+  **Issue:** #938, #936
+- **Fix (Rule 1, #937's rule; found live):** `direct_outcome` counted an identity case as `broken` (raising `IdentityBroken`) whenever its type fired and the prose changed, even when another intervention made the change (live: a rung-3 repair of a beat beside the introduction, or the polish). Such a case is now a `mismatch`. `broken` is kept for an identity type that fired alone and changed the prose. Tests added to `test_e_12__direct_outcome_and_mode`.
+  **Issue:** #938, #937
+- **Decision (#938, planner discretion, recipe from live probes):** The rung recipes are one `do` beat with no `say`. A line of Bobby's beside the trigger carried claims that were repaired in their own right (a second rung on another beat), and a single beat is never polished, so the pair compares the draft with the declared rung's change alone.
+  - **Rung 4:** two contradicting beats and the per-case dial `repair.max_attempts: 1`. The planned `max_attempts: 0` switches the repair module off (`pipeline.repair_on`), so nothing fired. With one attempt for two beats, at least one falls to the safe fallback, the path a turn out of attempts takes. The dial is part of the case and the set's digest.
+  - **Age repair:** Bobby names the newcomer in one short `say` line. In a `do` beat the newcomer's claims (at the door, into the parlor) were unresolved entities and got repaired, which changed the prose.
+  - **Probes** (7 + 7 + 6 cases on hosted Haiku, before the pilot): rung 1, 2, 3 and 4 each fired alone; the fallback fired as identity; age repair fired alone on the short-line recipe; `composition_polished` fired on both two- and three-beat turns.
+  **Issue:** #938
+- **Evidence (#938, paid runs):** the pilot `pilot-2026-11-16-e12` (hosted Haiku, Full, `structured`, self-judged, one seed; the first 40 cases per judged type, 60 per identity type; no harness errors).
+  - rung 1: tie 0.300, mismatch 0.100 → size 575.
+  - rung 2: tie 1.000 → no size.
+  - rung 3: tie 0.100, mismatch 0.475 → size 812.
+  - rung 4: tie 0.025 → size 360 (the floor).
+  - polished (first recipe): not triggered 0.225, mismatch 0.175, tie 0.375 → 1,534, over the ceiling. After the recipe fix, the re-pilot `pilot-2026-11-16-e12-polished`: not triggered 0.425, mismatch 0.250, tie 0.175 → about 2,300, still over.
+  - Identity: composition fallback 41 of 60 clean (first recipe), age repair 53 of 60.
+  - The committed sets' first cases are byte-identical to the piloted ones (checked). Both reports are committed under `evals/sets/interventions/pilots/`.
+  - Paid usage this run: three CLI runs (a 14-case smoke, the pilot, the re-pilot) and five in-process probes of 1 to 7 cases each, all hosted Haiku.
+  **Issue:** #938
+- **Decision (#938):** a `sizing.json` with `"size": null` and a `blocked` reason (rung 2, polished) passes `--check-sets` on a branch and fails where approval is required (`EPISTREL_REQUIRE_APPROVED_SETS=1`), as a `pending` PROVENANCE does. So an unsized set can never reach `main`. The blocked types keep their 40 piloted cases.
+  **Issue:** #938
+- **Blocker (#938, needs-owner-action):** `repair_rung_2` can never give a non-tied pair. A substitution changes only the place name, and the judge sees the passages masked and otherwise identical. Options on #938 (recommended (a): make rung 2 an identity-like row, amending ADR-196 and NFR-QUAL-14). `composition_polished` still has no size after one re-pilot (usable share 0.15); options on #938 (recommended (a): a diagnostic pass on why the polish so often changes nothing, then one more pilot). Also posted: on Haiku the judge preferred the draft in 24/24 rung-1 pairs and 24/39 rung-4 pairs, which is #474's tuning work. #474 stays blocked on #938.
+  **Issue:** #938, #474
+- **Hold:** PR for `milestone/m11-run4-sets` (#938). Waiting on the owner's calls for `repair_rung_2` and `composition_polished`, and the owner's approval of the sized sets from their `SAMPLE.md`. **Lifts when:** the owner answers both options on #938 and adds the `approved by owner YYYY-MM-DD` lines.
+  **Issue:** #938
+- **Owner decision (#938, 2026-11-16, in session):** "recs good, and approved". The owner took (a) for both questions and approved the samples.
+  - Rung 2 becomes an identity-like row (ADR-197).
+  - `composition_polished` gets a diagnostic, then one more pilot.
+  - The approval covers the sets as of PR #955 @ 639887b (their `SAMPLE.md`).
+  **Issue:** #938
+- **Hold lifted (part):** PR #955. Both calls are answered (the owner's message above). The `approved by owner` lines follow for the sets whose content the owner saw. `repair_rung_2` grew from 40 to 60 cases, and `composition_polished` will be re-piloted, so their approval is confirmed with the owner again before the lines go in.
+  **Issue:** #938
+- **Decision (#938, ADR-197):** rung 2's identity check compares under `e12_direct.object_blind`. Every S-COAT item and place becomes one `[OBJECT]` label, and "a"/"an" before it becomes "a", so "on an armchair" equals "on a hook". Anything else differing fails.
+  - Rejected: comparing the propositions only. That would pass any rewording.
+  - Rejected: requiring the canon object in the final. That ties the check to S-COAT's single canon fact and adds nothing the repair report doesn't already say.
+  - Rung 2's set is now `IDENTITY_SIZE` (60). The `sizing.json` is removed, and the pilot's rates move into its PROVENANCE.
+  - `test_e_12__m7` used rung 2 as its "short of pairs" judged type; it now uses rung 3.
+  **Issue:** #938
+- **Diagnostic (#938, `composition_polished`; paid, one 12-case in-process probe on hosted Haiku):** the low usable share is mostly an engine bug, not a counting artifact.
+  - **Cut-off polishes (engine bug):** in the re-pilot's call trace, 30 of 133 polish calls stopped at `finish_reason: length`. `polish_params` caps at twice a four-chars-a-token estimate of the plain draft, so 64 tokens for these drafts. The JSON answer, with every quote escaped, runs at about two characters a token. The truncated answer fails to parse and the turn falls back with `cause: "model"` (6 of 12 probe cases). Filed as #956 and fixed in this run on its own PR, because the re-pilot depends on it (scope rule: a separate issue, not inline in #938).
+  - **Recipe noise:** some `ACTIONS` ("picks at a loose thread on his sleeve", "rubs his neck") were contradicted and fell to rung 4. Some short lines answering the player's question ("Right you are, boss.", "If you insist.") were denied as unpermitted and regenerated (rung 3). These count as mismatches.
+  - **Inherent:** about 1 in 12 polishes return the draft unchanged (not triggered), and a polish that only drops formatting tends to tie.
+  **Issue:** #938, #956
+
+## Ad-hoc — 2026-11-16 (repair rung 2 is an identity intervention; ADR-197)
+
+- **Change:** NFR-QUAL-14 names three identity types: the age repair, the composition fallback and now repair rung 2 (substitution). Rung 2 passes on at least 50 fired cases over at least two seeds whose released prose equals the draft but for the replaced object. It is no longer judged in pairs. The owner chose this on #938 on 2026-11-16 (option (a)). ADR-197 amends ADR-196, and docs/03 (NFR-QUAL-14) and docs/04 (E-12) were updated with it.
+  **Why:** #938's pilot gave rung 2 a tie rate of 1.000. A substitution swaps only the object, which the masked judge cannot see, so no set size could reach 300 non-tied pairs. Under ADR-196's "all seven types", NFR-QUAL-14 could never pass.
+  **Affects:**
+  - M11: #474 (judge tuning: rung 2 is no longer a judged type) and #818 (the hand baseline run reads the direct rows).
+  - Any later certification or report that lists judged types.
+  - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).
+
+## /n8-exec M11 run 4 (continued: #938 polished re-pilot, #956) — 2026-11-17
+
+- **Evidence (#938, paid: one CLI run, hosted Haiku, Full, one seed):** `pilot-2026-11-17-e12-polished` ran with the #956 fix cherry-picked and the canon-only polished recipe. It played 40 polished cases, the first 20 rung-2 cases and one case of each other type.
+  - **Rung 2 (identity under `object_blind`):** 19 clean, 1 mismatch, 0 broken. The check holds live.
+  - **Polished:** not triggered 0.375, mismatch 0.100 (was 0.250), tie 0.375, 6 non-tied pairs. The usable share is still 0.15.
+  - **Polish calls:** 0 of 41 stopped at `length` (the old trace had 30 of 133), so #956 works.
+  - **The cause now:** Haiku's polish kept the draft's words in 40 of 41 calls (16 verbatim, 24 only dropping `*` markup and paragraph breaks, 1 reworded). A words-kept polish is not triggered or a tie. No set size reaches 300 reworded pairs on this model.
+  **Issue:** #938, #956
+- **Blocker (#938, needs-owner-action):** `composition_polished` has no size after the diagnostic and one more pilot, as the owner's option (a) allowed. The new options are on #938 (recommended (a): a polish that keeps the draft's words counts as identity, a rewording one is judged). `sizing.json` records it as blocked with this pilot's rates.
+  **Issue:** #938
+- **Hold (continues):** PR #955 (#938). Waiting on the owner's call on the polished options, and the owner's confirmation of `repair_rung_2` (60 cases) and `composition_polished` samples. **Lifts when:** the owner answers on #938 and those two `approved by owner` lines are in.
+  **Issue:** #938
+  **Resolved:** 2026-11-17 — the owner's answers on #938 (comment 6964147901): option (a), and the rung 2 and polished samples approved. The lines went in during run 5.
+
+## /n8-exec M11 run 5 (#938 finished) — 2026-11-17
+
+- **Owner decision (#938, 2026-11-17, given in session and posted on #938):** `composition_polished` takes option (a): a polish that keeps the draft's words is an identity observation, and only a rewording polish is judged. The `repair_rung_2` sample (redrawn over 60 cases) is approved. The `composition_polished` recipe is approved, including the redraw after growing the set to about 60 cases.
+  **Issue:** #938
+- **Hold lifted:** PR #955. Evidence: the owner's answers on #938 (comment 6964147901, 2026-11-17), dated after the Hold entry. All seven sets now carry `approved by owner` lines (rung 2 and polished dated 2026-11-17), and `EPISTREL_REQUIRE_APPROVED_SETS=1 --check-sets` passes.
+  **Issue:** #938
+- **Decision (#938, planner discretion):** "kept" means the polish ran (`turn_report.composition.mode == "polished"`) and the released text has the draft's words in order (`same_words`: lower-cased word tokens, so markup, punctuation and white space don't count), with no other type firing. The turn report's own `composition_polished` type needs the text to differ from the assembly, so a verbatim polish shows no type. That's why the mode is read directly.
+  **Why:** the pilot's 16 verbatim polishes are exactly the words-kept case the owner's option covers.
+  **Issue:** #938
+- **Decision (#938, planner discretion):** the identity pass is applied in `E12DirectSuite.summarize`, which overrides the row's verdict (`Summary.metrics[...]["verdict"]`, the hook the runner already merges). `gate.judge` is unchanged and so is the row's `Rule.relative`. A new informational row `e12.direct.kept.composition_polished` counts kept against reworded polishes. Thresholds: 50 polishes summed over at least two seeds (`IDENTITY_MIN_CASES`), and reworded strictly under 5 % (`KEPT_MAX_REWORDED`).
+  **Why:** a new `Rule` would ripple through the report, certification and every rule check for one row. The summary hook keeps the change inside E-12.
+  **Known limit:** the row stays in `judge_metrics`, so an uncalibrated judge still makes it report-only even when it passes as identity. A certification needs a calibrated judge for rungs 1, 3 and 4 anyway, so no certification outcome changes. It's logged in ADR-198.
+  **Issue:** #938
+- **Decision (#938):** the polished set is sized like an identity type (`authoring.interventions.KEPT_TYPES` uses `IDENTITY_SIZE`, 60 cases), and its `sizing.json` is deleted. Prefix-stable: the regenerated file appends cases 41 to 60 and the first 40 are unchanged.
+  **Issue:** #938
+
+## Ad-hoc — 2026-11-17 (a words-kept composition polish is an identity observation; ADR-198)
+
+- **Change:** NFR-QUAL-14's `composition_polished` type passes as identity when at least 50 polishes ran, over at least two seeds, and under 5 % of them reworded the draft. Otherwise only the rewording polishes are judged, and the type needs 300 non-tied pairs a seed. The owner chose this on #938 on 2026-11-17 (option (a)). ADR-198 amends ADR-196, and docs/03 (NFR-QUAL-14), docs/04 (E-12) and docs/evals/README were updated with it.
+  **Why:** Haiku's polish kept the draft's words in 40 of 41 calls, so no set size could reach 300 non-tied pairs. NFR-QUAL-14 ("all seven types") could otherwise never pass on such a model.
+  **Affects:**
+  - M11: #474 (judge tuning: polished is mostly unjudged now) and #818/#819 (certification runs read the new row and note).
+  - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).
+- **Rule 3 (#938, CI red on PR #955):** `tests/gates/test_adr_markers.py::test_revised_per_marks_only_consequences_lines` failed. ADR-196's decision bullet carried `*[revised per ADR-197/198]*` markers, a form allowed only on Consequences lines. They are now `*[superseded in part by …]*`, per the log's header rules, and the index was regenerated.
+  **Issue:** #938

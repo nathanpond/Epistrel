@@ -208,7 +208,7 @@ def record_from(
 
 def _cases(suite: Suite, sample: int | None) -> int:
     try:
-        count = len(suite.load(DEFAULT_SETS_DIR))
+        count = len(suite.load_for(DEFAULT_SETS_DIR, live=True))
     except MalformedCase:
         count = 0
     return min(count, sample) if sample is not None else count

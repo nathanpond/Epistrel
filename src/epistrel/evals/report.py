@@ -109,7 +109,8 @@ class MetricResult(BaseModel):
     """The configuration fingerprint a per-configuration row measured (E-13's rows, #463);
     ``None`` for a row of the run's own fingerprint or of no single configuration."""
     note: str | None = None
-    """A short note on the row (#937: an identity row's "identity (n cases)")."""
+    """A short note on the row (#937: an identity row's "identity (n cases)"; #938: a polished
+    row's words-kept count)."""
 
     @classmethod
     def of(cls, metric: Metric, judgement: Judgement) -> MetricResult:
@@ -360,18 +361,20 @@ def _floor_text(metric: MetricResult) -> str:
 def _measured_text(metric: MetricResult) -> str:
     """The per-seed value's mean ± SD: the good rate for a ≥ floor, the bad rate otherwise;
     with its pooled 95 % confidence interval when the suite gives one (#158); an identity row's
-    note (#937)."""
+    note (#937), or a judged row's (#938: a polish's words-kept count)."""
     if metric.rule is Rule.identity:
         return metric.note or "identity (0 cases)"
     if metric.mean is None:
-        return "no observations"
+        return metric.note or "no observations"
     spread = EM_DASH if metric.stdev is None else percent(metric.stdev)
     ci = (
         f" (95% CI {percent(metric.ci95[0])} to {percent(metric.ci95[1])})"
         if metric.ci95 is not None
         else ""
     )
-    return f"{percent(metric.mean)} ± {spread}{ci}"
+    # #938, ADR-198: a polished row's words-kept count rides beside its pairs.
+    note = f"; {metric.note}" if metric.note else ""
+    return f"{percent(metric.mean)} ± {spread}{ci}{note}"
 
 
 def calibration_text(calibration: JudgeCalibrationRef) -> str:

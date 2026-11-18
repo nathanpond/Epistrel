@@ -558,6 +558,7 @@ async def test_e_11__unreviewed_labels(e11_space: Space, tmp_path: Path) -> None
             good, tmp_path / "out" / "e11.md", repo_root=tmp_path, records_dir=tmp_path / "records"
         )
         (path,) = records
+        assert path.name == f"{nudity}-v1-{found.fingerprint}.json"  # #812
         record = json.loads(path.read_text("utf-8"))
         assert record["evidence_ref"]["report_path"] == "out/e11.md"
         body = {
@@ -602,6 +603,23 @@ async def test_e_11__coverage_tags(e11_space: Space, tmp_path: Path) -> None:
 
 
 # -- certification records --------------------------------------------------------------------
+
+
+def test_e_11__record_names_carry_the_policy_version() -> None:
+    """#812: an ``eval_run`` record's file names its policy version, so a reworded policy's run
+    (version 2) writes beside version 1's record, never over it. Complement asserted: an
+    attestation names no version (it certifies whichever version is current)."""
+    run = {
+        "policy_id": "no_nudity",
+        "checker_fingerprint": "1b019c0193f2",
+        "evidence_kind": "eval_run",
+        "evidence_ref": {"policy_version": 1},
+    }
+    v2 = {**run, "evidence_ref": {"policy_version": 2}}
+    assert e11.record_name(run) == "no_nudity-v1-1b019c0193f2.json"
+    assert e11.record_name(v2) == "no_nudity-v2-1b019c0193f2.json"
+    attested = attestation("1b019c0193f2")
+    assert e11.record_name(attested) == f"{MINORS}-1b019c0193f2.json"
 
 
 def attestation(fingerprint: str, policy_id: str = MINORS, **ref: Any) -> dict[str, Any]:
@@ -933,9 +951,7 @@ def commit_report(reports: Path, report: e11.E11Report, records: Path) -> Path:
     for record in e11.records_for(
         report, f"docs/evals/{path.name}", certification.report_hash(text)
     ):
-        target = (
-            records / "image-check" / f"{record['policy_id']}-{record['checker_fingerprint']}.json"
-        )
+        target = records / "image-check" / e11.record_name(record)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -984,7 +1000,7 @@ def test_e_11__index(tmp_path: Path) -> None:
     )
     newer = fixture_report("b" * 12, datetime(2026, 11, 10, tzinfo=UTC), nudity, extra=[unset])
     newest = commit_report(reports, newer, records)
-    assert [p.name for p in (records / "image-check").iterdir()] == [f"{nudity}-{'b' * 12}.json"]
+    assert [p.name for p in (records / "image-check").iterdir()] == [f"{nudity}-v1-{'b' * 12}.json"]
 
     found, unreadable = index_text(reports, records)
     assert unreadable == []
@@ -1191,14 +1207,15 @@ async def test_e_11__generator_command(e11_space: Space) -> None:
 
 def test_committed_image_check_certifications() -> None:
     """Every committed image-checker record (``seeds/certifications/image-check/``, #271)
-    validates, is named ``<policy_id>-<checker_fingerprint>.json``, and, for an ``eval_run``, is
-    exactly the record its committed E-11 report earns (``records_for``): the report exists, its
-    SHA-256 is ``report_sha256`` and its checker fingerprint is the record's. The minors policy
-    has attestations only. Every committed E-11 report's earned records are committed. With no
-    record and no report it passes vacuously (#271's evidence lands after the M8 merge)."""
+    validates, is named by ``record_name`` (#812: with its policy version), and, for an
+    ``eval_run``, is exactly the record its committed E-11 report earns (``records_for``): the
+    report exists, its SHA-256 is ``report_sha256`` and its checker fingerprint is the record's.
+    The minors policy has attestations only. Every committed E-11 report's earned records are
+    committed. With no record and no report it passes vacuously (#271's evidence lands after
+    the M8 merge)."""
     for path in certification.committed_image_checks():
         seed = certification.ImageCheckSeed.model_validate(json.loads(path.read_text("utf-8")))
-        assert path.name == f"{seed.policy_id}-{seed.checker_fingerprint}.json", path.name
+        assert path.name == e11.record_name(json.loads(path.read_text("utf-8"))), path.name
         evidence = certification.parse_evidence(seed.evidence_kind, seed.evidence_ref)
         if seed.policy_id in safety.EXTERNAL_EVIDENCE_ONLY:
             assert seed.evidence_kind == certification.EXTERNAL_ATTESTATION, path.name
@@ -1220,7 +1237,7 @@ def test_committed_image_check_certifications() -> None:
         shown = report_path.relative_to(certification.REPO_ROOT).as_posix()
         digest = certification.report_hash(report_path.read_text("utf-8"))
         for record in e11.records_for(report, shown, digest):
-            name = f"{record['policy_id']}-{record['checker_fingerprint']}.json"
+            name = e11.record_name(record)
             committed = certification.IMAGE_CHECK_SEEDS_DIR / name
             assert committed.is_file(), (report_path.name, name)
             assert json.loads(committed.read_text("utf-8")) == record, name

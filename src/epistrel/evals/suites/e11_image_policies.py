@@ -31,7 +31,9 @@ cover every required tag (else ``uncertifiable: insufficient_coverage``, naming 
 each policy that passed both floors and is certifiable (never the minors policy), the run writes
 an ``eval_run`` record (``core.profiles.certification.ImageCheckSeed``): into
 ``src/epistrel/core/seeds/certifications/image-check/`` when the report goes to the repo's
-``docs/evals``, else into ``records/`` beside the report.
+``docs/evals``, else into ``records/`` beside the report. Its file is ``record_name``'s
+``<policy_id>-v<policy_version>-<checker_fingerprint>.json`` (#812), so a reworded policy's
+record (a new version) never overwrites the old version's.
 
 **Standalone.** E-11 certifies an image checker, not an engine configuration, so it runs only on
 its own (``run --suite e11``): ``run --all``, preset certification and certification runs leave
@@ -1068,6 +1070,16 @@ def records_for(report: E11Report, report_path: str, report_sha256: str) -> list
     return found
 
 
+def record_name(record: Mapping[str, Any]) -> str:
+    """A record's file name (module docstring): with its policy version when its evidence names
+    one (an ``eval_run`` record, #812), else ``<policy_id>-<checker_fingerprint>.json`` (an
+    attestation, which certifies whatever version is current)."""
+    evidence = record.get("evidence_ref") or {}
+    version = evidence.get("policy_version") if isinstance(evidence, Mapping) else None
+    middle = "" if version is None else f"-v{version}"
+    return f"{record['policy_id']}{middle}-{record['checker_fingerprint']}.json"
+
+
 def write_outputs(
     report: E11Report, markdown: Path, *, repo_root: Path, records_dir: Path | None = None
 ) -> tuple[Path, list[Path]]:
@@ -1086,7 +1098,7 @@ def write_outputs(
     written: list[Path] = []
     for record in records_for(report, shown, certification.report_hash(text)):
         target.mkdir(parents=True, exist_ok=True)
-        path = target / f"{record['policy_id']}-{record['checker_fingerprint']}.json"
+        path = target / record_name(record)
         path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         written.append(path)
     return markdown, written
@@ -1124,6 +1136,7 @@ __all__ = [
     "preflight",
     "rate_of",
     "read_summary",
+    "record_name",
     "records_for",
     "render_markdown",
     "report_name",

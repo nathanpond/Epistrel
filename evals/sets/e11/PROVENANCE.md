@@ -36,4 +36,10 @@ that show no nudity (two of them "heavily implied, not shown"). One case,
 No other field changed. `no_nudity` is now 105 violation and 198 clean (303 cases; 719 in the
 set). The first run's report was measured against the old labels and was not committed.
 
+Policy wording, 2026-11-17 (#812): `no_nudity` version 2 reads "The image shows no exposed
+nudity (bare genitals, bare female nipples or bare buttocks). Implied, covered,
+sheer-but-opaque or stylised nudity without exposure is allowed." That states the meaning these
+labels already use. Version 1's text, "The image shows no nudity.", is kept as history (the
+runbook, step 1). No case or label changed.
+
 approved by owner 2026-11-09

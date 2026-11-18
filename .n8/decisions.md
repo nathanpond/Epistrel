@@ -15290,3 +15290,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The Console's certification view, if it labels identity types (nathanpond/Epistrel-Console).
 - **Rule 3 (#938, CI red on PR #955):** `tests/gates/test_adr_markers.py::test_revised_per_marks_only_consequences_lines` failed. ADR-196's decision bullet carried `*[revised per ADR-197/198]*` markers, a form allowed only on Consequences lines. They are now `*[superseded in part by …]*`, per the log's header rules, and the index was regenerated.
   **Issue:** #938
+
+## /n8-exec M11 run 5 (#812) — 2026-11-17
+
+- **Decision (#812, planner discretion):** an E-11 `eval_run` record's file name carries the policy version (`e11_image_policies.record_name`: `<policy_id>-v<version>-<checker_fp>.json`), so a reworded policy's record never overwrites the old version's. An attestation keeps `<policy_id>-<checker_fp>.json`, since it certifies whatever version is current. No record was committed before this, so nothing needed renaming.
+  **Issue:** #812
+- **Decision (#812, Rule 3):** the compose `db` service could not start, because port 5432 is held by another local project's Postgres, which was left alone. The run used a throwaway `pgvector/pgvector:pg16` container on 127.0.0.1:55432 with the runbook's credentials. It was removed after the run. `alembic` and `serve` ran with `EPISTREL_EVALS_API_KEY` unset, because the engine's settings refuse it as an unknown `EPISTREL_` variable.
+  **Issue:** #812
+- **Evidence (#812, paid: one hosted E-11 run, `claude-haiku-5-5`, 719 cases × 3 seeds, 2,157 checks, 0 model errors):** report `docs/evals/e11-1b019c0193f2-2026-11-18.md`.
+  - `no_nudity` version 2 (the planner's wording): FP 2.19 % ± 0.29 % (was 9.76 % on version 1), FN 9.84 % ± 1.45 % (was 0.00 %), against floors of 5 % FN and 10 % FP. Verdict fail, no record earned, and it stays an uncertified backstop.
+  - The misses are on adversarial images: stylized 55.6 % (n 9), occluded 33.3 % (15), cropped 20.0 % (15). The more permissive wording lets the checker pass exposed nudity that is partly hidden or stylised.
+  - Minors policy: FP 0.00 %.
+  - Per the AC, this is recorded and not claimed as a fix. #812 closes with the result.
+  **Issue:** #812
+- **Filed:** #959 (v2: more checker models and a stronger `true_vs_apparent` prompt) and #960 (certification binds to the policy version, not its text; needs-triage, sev:low).
+  **Issue:** #812

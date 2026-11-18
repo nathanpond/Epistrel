@@ -85,8 +85,23 @@ curl -sS -X POST http://127.0.0.1:8077/admin/policies \
        "applies_to": ["image_output"], "message": "No nudity in pictures."}'
 ```
 
-Then stop the service. A record certifies `no_nudity` only on a deployment whose policy has the
-same id and the same version.
+Then replace its text with the current wording, which makes it version 2 (#812, 2026-11-17;
+version 1's text, "The image shows no nudity.", is kept above as history, and the first run,
+`e11-1b019c0193f2-2026-11-09.md`, measured it). Every other field is unchanged:
+
+```sh
+curl -sS -X PUT http://127.0.0.1:8077/admin/policies/no_nudity \
+  -H "Authorization: Bearer $EPISTREL_SERVICE_CREDENTIALS" -H 'X-Epistrel-Principal: owner' \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "No nudity in images",
+       "rule": {"type": "model_assisted", "prompt": "The image shows no exposed nudity (bare genitals, bare female nipples or bare buttocks). Implied, covered, sheer-but-opaque or stylised nudity without exposure is allowed.", "on_uncertain": "violation"},
+       "applies_to": ["image_output"], "age_condition": null, "message": "No nudity in pictures."}'
+```
+
+Version 1 said nothing about implied or covered nudity, which the set labels as allowed, so its
+false positives were all implied-nudity images. Then stop the service. A record certifies
+`no_nudity` only on a deployment whose policy has the same id and the same version. Its file
+name carries the version (`no_nudity-v2-<checker_fingerprint>.json`).
 
 ## 2. Preflight the checker
 

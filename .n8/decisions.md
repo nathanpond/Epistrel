@@ -14882,7 +14882,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** #900's AC named "P-06's `live_memory_rows_per_s`", but that figure is P-10's, and P-10 (`perf_capacity`) runs in no workflow. The planned weekly-run comparison could not produce it; this is a correction to the plan's AC, not a change to what it asks for.
   **Issue:** #900
 
-## Ad-hoc — 2026-11-14 (retrieval profile scope; ADR-193)
+## Ad-hoc — 2026-11-14 (retrieval profile scope; ADR-193) — reconciled by /n8-replan 2026-11-17
 
 - **Change:** Retrieval's standing profiles (FR-RET-6) carry only the relationships among the message's people by default: a new story setting `memory.episodic.profile_scope` (`message`, the default, or `full`, the previous behaviour), with migration 0155 adding it to deployment `profile_defaults`. Existing stories narrow at their next retrieval. P-01 also measures a character's message (reported, not gated). Owner's decision on #868 (2026-11-14): "make it configurable between how it acts today, and then scoping it to the message. Make scoped to message the default. relationships about the people mentioned. If something is said wrong, it should be picked up in fact checking." Built by #905 and #906.
   **Why:** The profiles stage read every relationship of each mentioned character (~160 each on the 50k fixture), most unrelated to the message; queries naming 7–10 characters set P-01's p95, and the long profile lines spent retrieval's token budget.
@@ -15242,7 +15242,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Inherent:** about 1 in 12 polishes return the draft unchanged (not triggered), and a polish that only drops formatting tends to tie.
   **Issue:** #938, #956
 
-## Ad-hoc — 2026-11-16 (repair rung 2 is an identity intervention; ADR-197)
+## Ad-hoc — 2026-11-16 (repair rung 2 is an identity intervention; ADR-197) — reconciled by /n8-replan 2026-11-17
 
 - **Change:** NFR-QUAL-14 names three identity types: the age repair, the composition fallback and now repair rung 2 (substitution). Rung 2 passes on at least 50 fired cases over at least two seeds whose released prose equals the draft but for the replaced object. It is no longer judged in pairs. The owner chose this on #938 on 2026-11-16 (option (a)). ADR-197 amends ADR-196, and docs/03 (NFR-QUAL-14) and docs/04 (E-12) were updated with it.
   **Why:** #938's pilot gave rung 2 a tie rate of 1.000. A substitution swaps only the object, which the masked judge cannot see, so no set size could reach 300 non-tied pairs. Under ADR-196's "all seven types", NFR-QUAL-14 could never pass.
@@ -15281,7 +15281,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#938):** the polished set is sized like an identity type (`authoring.interventions.KEPT_TYPES` uses `IDENTITY_SIZE`, 60 cases), and its `sizing.json` is deleted. Prefix-stable: the regenerated file appends cases 41 to 60 and the first 40 are unchanged.
   **Issue:** #938
 
-## Ad-hoc — 2026-11-17 (a words-kept composition polish is an identity observation; ADR-198)
+## Ad-hoc — 2026-11-17 (a words-kept composition polish is an identity observation; ADR-198) — reconciled by /n8-replan 2026-11-17
 
 - **Change:** NFR-QUAL-14's `composition_polished` type passes as identity when at least 50 polishes ran, over at least two seeds, and under 5 % of them reworded the draft. Otherwise only the rewording polishes are judged, and the type needs 300 non-tied pairs a seed. The owner chose this on #938 on 2026-11-17 (option (a)). ADR-198 amends ADR-196, and docs/03 (NFR-QUAL-14), docs/04 (E-12) and docs/evals/README were updated with it.
   **Why:** Haiku's polish kept the draft's words in 40 of 41 calls, so no set size could reach 300 non-tied pairs. NFR-QUAL-14 ("all seven types") could otherwise never pass on such a model.
@@ -15305,3 +15305,11 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #812
 - **Filed:** #959 (v2: more checker models and a stronger `true_vs_apparent` prompt) and #960 (certification binds to the policy version, not its text; needs-triage, sev:low).
   **Issue:** #812
+
+## /n8-replan M11 — 2026-11-17
+
+- **Cause:** the Ad-hoc entries for ADR-197 (repair rung 2 is identity), ADR-198 (a words-kept polish is identity) and ADR-193 (retrieval profile scope).
+- **Updated (AC, contract change):** #474 (the judged types are rungs 1, 3, 4; rung 2 passes as identity; polished passes per ADR-198; polish tuning only on the judged branch) and #819 (NFR-QUAL-14 exit criteria to match).
+- **Updated (note only):** #818 (E-12 rows read under ADR-197/198; Q-01/Q-03 measure at `profile_scope: message`, ADR-193).
+- **Milestones:** M11's Outcome 3 and coverage-map rows for rung 2 and polished, plus a Replan note; M12's audit emphases gain identity-verdict honesty (the `object_blind` normalisation, the words-kept classifier, the 5% threshold on ≥ 50 polishes).
+- **Unchanged:** epic #935's AC (all 7 types still pass), and the other 15 open M11 issues. No issues were created or closed.

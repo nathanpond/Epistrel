@@ -353,12 +353,20 @@ def _remainders(old: _Bounds, new: _Bounds) -> tuple[_Bounds | None, _Bounds | N
 
 
 async def _cast(conn: AsyncConnection, story_id: str) -> set[str]:
-    return {
-        str(c)
-        for c in await conn.scalars(
-            select(characters.c.id).where(characters.c.story_id == story_id)
+    from epistrel.core import pending
+
+    # #754: once per batched commit (until an unaware write).
+    key = ("cast", story_id)
+    found = pending.remembered(conn, key)
+    if found is pending.MISSING:
+        found = frozenset(
+            str(c)
+            for c in await conn.scalars(
+                select(characters.c.id).where(characters.c.story_id == story_id)
+            )
         )
-    }
+        pending.remember(conn, key, found)
+    return set(found)
 
 
 async def check_viewpoint(conn: AsyncConnection, story_id: str, viewpoint: str) -> None:
@@ -512,6 +520,16 @@ def _not_reverted(f: Any, record_time: datetime | None) -> ColumnElement[bool]:
         f.c.amendment_part_id.is_(None),
         ~exists().where(p.id == f.c.amendment_part_id, reverted),
     )
+
+
+def _pending_safe(query: Any) -> Any:
+    """#754: a canon read joins ``propositions`` through ``facts.proposition_id`` only, and a
+    batched commit's pending propositions are its pending beliefs' (a fact's own proposition is
+    flushed before the fact is written: an unaware write flushes first), so no pending row can
+    change it: it runs without a flush."""
+    from epistrel.core import pending
+
+    return pending.aware(query)
 
 
 def _select(f: Any) -> Any:
@@ -1389,19 +1407,21 @@ async def _merge_links(conn: AsyncConnection, story_id: str) -> dict[str, set[st
     p = amendment_parts.c
     rows = list(
         await conn.execute(
-            select(propositions.c.subject_id, propositions.c.object_id)
-            .select_from(
-                facts.join(propositions, propositions.c.id == facts.c.proposition_id).join(
-                    amendment_parts, p.id == facts.c.amendment_part_id
+            _pending_safe(
+                select(propositions.c.subject_id, propositions.c.object_id)
+                .select_from(
+                    facts.join(propositions, propositions.c.id == facts.c.proposition_id).join(
+                        amendment_parts, p.id == facts.c.amendment_part_id
+                    )
                 )
-            )
-            .where(
-                facts.c.story_id == story_id,
-                propositions.c.predicate_id == SAME_AS,
-                facts.c.superseded_by.is_(None),
-                facts.c.tx_to.is_(None),
-                active_only(facts),
-                p.status == "active",
+                .where(
+                    facts.c.story_id == story_id,
+                    propositions.c.predicate_id == SAME_AS,
+                    facts.c.superseded_by.is_(None),
+                    facts.c.tx_to.is_(None),
+                    active_only(facts),
+                    p.status == "active",
+                )
             )
         )
     )
@@ -1471,7 +1491,7 @@ async def canon(
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:
         query = query.limit(limit)
-    rows = list(await conn.execute(query))
+    rows = list(await conn.execute(_pending_safe(query)))
     if through_position is not None and any(r.amendment_part_id is not None for r in rows):
         # #221 (FR-STORE-20): an amendment part not eligible at the checkpoint reads the
         # versions it superseded instead (per part, never per amendment).
@@ -1493,7 +1513,7 @@ async def canon(
                     overlapping=overlapping,
                     include_closed=True,
                 )
-                rows += list(await conn.execute(_select(f).where(*again)))
+                rows += list(await conn.execute(_pending_safe(_select(f).where(*again))))
                 rows.sort(key=lambda r: (r.valid_from is not None, r.valid_from or 0, r.id))
     return [_fact_of(r) for r in rows]
 

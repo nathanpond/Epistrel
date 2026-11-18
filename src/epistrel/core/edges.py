@@ -147,13 +147,18 @@ async def record_edges(conn: AsyncConnection, op: EdgeOperation, edges: Iterable
         )
     if not rows:
         return 0
-    statement = (
-        insert(dependency_edges)
-        .values(membership=Membership.ACTIVE.value, membership_tx=func.transaction_timestamp())
-        .on_conflict_do_nothing(index_elements=list(UNIQUE_EDGE))
-    )
-    await conn.execute(statement, rows)
+    from epistrel.core import pending
+
+    # #754: held when the commit batches its epistemic writes.
+    await pending.execute(conn, _INSERT_EDGES, rows)
     return len(rows)
+
+
+_INSERT_EDGES = (
+    insert(dependency_edges)
+    .values(membership=Membership.ACTIVE.value, membership_tx=func.transaction_timestamp())
+    .on_conflict_do_nothing(index_elements=list(UNIQUE_EDGE))
+)
 
 
 # -- writers' helpers --------------------------------------------------------------------------

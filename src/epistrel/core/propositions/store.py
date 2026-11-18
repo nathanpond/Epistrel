@@ -44,7 +44,7 @@ from epistrel.core.erasure.records import (
 )
 from epistrel.core.errors import IdentityMergeNotYet, InvalidRequest
 from epistrel.core.ids import new_ulid
-from epistrel.core.propositions.codec import proposition_row
+from epistrel.core.propositions.codec import proposition_from_row, proposition_row
 from epistrel.core.propositions.model import ENTITY_KINDS, GENDERS, NONE, Predicate, Proposition
 from epistrel.core.propositions.registry import Registry, canonical
 from epistrel.core.tables import closed_sets, entities, entity_aliases, propositions
@@ -261,9 +261,31 @@ async def write_proposition(
     row = {"id": proposition_id, "story_id": story_id, **proposition_row(stored)}
     record = proposition_record(SimpleNamespace(**row))
     await _guarded(conn, story_id, [record], base_revision=base_revision, consumer=consumer)
-    await conn.execute(insert(propositions).values(**row))
+    from epistrel.core import pending
+
+    batch = pending.current(conn)
+    if batch is not None:
+        # #754: held for the batched commit's flush; its readers take it from here.
+        batch.defer(_INSERT, [row])
+        batch.propositions[proposition_id] = proposition_from_row(_as_read(row))
+    else:
+        await conn.execute(insert(propositions).values(**row))
     await index_records(conn, [record], fresh=True)  # #620: the row was just inserted
     return proposition_id
+
+
+_INSERT = insert(propositions)
+"""#754: a batched commit's propositions."""
+
+
+def _as_read(row: Mapping[str, Any]) -> dict[str, Any]:
+    """``row`` as a read of it answers (its JSON columns round-tripped)."""
+    import json
+
+    return {
+        k: json.loads(json.dumps(v)) if k in ("literal", "qualifiers", "object_set") else v
+        for k, v in row.items()
+    }
 
 
 @dataclass(frozen=True, slots=True)

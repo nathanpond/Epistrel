@@ -15313,3 +15313,32 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Updated (note only):** #818 (E-12 rows read under ADR-197/198; Q-01/Q-03 measure at `profile_scope: message`, ADR-193).
 - **Milestones:** M11's Outcome 3 and coverage-map rows for rung 2 and polished, plus a Replan note; M12's audit emphases gain identity-verdict honesty (the `object_blind` normalisation, the words-kept classifier, the 5% threshold on ≥ 50 polishes).
 - **Unchanged:** epic #935's AC (all 7 types still pass), and the other 15 open M11 issues. No issues were created or closed.
+
+## /n8-exec M11 run 6 (#754) — 2026-11-18
+
+- **Decision:** run 6 takes #754 alone, as the M11 exec state planned (design posted on #754 in run 5). Branch `milestone/m11-run6-batched-writes`, cut from `main` at `e8faf04`. Preflight: M11 is planned; M1–M10 are closed; the drift check found no unreconciled `## Ad-hoc` entry (the last three were reconciled by `/n8-replan M11` on 2026-11-17), and #754's file claims match the code.
+  **Issue:** #754, #935
+- **Evidence (#754, measured before any change, main @ `e8faf04`):** P-04's first two-primary turn (`ScaleSpec.scaled(1_000)`, default knowledge) committed 472 statements with 3 resolutions (the 250 budget stopped the rest), at 102, 102 and 101 statements a resolution. Each resolution made 4 transitions (speech act, nested ×2, first-order) of about 15 statements each, plus about 22 reads for the decision (`rules.check_with`: partition ×4, canon ×6, relations ×2, trust ×3, closed sets ×2 and others).
+  **Issue:** #754
+- **Rule 3 (#754):** the buffer is `src/epistrel/core/pending.py`, not `core/epistemic/pending.py` as planned. The canon reads that run inside a batch mark themselves as safe, and `check-epistemic-separation` refuses an import of `core.epistemic` from `core/canon/`.
+  **Issue:** #754
+- **Decision (#754, planner discretion: the overlay):** an unaware statement flushes first, inside SQLAlchemy's `before_execute` on the same connection. That covers a statement touching a table with pending rows, raw SQL, and any unaware write. The design comment's guard was pytest-only and raised instead. A flush there was tested to work on psycopg's async connection.
+  **Why:** a reader nobody marked is then correct in production too, and costs only a flush. Flushing before every unaware write also keeps a foreign row (a fact citing a deferred proposition) from referencing an unwritten one.
+  **Issue:** #754
+- **Decision (#754, design step 3):** within a batch, each holder's stored beliefs are read once (every row and kind, `FOR UPDATE OF beliefs`, at most `SLICE_MAX` = 5,000 rows, else query by query). `partition` (order by id), `speech_acts`, `nested_of`, the candidate read and `read_belief` are answered in hand from them plus the pending rows, by the filters the pending rows use (`membership.row_active`/`row_included_through`, added beside their SQL forms). A stored row updated in place drops its holder's slice. Locking every row of the holder, not only the candidates, is harmless under the story lock the commit holds.
+  **Why:** after deferring the writes, the partition-style reads were 11 of a resolution's 27 statements.
+  **Issue:** #754
+- **Decision (#754):** `facts.canon` and `facts._merge_links` run unflushed (`_pending_safe`), although they join `propositions`, which has pending rows. They reach a proposition only through `facts.proposition_id`, and a pending proposition is only ever a pending belief's: a fact's proposition is flushed before the fact is written, because every unaware write flushes first.
+  **Why:** otherwise every canon read in the decision flushed, about 15 statements a resolution.
+  **Issue:** #754
+- **Decision (#754):** reads that cannot change within a batch are remembered until an unaware write: the cast (`facts._cast`), closed sets (`rules.closed_sets_for`), a character's existence (the source check and `nested._attributable`, sharing one key), an antecedent probe and an event's payload (`exposure._intent`). `world_clock._read_stamped_at` runs unflushed, because a pending event is a derived one with no valid time.
+  **Issue:** #754
+- **Decision (#754):** `MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN` goes from 250 to 400, and still counts a resolution's own statements only. The deferred writes cost a fixed few statements at the flush whatever the number of resolutions, so the planner's "charge an estimate per pending resolution" is left out. Measured: 16 counted a resolution, so 20 × 16 = 320 fits under 400.
+  **Issue:** #754
+- **Decision (#754):** the batch covers the commit's testimony pass, the context lazy resolutions and the speech pass, and closes before the author fiats, the render steps and the reveals. Those run per belief, as before.
+  **Why:** they are the passes that resolve exposures. Batching the rest is safe (an unaware reader flushes) but untested here.
+  **Issue:** #754
+- **Decision (#754, test plan):** the equivalence tests compare the two paths on the same starting state. The core-level test runs each variant in its own commit transaction and rolls it back after reading the rows. The P-04 test runs cap 0, cap 20 and cap 20 per belief on three `CREATE DATABASE … TEMPLATE` copies of one scale build. Ids minted during a run are renamed by mint order (`new_ulid` is monotonic) and timestamps masked. The P-04 comparison reads the belief event types and the epistemic records' subject references only, because a turn's other events carry timings and request keys.
+  **Issue:** #754
+- **Evidence (#754, after the change, P-04 first turn):** 116 statements at cap 0, 463 at cap 20 (20 resolutions) and 2,192 per belief at cap 20. That is (463 − 116) / 20 = 17.4 statements a resolution, against ≤ 20; 463 against ≤ 600. All 11 epistemic tables are equal between the batched and the per-belief turns.
+  **Issue:** #754

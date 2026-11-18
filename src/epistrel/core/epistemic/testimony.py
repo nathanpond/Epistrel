@@ -80,6 +80,8 @@ from epistrel.core.membership import (
     position_key,
     position_literal,
     recorded_through,
+    row_active,
+    row_recorded_through,
     step_of,
 )
 from epistrel.core.propositions.model import Proposition
@@ -148,6 +150,13 @@ def nudged(seed: float, confirmed: int = 0, rejected: int = 0, overturned: int =
     return round(min(1.0, max(0.0, value)), 3)
 
 
+def _turn_of(batch: Any, transition_id: str) -> int | None:
+    """The turn whose operation wrote the pending transition ``transition_id`` (#754)."""
+    row = batch.transition_rows.get(transition_id) if batch is not None else None
+    turn = None if row is None else row.get("narrative_turn")
+    return None if turn is None else int(turn)
+
+
 async def trust(
     conn: AsyncConnection,
     story_id: str,
@@ -187,6 +196,11 @@ async def trust(
             registry,
         )
     seed = seed_trust(relations)
+    from epistrel.core import pending
+
+    batch = pending.current(conn)
+    if batch is not None and any(x.kind is Kind.OBSERVATION for x in batch.transitions.values()):
+        await pending.flush(conn)  # #754: the confirmations read below are not merged
     t = belief_transitions.c
     b = beliefs.c
     mine = [
@@ -202,7 +216,9 @@ async def trust(
             recorded_through(belief_transitions, through.turn),
         ]
     rejected = await conn.scalar(
-        select(func.count()).select_from(belief_transitions).where(*mine, t.outcome == REJECT)
+        pending.aware(
+            select(func.count()).select_from(belief_transitions).where(*mine, t.outcome == REJECT)
+        )
     )
     produced = (
         select(b.id)
@@ -210,7 +226,7 @@ async def trust(
         .where(*mine, b.kind == BeliefKind.FIRST_ORDER.value)
     )
     overturned = await conn.scalar(
-        select(func.count())
+        pending.aware(select(func.count()))
         .select_from(beliefs)
         .where(
             b.id.in_(produced),
@@ -225,7 +241,7 @@ async def trust(
     )
     o = belief_transitions.alias("observed")
     confirmed = await conn.scalar(
-        select(func.count(func.distinct(o.c.belief_id))).where(
+        pending.aware(select(func.count(func.distinct(o.c.belief_id)))).where(
             o.c.story_id == story_id,
             o.c.kind == Kind.OBSERVATION.value,
             o.c.belief_id.in_(produced),
@@ -240,6 +256,46 @@ async def trust(
             ),
         )
     )
+    # #754: the commit's pending transitions and the beliefs they produced (none of them has a
+    # stored confirmation: an observation of one would be pending too, and is flushed above).
+    held = [] if batch is None else list(batch.transitions.values())
+    produced_held = set()
+    for x in held:
+        if not (
+            x.story_id == story_id
+            and x.holder_character_id == witness
+            and x.source_character_id == speaker
+            and x.kind is Kind.TESTIMONY
+            and row_active(x.operation_id, x.membership)
+            and (
+                through is None
+                or (
+                    x.position.key() <= through.key()
+                    and row_recorded_through(
+                        x.operation_id,
+                        _turn_of(batch, x.id),
+                        through.turn,
+                    )
+                )
+            )
+        ):
+            continue
+        if x.outcome == REJECT:
+            rejected = int(rejected or 0) + 1
+        produced_held.add(x.id)
+    if produced_held and batch is not None:
+        for belief in batch.beliefs.values():
+            if (
+                belief.provenance in produced_held
+                and belief.kind is BeliefKind.FIRST_ORDER
+                and belief.state is BeliefHoldState.CORRECTED
+                and row_active(belief.operation_id, belief.membership)
+                and (
+                    through is None
+                    or (belief.held_to is not None and belief.held_to.key() <= through.key())
+                )
+            ):
+                overturned = int(overturned or 0) + 1
     return nudged(seed, int(confirmed or 0), int(rejected or 0), int(overturned or 0))
 
 

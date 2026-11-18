@@ -196,6 +196,27 @@ def excluded_operations() -> tuple[str, ...]:
     return _EXCLUDED.get()
 
 
+def row_active(operation_id: Any, membership: Any) -> bool:
+    """``active_only`` over one row in hand (#754: a commit's pending rows, merged into a read):
+    active, and not written by an operation ``excluding`` names."""
+    return Membership(membership) is Membership.ACTIVE and str(operation_id) not in _EXCLUDED.get()
+
+
+def row_recorded_through(operation_id: Any, turn_written: int | None, turn: int) -> bool:
+    """``recorded_through(table, turn)`` over one row in hand (#754)."""
+    return turn_written is None or turn_written <= turn or str(operation_id) in _INCLUDED.get()
+
+
+def row_included_through(inclusion_operation_id: Any, turn_written: int | None, turn: int) -> bool:
+    """``included_through(table, turn)`` over one row in hand (#754), for a table with an
+    inclusion column."""
+    return (
+        inclusion_operation_id is None
+        or (turn_written is not None and turn_written <= turn)
+        or str(inclusion_operation_id) in _INCLUDED.get()
+    )
+
+
 def _not_excluded(column: ColumnElement[Any]) -> ColumnElement[bool] | None:
     ids = _EXCLUDED.get()
     if not ids:
@@ -765,6 +786,9 @@ __all__ = [
     "recorded_through",
     "register_derived",
     "register_follower",
+    "row_active",
+    "row_included_through",
+    "row_recorded_through",
     "step_of",
     "supersede",
     "tx_time_of",

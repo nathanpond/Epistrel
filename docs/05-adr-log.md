@@ -22,7 +22,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-BITEMP | §3 | 189 |
 | FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
 | FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174, 193 |
-| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
+| FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173, 199 |
 | FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
@@ -47,7 +47,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 017, 129, 158, 162 |
-| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192 |
+| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198 |
@@ -262,6 +262,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 196 | Age repair and composition fallback are identity interventions, and NFR-QUAL-14 needs all seven types | Partly superseded | 197, 198 |
 | 197 | Repair rung 2 is an identity intervention | Current | — |
 | 198 | A composition polish that keeps the draft's words is an identity observation | Current | — |
+| 199 | The structured commit batches its epistemic writes | Current | — |
 
 ---
 
@@ -2201,6 +2202,22 @@ Tuning and its exit certification come after every milestone that may change a p
 **Consequences:**
 - NFR-QUAL-14 names the words-kept polish rule beside the three identity types. A model whose polish rewords more than 5 % of the time still needs 300 non-tied pairs a seed for `composition_polished`.
 - `tests/eval/test_e_12.py::test_e_12__a_words_kept_polish_is_identity` pins `same_words`, the `kept` outcome (a verbatim polish counts) and the summary's thresholds (50 polishes, two seeds, under 5 %). `tests/evals/test_intervention_sets.py` checks the set's identity size.
+
+### ADR-199 — The structured commit batches its epistemic writes
+**Status:** Accepted.
+**Context:** #620 kept a story's first multi-character turn inside NFR-PERF-3 by capping the statements a commit's lazy resolutions spend (FR-BELIEF-9), because one resolution cost about 100 statements on P-04's knowledge layer. A resolution makes four transitions (the speech act, the nested belief's two rows, the first-order belief). Each wrote its event, transition, belief, subject references, edge and change row one statement at a time, and re-derived its projection key with four reads. The owner's decision of 2026-11-05 ("(b) now, (a) later") left the batching to #754.
+**Decision:** Applied by #754 (FR-BELIEF-6, FR-BELIEF-9, FR-BELIEF-12, NFR-PERF-3).
+- `core.pending.batching(conn)` holds a commit's epistemic inserts (propositions, events, transitions, beliefs, subject references, dependency edges, the change index), its exposure resolutions and its projection keys. The structured commit opens it around its testimony, lazy-resolution and speech passes. At the scope's end each table is written once, in foreign-key order (a belief's provenance transition first), in chunks of 1,000 rows. The rows are the per-belief path's, with the same ids (minted when the write is made), the same event `seq` (numbered from one `max` read) and the same final columns.
+- A belief written and closed in the same commit is inserted closed (`held_to`, state, corrected by), and the flush sets its `tx_to` with one `UPDATE … clock_timestamp()`. A stored belief changed in place is updated at once, as before.
+- The readers between the writes merge the pending rows, and their statements carry the `epistrel_pending` execution option. These are the partition, a belief by id, the speech acts, the nested beliefs, the candidate read, a transition's replay and history, the trust counts, an antecedent probe, an event's intent, and the canon reads that reach `propositions` only through `facts`. Within a batch, each holder's stored beliefs are read once (`FOR UPDATE OF beliefs`, at most 5,000 rows) and the partition-style reads are answered in hand by the same filters as the pending rows (FR-BELIEF-6: each later frame sees the earlier resolutions of its pass). Reads that cannot change within a batch (the cast, closed sets, a character's existence, a probe, an event's payload) are remembered until an unaware write.
+- Any other statement that touches a table with pending rows, any raw SQL and any unaware write flushes first, inside SQLAlchemy's `before_execute` on the same connection. An unmerged reader costs a flush, never a stale answer. A savepoint flushes first, and a rollback drops the batch.
+- The buffer lives in `core/`, not `core/epistemic/`, so the canon reads inside a batch can mark themselves under `check-epistemic-separation`.
+- `MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN` (#620) goes from 250 to 400. It counts a resolution's own statements, its reads, since its writes cost a fixed few at the flush, so the default 20 resolutions fit.
+**Alternatives considered:** Flush before every read of a buffered table: correct without overlays, but the readers interleave with the writes, so it flushed once a transition and saved little. Rewrite the canon reads to read a key's history once and filter by position in Python: it would also remove the eight canon reads a resolution still makes, but it would mirror canon's amendment, valid-time and viewpoint rules outside the canon store. Keep the cap at 250 and leave each resolution at about 100 statements: witnesses catch up five times slower.
+**Consequences:**
+- On P-04's first two-primary turn (`ScaleSpec.scaled(1_000)`), the commit at 20 resolutions is 463 statements, against 116 at none and 2,192 per belief: 17.4 statements a resolution. `tests/integration/test_batched_commit.py::test_a_lazy_resolution_costs_at_most_twenty_statements` pins ≤ 20 a resolution and ≤ 600 a commit, and compares every epistemic table's rows with the per-belief turn's (`pending.disabled()`). `test_a_batched_commit_writes_what_the_per_belief_one_writes` does the same for one pass of three resolutions on one key, with no flush inside it, and checks that another connection never reads the pending rows. The ≤ 1 s side of NFR-PERF-3 stays with the weekly P-04 run.
+- A new reader added inside the scope is correct by default (it flushes), and it is fast once it merges the pending rows. A new writer inside the scope that inserts one row at a time flushes first, so the batch never orders it wrongly.
+- The per-belief path stays as the code outside a batch (every other caller of `transition()`), and `pending.disabled()` selects it for a batched commit, for the equivalence tests.
 
 ---
 

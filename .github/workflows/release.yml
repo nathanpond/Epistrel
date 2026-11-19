@@ -52,6 +52,11 @@ jobs:
           python-version: "3.14"
           enable-cache: true
       - run: uv sync --frozen
+      - name: Presets certified at their current fingerprints (#818; ADR-179 as amended by ADR-200)
+        # PR CI only reports this guard (it skips); a release enforces it.
+        env:
+          EPISTREL_TEST_RELEASE_GATE: "1"
+        run: uv run pytest -q tests/integration/test_c_18_m11.py
       - name: Released tags so far
         env:
           GH_TOKEN: ${{ github.token }}

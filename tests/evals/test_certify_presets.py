@@ -39,12 +39,16 @@ from epistrel.evals import presets as preset_constants
 from epistrel.evals.certify import floors_of
 from epistrel.evals.certify_cli import UsageError, parse_presets
 from epistrel.evals.index import (
+    CERTIFIED_PRESETS,
     EM_DASH,
     PRESETS_HEADER,
     REFERENCE_MODEL_ID,
     Committed,
+    current_fingerprint,
     preset_rows,
+    uncertified_presets,
 )
+from epistrel.evals.index import records as index_records
 from epistrel.evals.report import (
     INDEX_NAME,
     SUMMARY_RE,
@@ -62,6 +66,7 @@ from epistrel.evals.runner import seeds_from
 from epistrel.evals.suites import SUITES
 from epistrel.tools.generated import REPO_ROOT
 from tests.auth_support import auth_settings, bearer
+from tests.certification_support import check_presets_certified_at_current_fingerprints
 from tests.conformance.conftest import migrated_database
 from tests.profile_support import PROFILES, UNCERTIFIED
 from tests.respond_support import body as respond_body
@@ -301,7 +306,6 @@ def test_a_stale_row_keeps_its_model() -> None:
     assert row[header.index("Model")] == EM_DASH
 
 
-@pytest.mark.xfail(not committed_records(), reason="awaiting owner run (#235's Demo)", strict=False)
 def test_committed_certifications() -> None:
     """Every committed record validates and matches its committed report's SHA-256 and, for a
     preset with partitions, ran the zero-leak floors on at least 300 cases a seed. Standard,
@@ -347,6 +351,47 @@ def test_committed_certifications() -> None:
         model = str(record.models["generation"]["id"])
         by_model.setdefault(model, set()).add(str(record.preset))
     assert any({"standard", "full", "max"} <= presets for presets in by_model.values()), by_model
+
+
+def test_presets_certified_at_current_fingerprints() -> None:
+    """#818's release guard (``tests.certification_support``): one model has Standard, Full
+    and Max records whose fingerprint equals the preset's current one, recomputed from each
+    record's own ``models``. It does not ask whether their floors pass. In PR CI it skips and
+    names the stale presets; ``EPISTREL_TEST_RELEASE_GATE=1`` (release, verify) makes it fail."""
+    check_presets_certified_at_current_fingerprints()
+
+
+def test_the_current_fingerprint_guard_refuses_stale_records() -> None:
+    """The guard passes on records at the current fingerprints and fails on stale ones alone
+    (#818's complement), and a model missing one preset fails it too."""
+    found = index_records()
+    assert found, "no committed certification records"
+    stale = [_stale(c) for c in found]
+    assert uncertified_presets(stale) == list(CERTIFIED_PRESETS)
+    with pytest.raises(pytest.fail.Exception, match="standard, full, max"):
+        check_presets_certified_at_current_fingerprints(stale, enforce=True)
+    with pytest.raises(pytest.skip.Exception, match="EPISTREL_TEST_RELEASE_GATE=1"):
+        check_presets_certified_at_current_fingerprints(stale, enforce=False)
+    current = [_current(c) for c in found if c.record.preset in CERTIFIED_PRESETS]
+    check_presets_certified_at_current_fingerprints(current, enforce=True)
+    without_max = [c for c in current if c.record.preset != "max"]
+    with pytest.raises(pytest.fail.Exception, match=r"of max \("):
+        check_presets_certified_at_current_fingerprints(without_max, enforce=True)
+
+
+def _stale(committed: Committed) -> Committed:
+    document = committed.record.model_dump(mode="json")
+    return Committed(
+        committed.path, parse_record({**document, "fingerprint": "sha256:" + "0" * 64})
+    )
+
+
+def _current(committed: Committed) -> Committed:
+    record = committed.record
+    assert record.preset in CERTIFIED_PRESETS
+    found = current_fingerprint(record.preset, record.models)
+    document = record.model_dump(mode="json")
+    return Committed(committed.path, parse_record({**document, "fingerprint": found}))
 
 
 def test_a_refused_suite_s_floors_are_failed_never_left_out() -> None:

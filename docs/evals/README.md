@@ -222,6 +222,18 @@ Exit codes: 0 once every report is written, whatever the floors say; 1 on an end
 harness error (the presets finished so far keep their outputs, and the index is regenerated);
 2 on a usage error; 130 when stopped.
 
+**Certified at the current fingerprints (#818, ADR-200).** A model counts as certified only
+when its Standard, Full and Max records match the presets' **current** fingerprints, each
+recomputed from the record's own models. Older records stay committed as history and read
+`uncertified (preset changed since certification …)` in INDEX. The fingerprint also covers the
+engine's model-call revision (`MODEL_CALL_REVISION` in `core/profiles/fingerprint.py`). A change
+to a Python-held prompt string, token cap, schema or the structured-mode choice must bump it.
+`tests/test_model_call_revision.py` fails until the revision and its snapshot move together:
+bump the constant, then run `uv run python -m tests.model_call_support --write`. The check is a
+release gate. `release.yml` runs `tests/integration/test_c_18_m11.py` with
+`EPISTREL_TEST_RELEASE_GATE=1`, so a tag fails while no model has all three current records.
+In PR CI the same test skips and names the stale presets.
+
 ## Reading a report
 
 Each report states the model and the version the server reported, the configuration
@@ -233,6 +245,16 @@ the host,
 the seeds and the sample size, and one row per metric: floor, rule,
 mean ± SD across seeds, cases per seed, seeds, verdict and, for a zero-tolerance metric, the
 one-sided 95% upper bound.
+
+A run on a real endpoint also states its **Structured calls** (#818, `run_conditions` in the
+report JSON and its embedded summary). For each story purpose with a response schema, it gives
+the structured mode the endpoint gets (`json_schema_strict` on api.anthropic.com when the schema
+has a strict wire form, `parse_validate_retry` when it has none, today `DirectiveParseResult`,
+and `json_schema` elsewhere). From the trace, it gives the structured requests seen by schema
+and mode, and the parse-validate-retry requests by schema, retries included and judge calls
+excluded. Without a trace (`--no-trace`) the counts are `null`. A resumed run counts this
+session's requests only and says how many cases came from the journal. A stub run has no
+`run_conditions`.
 
 - A **rate** floor passes when the mean clears it by more than one standard deviation.
 - A **zero-tolerance** floor passes only with no violation on any seed over at least 300

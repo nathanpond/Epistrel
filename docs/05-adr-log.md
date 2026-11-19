@@ -40,7 +40,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171, 176 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142, 164 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183, 196 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183, 196, 200 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -242,7 +242,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 176 | A story character is erased from the catalog with its story named | Current | — |
 | 177 | A character may state what an author_fiat acquisition made it know | Current | — |
 | 178 | A Lite turn handles narrated time skips | Current | — |
-| 179 | M9's quality floors are met on a certified model, on any host tier | Partly superseded | 184 |
+| 179 | M9's quality floors are met on a certified model, on any host tier | Partly superseded | 184, 200 |
 | 180 | A rejected `response_format` probe is recorded as a probe and not counted | Current | — |
 | 181 | Image limits are deployment- and entry-scoped; per-story limits belong to the consumer | Current | — |
 | 182 | Image minors-policy certification uses external evidence; Epistrel holds no violating images | Current | — |
@@ -263,6 +263,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 197 | Repair rung 2 is an identity intervention | Current | — |
 | 198 | A composition polish that keeps the draft's words is an identity observation | Current | — |
 | 199 | The structured commit batches its epistemic writes | Current | — |
+| 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Current | — |
 
 ---
 
@@ -1905,9 +1906,9 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-179 — M9's quality floors are met on a certified model, on any host tier
 **Status:** Accepted. Amends ADR-164 (M9's exit evidence; NFR-QUAL-7 joined it by ADR-166).
-**Amended by:** ADR-184 — the milestone this exit evidence belongs to is M11.
+**Amended by:** ADR-184 — the milestone this exit evidence belongs to is M11. ADR-200 — a certified model's records must be at the presets' **current** fingerprints, and a certification covers the engine's model-call revision.
 **Context:** ADR-164 made M9's exit evidence the floors NFR-QUAL-2..4, 7 and 14 met on the reference model tier, the local `cydonia-24b-v4.3` on LM Studio. On 2026-11-04 the owner moved M7's preset certification (#235) to a hosted model, `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint, and chose to keep certification records for several models side by side. A local run measured about 620 model calls an hour, 8 to 10 days for the three presets; the hosted run took hours. Standard, Full and Max were certified on Haiku on 2026-11-05 (PR #746, host tier `other`), and the floor misses there were filed in M9 (#735, #747 to #750, and #540 for NFR-QUAL-1). Under ADR-164, those misses could not close M9 and could not hold it open.
-**Decision:** The owner's decision of 2026-11-05 (`/n8-replan M9`). M9's *[superseded by ADR-184: M11's]* exit evidence is NFR-QUAL-2..4, 7 and 14 met on a **certified model**: a model with committed certification records for Standard, Full and Max (`src/epistrel/core/seeds/certifications/`), on any host tier, in committed live reports on that model. The reference model tier is no longer required. The requirements, floors, labeled sets, scorers and gate rule (NFR-QUAL-8) are unchanged, and so is the stub CI gate.
+**Decision:** The owner's decision of 2026-11-05 (`/n8-replan M9`). M9's *[superseded by ADR-184: M11's]* exit evidence is NFR-QUAL-2..4, 7 and 14 met on a **certified model**: a model with committed certification records for Standard, Full and Max (`src/epistrel/core/seeds/certifications/`) *[superseded by ADR-200: at the presets' current fingerprints, recomputed from each record's models]*, on any host tier, in committed live reports on that model. The reference model tier is no longer required. The requirements, floors, labeled sets, scorers and gate rule (NFR-QUAL-8) are unchanged, and so is the stub CI gate.
 **Alternatives considered:** Keeping the reference tier made the hosted evidence advisory and left M9 on a machine-days run per attempt. Requiring both tiers made M9 strictly larger with no change in what the floors measure.
 **Consequences:**
 - docs/03 §22's M9 row and docs/04's M9 parts *[superseded by ADR-184: the M11 row and parts]* of E-01, E-03, E-05, E-06 and E-12 say "on a certified model". Invariant 7 holds: no requirement or part moves milestone.
@@ -2218,6 +2219,21 @@ Tuning and its exit certification come after every milestone that may change a p
 - On P-04's first two-primary turn (`ScaleSpec.scaled(1_000)`), the commit at 20 resolutions is 463 statements, against 116 at none and 2,192 per belief: 17.4 statements a resolution. `tests/integration/test_batched_commit.py::test_a_lazy_resolution_costs_at_most_twenty_statements` pins ≤ 20 a resolution and ≤ 600 a commit, and compares every epistemic table's rows with the per-belief turn's (`pending.disabled()`). `test_a_batched_commit_writes_what_the_per_belief_one_writes` does the same for one pass of three resolutions on one key, with no flush inside it, and checks that another connection never reads the pending rows. The ≤ 1 s side of NFR-PERF-3 stays with the weekly P-04 run.
 - A new reader added inside the scope is correct by default (it flushes), and it is fast once it merges the pending rows. A new writer inside the scope that inserts one row at a time flushes first, so the batch never orders it wrongly.
 - The per-belief path stays as the code outside a batch (every other caller of `transition()`), and `pending.disabled()` selects it for a batched commit, for the equivalence tests.
+
+### ADR-200 — A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints
+**Status:** Accepted. Amends ADR-179.
+**Context:** #760 moved every preset's fingerprint, and #761 put structured calls to api.anthropic.com on strict constrained decoding. The 2026-11-05/06 records stayed committed, and ADR-179's "a model with committed records for Standard, Full and Max" was still met by those stale records alone, and so was `test_committed_certifications`. Neither compared a record's fingerprint with the preset's current one. A second gap: #761's change was in Python (the request body builder and the strict-mode choice), not in a template or a setting, so a change like it would not move the fingerprint at all. A certification could then describe calls the engine no longer makes. The owner decided on 2026-11-09 to require records at the current fingerprints, and chose R1 (a) at `/n8-plan M11` (2026-11-16): the fingerprint covers the engine's model-call behaviour.
+**Decision:** Applied by #818 (FR-PROF-16, NFR-QUAL-11).
+- The configuration fingerprint gains a top-level `"engine": {"model_call_revision": n}` key. `MODEL_CALL_REVISION` is an integer in `core/profiles/fingerprint.py`, carried by `RuntimeFacts.model_call_revision`. Every change to what a model call sends that no template hash or quality-relevant setting captures bumps it in the same PR. That covers Python-held prompt text, token ceilings and input-truncation caps, provider headers and body extras, the purposes' input and response schemas, and the structured-mode choice. Records carry it inside their fingerprint (no schema bump).
+- `tests/test_model_call_revision.py` hashes that set (`tests/model_call_support.py`). The set is every upper-case plain-data constant of each `epistrel.orchestrator` module that imports the Model Access Layer (found from the source, so a new caller joins by itself), the named extra modules and core constants, each delivered purpose's schemas, and the source of the strict-mode and request-body functions. `tests/fixtures/model_call_snapshot.json` pins each hash **and** the revision, so a change fails until both move. It over-covers: a guarded constant no call sends still needs a bump. It does not cover behaviour reached only through data (a model-config row, a stored policy, a story's settings).
+- A **certified model** is one with committed Standard, Full and Max records whose fingerprint equals the preset's current one, recomputed from each record's own `models` (`evals.index.current_by_model`). A certification covers the templates, the quality-relevant profile settings, the model ids and the engine model-call revision. Whether the records' floors pass is a separate question, the reports' and `test_committed_certifications`'.
+- The current-fingerprint check is a **release gate**, not a PR gate. `release.yml` runs `tests/integration/test_c_18_m11.py` with `EPISTREL_TEST_RELEASE_GATE=1`, and so does `/n8-verify`. In PR CI it skips and names the stale presets, so M11's tuning PRs, which move fingerprints, can merge between the baseline (#818) and the exit certification (#819).
+**Alternatives considered:** Gate PRs on it: then every M11 tuning PR would need a paid recertification before it could merge. Hash whole model-calling modules: any comment or refactor would bump the revision and uncertify every preset. Leave Python-held behaviour out of the fingerprint: a #761-sized change would leave certifications naming calls that are no longer made.
+**Consequences:**
+- Every preset's fingerprint moved once, with this change. The committed records were already stale, so nothing certified was lost.
+- A tag cannot release while Standard, Full and Max lack current records on one model. The next release follows #818's baseline (or #819's exit run).
+- docs/03 FR-PROF-16 lists the revision as a fingerprint input, §22's M11 row reads "at the presets' current fingerprints", and docs/04 C-18 gains the `[M11: NFR-QUAL-11]` part.
+- Tests: `tests/test_model_call_revision.py`, `tests/integration/test_c_18_m11.py`, and `tests/evals/test_certify_presets.py::test_presets_certified_at_current_fingerprints` with its complement `test_the_current_fingerprint_guard_refuses_stale_records`.
 
 ---
 

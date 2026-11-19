@@ -171,6 +171,20 @@ class Resumed(BaseModel):
     engine_shas: list[str] = Field(default_factory=list)
 
 
+class RunConditions(BaseModel):
+    """How the run's structured calls went to the model (#818): each story purpose's structured
+    mode, from the registry and the endpoint (``evals.run_conditions``); the structured
+    requests the trace saw, by schema and mode (``observed``); and of those, the
+    parse-validate-retry requests by schema (retries included, judge calls excluded).
+    ``observed`` and ``parse_validate_retry`` are ``None`` when nothing was traced
+    (``--no-trace``); ``note`` says what the counts leave out."""
+
+    structured_modes: dict[str, str] = Field(default_factory=dict)
+    observed: dict[str, dict[str, int]] | None = None
+    parse_validate_retry: dict[str, int] | None = None
+    note: str | None = None
+
+
 class SuiteJudge(BaseModel):
     """The judge a judged suite's calls went to (#475): its model and reported version, the
     purposes it judged with, and whether it was the run model judging its own output."""
@@ -280,6 +294,9 @@ class Report(BaseModel):
     resumed: Resumed | None = None
     """Set when some of the run's cases came from its results journal (#730); ``None``: every
     case was played in this run."""
+    run_conditions: RunConditions | None = None
+    """#818: the run's structured modes and fallback count (``RunConditions``); ``None``: a stub
+    run, or a report written before #818."""
     dials: dict[str, Any] | None = None
     """The run's own settings merge patch over its preset (#913: ``run --dial``), which its
     fingerprint names; ``None``: the preset as it is (every report before #913)."""
@@ -470,6 +487,12 @@ def summary(report: Report) -> dict[str, Any]:
         "judges": {
             s.name: s.judge.model_dump(mode="json") for s in report.suites if s.judge is not None
         },
+        # #818: optional; absent on a stub run and on every report before it.
+        **(
+            {"run_conditions": report.run_conditions.model_dump(mode="json")}
+            if report.run_conditions is not None
+            else {}
+        ),
         # #532: what GET /admin/evals/runs serves of a run beyond its verdicts.
         "seeds": list(report.seeds),
         "sample_size": max((m.sample_size for s in report.suites for m in s.metrics), default=0),
@@ -601,6 +624,32 @@ def sectioned(suites: Sequence[SuiteResult]) -> list[SuiteResult]:
     return found
 
 
+def run_conditions_line(conditions: RunConditions) -> str:
+    """The report's **Structured calls** line (#818)."""
+    by_mode: dict[str, list[str]] = {}
+    for purpose, mode in sorted(conditions.structured_modes.items()):
+        by_mode.setdefault(mode, []).append(purpose)
+    modes = "; ".join(
+        f"`{mode}` for {', '.join(f'`{p}`' for p in purposes)}"
+        for mode, purposes in sorted(by_mode.items())
+    )
+    if conditions.parse_validate_retry is None:
+        counted = "parse-validate-retry requests not counted (no trace)"
+    else:
+        found = conditions.parse_validate_retry
+        counted = "parse-validate-retry requests: " + (
+            ", ".join(f"`{schema}` {n}" for schema, n in sorted(found.items())) or "none"
+        )
+        if "DirectiveParseResult" not in found:
+            counted += " (`DirectiveParseResult` 0)"
+    if conditions.observed:
+        strict = sum(m.get("json_schema_strict", 0) for m in conditions.observed.values())
+        total = sum(sum(m.values()) for m in conditions.observed.values())
+        counted += f"; {strict} of {total} traced structured requests strict"
+    note = f" ({conditions.note})" if conditions.note else ""
+    return f"- **Structured calls:** {modes or EM_DASH}; {counted}{note}"
+
+
 def render_markdown(report: Report) -> str:
     """The report as Markdown (see the module docstring)."""
     seeds = report.seeds
@@ -668,6 +717,8 @@ def render_markdown(report: Report) -> str:
             f"(results journal), {report.resumed.cases_played} played in this one; engine "
             f"commits {shas}"
         )
+    if report.run_conditions is not None:
+        lines.append(run_conditions_line(report.run_conditions))
     if report.errors:
         lines += ["", "**Run errors:**", ""] + [f"- {error}" for error in report.errors]
     grouped = sum(s.name in SECTIONS for s in report.suites) > 1

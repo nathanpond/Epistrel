@@ -46,7 +46,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from epistrel.core.profiles.certification import (
     SEEDS_DIR,
@@ -56,7 +56,12 @@ from epistrel.core.profiles.certification import (
     committed_records,
     parse_record,
 )
-from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
+from epistrel.core.profiles.fingerprint import (
+    MODEL_CALL_REVISION,
+    ModelIdentity,
+    RuntimeFacts,
+    fingerprint,
+)
 from epistrel.evals.presets import PRESET_NAMES, PRESETS, PresetName
 
 if TYPE_CHECKING:
@@ -118,10 +123,16 @@ def _story_purposes() -> tuple[Mapping[str, str], list[str]]:
     return TEMPLATE_HASHES, sorted(STORY_PURPOSES)
 
 
-def current_fingerprint(preset: PresetName, models: Mapping[str, Mapping[str, object]]) -> str:
+def current_fingerprint(
+    preset: PresetName,
+    models: Mapping[str, Mapping[str, object]],
+    *,
+    model_call_revision: int = MODEL_CALL_REVISION,
+) -> str:
     """``preset``'s fingerprint now: its constants (``Preset.effective``), with ``models`` (a
     record's ``models``: purpose → ``{id, reported_version}``) as the deployment's, and with
-    ``REFERENCE_MODEL_ID`` for a purpose it does not name."""
+    ``REFERENCE_MODEL_ID`` for a purpose it does not name; at the engine's current model-call
+    revision unless ``model_call_revision`` names another (#818)."""
     templates, purposes = _story_purposes()
     chosen = PRESETS[preset]
     identities = {
@@ -134,8 +145,39 @@ def current_fingerprint(preset: PresetName, models: Mapping[str, Mapping[str, ob
         profile_id=chosen.profile_id,
         version=chosen.version,
         settings=chosen.effective(),
-        facts=RuntimeFacts(models=identities, templates=templates),
+        facts=RuntimeFacts(
+            models=identities, templates=templates, model_call_revision=model_call_revision
+        ),
     )
+
+
+CERTIFIED_PRESETS: tuple[PresetName, ...] = ("standard", "full", "max")
+"""The presets a certified model has records for at their current fingerprints (ADR-179 as
+amended by ADR-200). Lite joins at #819."""
+
+
+def current_by_model(found: Sequence[Committed] | None = None) -> dict[str, set[PresetName]]:
+    """By generation model id, the presets with a committed record whose fingerprint equals the
+    preset's current one, recomputed from the record's own ``models`` (#818). Whether that
+    record's floors pass is not asked here."""
+    by_model: dict[str, set[PresetName]] = {}
+    for committed in records() if found is None else found:
+        record = committed.record
+        if record.preset is None or record.preset not in PRESETS:
+            continue
+        preset = cast(PresetName, record.preset)
+        model = str(record.models.get("generation", {}).get("id", ""))
+        if record.fingerprint == current_fingerprint(preset, record.models):
+            by_model.setdefault(model, set()).add(preset)
+    return by_model
+
+
+def uncertified_presets(found: Sequence[Committed] | None = None) -> list[PresetName]:
+    """The presets in ``CERTIFIED_PRESETS`` that the best-covered model lacks a current
+    record for: empty when one model holds all of them (#818's release guard)."""
+    by_model = current_by_model(found)
+    best = max(by_model.values(), key=len, default=set())
+    return [p for p in CERTIFIED_PRESETS if p not in best]
 
 
 def _head(metric_id: str) -> str:
@@ -423,12 +465,14 @@ def image_checks_section(
 
 
 __all__ = [
+    "CERTIFIED_PRESETS",
     "IMAGE_CHECKS_HEADING",
     "NO_RUN",
     "REFERENCE_MODEL_ID",
     "SEEDED_IMAGE_OUTPUT_POLICIES",
     "Committed",
     "ImageCheckReport",
+    "current_by_model",
     "current_fingerprint",
     "floor_cells",
     "image_check_records",
@@ -439,4 +483,5 @@ __all__ = [
     "preset_rows",
     "presets_section",
     "records",
+    "uncertified_presets",
 ]

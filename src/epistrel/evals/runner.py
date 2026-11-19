@@ -154,6 +154,7 @@ from epistrel.evals.report import (
     SuiteJudge,
     SuiteResult,
 )
+from epistrel.evals.run_conditions import run_conditions
 from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite, Summary
 from epistrel.evals.trace import CallTrace, CaseKey
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
@@ -1416,6 +1417,10 @@ async def run_suites(
                 await sweep(live)
             problems = isolation_problems(before, await story_rows(live.db))
     report.errors.extend(f"isolation: {p}" for p in problems)
+    if config.adapter == "openai" and config.base_url:
+        report.run_conditions = run_conditions(
+            config.base_url, trace, journal.reused if journal is not None else 0
+        )
     if journal is not None and journal.reused:
         shas = set(journal.reused_shas)
         if journal.played:

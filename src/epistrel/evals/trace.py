@@ -262,6 +262,9 @@ class CallTrace:
         self.secrets = tuple(s for s in secrets if s)
         self.session = uuid.uuid4().hex[:12]
         self.pending: list[dict[str, Any]] = []
+        self.structured: dict[str, dict[str, int]] = {}
+        """#818: this session's structured requests by schema and ``structured_mode``, judge
+        calls excluded (``Report.run_conditions``)."""
 
     # -- what send hands over ----------------------------------------------------------------
 
@@ -334,6 +337,10 @@ class CallTrace:
         }
         if cut:
             entry["truncated"] = True
+        mode = entry["structured_mode"]
+        if mode is not None and not entry["judge"]:
+            modes = self.structured.setdefault(str(schema), {})
+            modes[mode] = modes.get(mode, 0) + 1
         return entry
 
     # -- cases and phases --------------------------------------------------------------------

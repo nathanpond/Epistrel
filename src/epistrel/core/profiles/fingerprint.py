@@ -8,7 +8,8 @@ as strings) of::
 
     {"profile_version": {"profile_id": ..., "version": n},
      "models": {<purpose>: {"id": ..., "reported_version": ...}, ...},
-     "quality_relevant_settings": {<dotted path>: value, ..., "prompt_templates": {...}}}
+     "quality_relevant_settings": {<dotted path>: value, ..., "prompt_templates": {...}},
+     "engine": {"model_call_revision": n}}
 
 - ``profile_version``: the profile and the version the configuration resolves to.
 - ``models``: every model purpose the deployment delivers, with the model id a call for it
@@ -22,6 +23,11 @@ as strings) of::
   Settings tagged irrelevant (pinned memories) are not in it, so a story override of one keeps
   the fingerprint; a new profile version is a new fingerprint whatever it changes, since the
   version is an input.
+- ``engine``: ``model_call_revision`` (#818, owner's R1 (a); ADR-200), the engine's revision of
+  what a model call sends that no template hash or setting captures: Python-held prompt
+  strings, token ceilings, provider body extras and the structured-mode choice. Each change to
+  one bumps ``MODEL_CALL_REVISION`` in the same PR (``tests/test_model_call_revision.py``
+  holds the guarded set), so a certification also covers the engine's model calls.
 
 Core never reads the model configuration or the templates: the Orchestrator resolves them and
 the Engine passes them in as ``RuntimeFacts``.
@@ -48,7 +54,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,6 +65,10 @@ from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
+MODEL_CALL_REVISION: Final[int] = 1
+"""The engine's model-call revision, a fingerprint input (#818; ADR-200). Bump it with any
+change to what a model call sends that no prompt template hash or quality-relevant setting
+captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"
 """The key of the prompt templates' hashes inside ``quality_relevant_settings``."""
 
@@ -132,6 +142,8 @@ class RuntimeFacts:
     quality: Mapping[str, QualityStatus] = field(default_factory=dict)
     versions: Mapping[str, str] = field(default_factory=dict)
     """#234: each model's latest reported version, by model id."""
+    model_call_revision: int = MODEL_CALL_REVISION
+    """#818: the engine's model-call revision the fingerprint covers (``MODEL_CALL_REVISION``)."""
 
 
 def routed_models(
@@ -227,6 +239,7 @@ def fingerprint(
         "profile_version": {"profile_id": profile_id, "version": version},
         "models": {purpose: model.model_dump(mode="json") for purpose, model in models.items()},
         "quality_relevant_settings": quality_relevant_settings(settings, facts.templates),
+        "engine": {"model_call_revision": facts.model_call_revision},
     }
     digest = hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
     return f"{FINGERPRINT_PREFIX}{digest}"
@@ -249,6 +262,7 @@ def stamp(
 __all__ = [
     "FINGERPRINT_PATTERN",
     "FINGERPRINT_PREFIX",
+    "MODEL_CALL_REVISION",
     "RELEVANT_PATHS",
     "TEMPLATES_KEY",
     "UNCERTIFIED",

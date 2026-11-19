@@ -81,9 +81,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.dialects.postgresql import array as pg_array
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import readset
+from epistrel.core import pending, readset
 from epistrel.core.canon.errors import UnknownPredicate
 from epistrel.core.enums import (
     Authority,
@@ -111,9 +112,12 @@ from epistrel.core.membership import (
     position_key,
     position_literal,
     register_follower,
+    row_active,
+    row_included_through,
+    step_of,
 )
 from epistrel.core.propositions import store
-from epistrel.core.propositions.codec import proposition_from_row
+from epistrel.core.propositions.codec import proposition_from_row, proposition_row
 from epistrel.core.propositions.model import Instant, Interval, Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
 from epistrel.core.tables import characters, entities, events, propositions
@@ -358,6 +362,211 @@ def _held_then(kind: BeliefKind = BeliefKind.FIRST_ORDER) -> list[ColumnElement[
     ]
 
 
+# -- a commit's pending beliefs (#754) ---------------------------------------------------------
+
+
+def _pending_beliefs(conn: AsyncConnection, story_id: str, holder: str | None) -> list[Belief]:
+    """The beliefs ``conn``'s commit has written but not yet flushed (``core.pending``)
+    of ``holder`` (any when ``None``)."""
+    found = pending.current(conn)
+    if found is None or not found.beliefs:
+        return []
+    return [
+        b
+        for b in found.beliefs.values()
+        if b.story_id == story_id and (holder is None or b.holder_character_id == holder)
+    ]
+
+
+def _held_row(b: Belief, through: Position | None) -> bool:
+    """A held read's filter (``_open`` with ``held_at_clause(None)``, or ``_held_then`` with
+    ``held_at_clause(through)`` and ``included_through``) over a row in hand, but its kind."""
+    if not row_active(b.operation_id, b.membership):
+        return False
+    if through is None:
+        return b.tx_to is None and b.held_to is None
+    if b.tx_to is not None and b.state is not BeliefHoldState.CORRECTED:
+        return False
+    if b.held_from.key() > through.key():
+        return False
+    if b.held_to is not None and b.held_to.key() <= through.key():
+        return False
+    return row_included_through(b.resolution_operation_id, b.narrative_turn, through.turn)
+
+
+def _about(
+    b: Belief,
+    *,
+    subjects: Sequence[str] | None = None,
+    entities_: Sequence[str] | None = None,
+    objects_: Sequence[str] | None = None,
+    predicate: str | None = None,
+    proposition_ids: Sequence[str] | None = None,
+    levels: Sequence[BeliefConfidenceLevel] | None = None,
+) -> bool:
+    """``partition``'s proposition filters over a row in hand."""
+    p = b.proposition
+    if subjects is not None and p.subject_id not in subjects:
+        return False
+    if entities_ is not None and p.subject_id not in entities_ and p.object_id not in entities_:
+        return False
+    if (
+        objects_ is not None
+        and p.object_id not in objects_
+        and not any(x in objects_ for x in p.object_set or ())
+    ):
+        return False
+    if predicate is not None and p.predicate_id != predicate:
+        return False
+    if proposition_ids is not None and b.proposition_id not in proposition_ids:
+        return False
+    return levels is None or b.confidence_level in levels
+
+
+def _merged(stored: list[Belief], extra: list[Belief], limit: int | None = None) -> list[Belief]:
+    """``stored`` (read by id) with the pending ``extra``, by id, cut at ``limit``."""
+    if not extra:
+        return stored
+    found = sorted([*stored, *extra], key=lambda b: b.id)
+    return found if limit is None else found[:limit]
+
+
+SLICE_MAX = 5_000
+"""The most stored beliefs of one holder a batched commit holds in hand (#754); a larger
+partition is read query by query."""
+
+_SLICE = (
+    _SELECT.add_columns(
+        belief_transitions.c.source_character_id.label("said_by"),
+        belief_transitions.c.outcome.label("said_outcome"),
+    )
+    .join(belief_transitions, belief_transitions.c.id == beliefs.c.provenance, isouter=True)
+    .order_by(beliefs.c.id)
+)
+
+
+async def _slice(conn: AsyncConnection, story_id: str, holder: str) -> list[Belief] | None:
+    """#754: within a batched commit, ``holder``'s stored beliefs (every row, every kind), read
+    once and kept current with the commit's own updates, so its partition reads are answered in
+    hand, with the pending rows; ``None`` outside a batch or for a partition over
+    ``SLICE_MAX``. Its rows are locked as a candidate read locks them (the story lock is held)."""
+    batch = pending.current(conn)
+    if batch is None:
+        return None
+    key = (story_id, holder)
+    if key not in batch.slices:
+        b = beliefs.c
+        rows = list(
+            await conn.execute(
+                pending.aware(
+                    _SLICE.where(b.story_id == story_id, b.holder_character_id == holder)
+                    .limit(SLICE_MAX + 1)
+                    .with_for_update(of=beliefs)
+                )
+            )
+        )
+        if len(rows) > SLICE_MAX:
+            batch.slices[key] = None
+        else:
+            held: dict[str, Belief] = {}
+            for r in rows:
+                found = _belief_of(r)
+                held[found.id] = found
+                batch.said[found.id] = (_id(r._mapping["said_by"]), r._mapping["said_outcome"])
+            batch.slices[key] = held
+    sliced = batch.slices[key]
+    if sliced is None:
+        return None
+    return [*sliced.values(), *_pending_beliefs(conn, story_id, holder)]
+
+
+def _sliced(conn: AsyncConnection, belief_id: str) -> Belief | None:
+    """A stored belief a batched commit holds in a slice (#754)."""
+    batch = pending.current(conn)
+    if batch is None:
+        return None
+    for held in batch.slices.values():
+        if held is not None and belief_id in held:
+            found: Belief = held[belief_id]
+            return found
+    return None
+
+
+def updated_stored(conn: AsyncConnection, belief_id: str) -> None:
+    """A stored belief was updated in place (#754): a slice holding it reads it again."""
+    batch = pending.current(conn)
+    if batch is None:
+        return
+    for key, held in list(batch.slices.items()):
+        if held is not None and belief_id in held:
+            del batch.slices[key]
+
+
+_NUMERIC_COLUMNS = frozenset({"confidence_scalar", "accessibility", "attributed_confidence_scalar"})
+_JSONB_COLUMNS = frozenset({"visibility", "staged_ref"})
+
+
+def _pending_belief(row: Mapping[str, Any], proposition: Proposition, membership_tx: Any) -> Belief:
+    """The belief ``read_belief`` would answer for the pending insert ``row`` (#754): the
+    database's defaults, its rounding of a ``NUMERIC(4, 3)`` and its JSON round trip."""
+    import json
+
+    m: dict[str, Any] = {}
+    for column in beliefs.c:
+        name = column.name
+        if name in row:
+            value = row[name]
+        elif name == "membership":
+            value = Membership.ACTIVE.value
+        elif name == "membership_tx":
+            value = membership_tx
+        else:
+            value = pending.column_default(column)
+        if name in _NUMERIC_COLUMNS:
+            value = pending.numeric3(value)
+        elif name in _JSONB_COLUMNS and value is not None:
+            value = json.loads(json.dumps(value))
+        m[name] = value
+    columns = proposition_row(proposition)
+    for column in propositions.c:
+        m[f"{_P}{column.name}"] = columns.get(column.name)
+    return _belief_of(SimpleNamespace(_mapping=m)).model_copy(update={"proposition": proposition})
+
+
+def patch_pending(
+    conn: AsyncConnection, belief_id: str, values: Mapping[str, Any], *, close: bool = False
+) -> Belief | None:
+    """Apply an update of ``beliefs`` columns to the pending belief ``belief_id`` (#754: it is
+    written with them); ``close``: it is closed in transaction-time too (the flush sets its
+    ``tx_to``). Answers the belief after it, or ``None`` when ``belief_id`` is not pending (the
+    caller updates the stored row)."""
+    from datetime import UTC, datetime
+
+    found = pending.current(conn)
+    if found is None or belief_id not in found.belief_rows:
+        return None
+    row = found.belief_rows[belief_id]
+    row.update(values)
+    changed: dict[str, Any] = {"held_to": Position.of_columns(row, "held_to")}
+    if "state" in values:
+        changed["state"] = BeliefHoldState(values["state"])
+    if "corrected_by" in values:
+        changed["corrected_by"] = values["corrected_by"]
+    if "confidence_level" in values:
+        changed["confidence_level"] = BeliefConfidenceLevel(values["confidence_level"])
+    if "confidence_scalar" in values:
+        changed["confidence_scalar"] = pending.numeric3(values["confidence_scalar"])
+    if "accessibility" in values:
+        changed["accessibility"] = pending.numeric3(values["accessibility"])
+    if close:
+        found.closing[belief_id] = None
+        changed["tx_to"] = datetime.now(UTC)  # set by the flush; only its presence is read
+    before: Belief = found.beliefs[belief_id]
+    after = before.model_copy(update=changed)
+    found.beliefs[belief_id] = after
+    return after
+
+
 def held_at_clause(position: Position | None) -> list[ColumnElement[bool]]:
     """The beliefs held at ``position`` (``None``: held now, ``held_to`` unset)."""
     b = beliefs.c
@@ -394,6 +603,49 @@ async def partition(
     holder's ``nested`` or ``speech_act`` rows instead."""
     b = beliefs.c
     p = propositions.c
+    wanted_levels = None if levels is None else [BeliefConfidenceLevel(x) for x in levels]
+    # #754: the commit's pending rows this read would find (FR-BELIEF-6: a later frame of the
+    # pass sees the earlier resolutions).
+    extra = [
+        x
+        for x in _pending_beliefs(conn, story_id, holder)
+        if x.kind is kind
+        and _held_row(x, through)
+        and _about(
+            x,
+            subjects=None if subjects is None else list(subjects),
+            entities_=None if entities_ is None else list(entities_),
+            objects_=None if objects_ is None else list(objects_),
+            predicate=predicate,
+            proposition_ids=None if proposition_ids is None else list(proposition_ids),
+            levels=wanted_levels,
+        )
+    ]
+    if extra and order != "id":
+        await pending.flush(conn)
+        extra = []
+    if order == "id":
+        sliced = await _slice(conn, story_id, holder)
+        if sliced is not None:
+            kept = sorted(
+                (
+                    x
+                    for x in sliced
+                    if x.kind is kind
+                    and _held_row(x, through)
+                    and _about(
+                        x,
+                        subjects=None if subjects is None else list(subjects),
+                        entities_=None if entities_ is None else list(entities_),
+                        objects_=None if objects_ is None else list(objects_),
+                        predicate=predicate,
+                        proposition_ids=None if proposition_ids is None else list(proposition_ids),
+                        levels=wanted_levels,
+                    )
+                ),
+                key=lambda x: x.id,
+            )
+            return kept if limit is None else kept[:limit]
     where: list[ColumnElement[bool]] = [
         b.story_id == story_id,
         b.holder_character_id == holder,
@@ -417,9 +669,9 @@ async def partition(
         where.append(p.predicate_id == predicate)
     if proposition_ids is not None:
         where.append(b.proposition_id.in_(list(proposition_ids)))
-    if levels is not None:
-        where.append(b.confidence_level.in_([BeliefConfidenceLevel(x).value for x in levels]))
-    query = _select().where(*where)
+    if wanted_levels is not None:
+        where.append(b.confidence_level.in_([x.value for x in wanted_levels]))
+    query = pending.aware(_select().where(*where))
     if order == "confidence":
         query = query.order_by(
             b.confidence_level.desc(),
@@ -431,13 +683,22 @@ async def partition(
         query = query.order_by(b.id)
     if limit is not None:
         query = query.limit(limit)
-    return [_belief_of(r) for r in await conn.execute(query)]
+    return _merged([_belief_of(r) for r in await conn.execute(query)], extra, limit)
 
 
 async def read_belief(conn: AsyncConnection, story_id: str, belief_id: str) -> Belief | None:
+    held = pending.current(conn)
+    if held is not None and belief_id in held.beliefs:
+        mine: Belief = held.beliefs[belief_id]
+        return mine if mine.story_id == story_id else None
+    sliced = _sliced(conn, belief_id)
+    if sliced is not None:
+        return sliced if sliced.story_id == story_id else None
     found = (
         await conn.execute(
-            _select().where(beliefs.c.story_id == story_id, beliefs.c.id == belief_id)
+            pending.aware(
+                _select().where(beliefs.c.story_id == story_id, beliefs.c.id == belief_id)
+            )
         )
     ).one_or_none()
     return None if found is None else _belief_of(found)
@@ -467,6 +728,26 @@ async def speech_acts(
     belief), each with its speaker (the row's ``speaker_character_id``) and its producing
     transition's outcome; only ``speaker``'s when given; ``held``: the active, open rows only. By
     id."""
+    sliced = await _slice(conn, story_id, holder)
+    batch = pending.current(conn)
+    if sliced is not None and batch is not None:
+        acts = []
+        for x in sorted(sliced, key=lambda y: y.id):
+            if (
+                x.kind is not BeliefKind.SPEECH_ACT
+                or x.attributed_holder_id is not None
+                or (held and not _held_row(x, None))
+                or (speaker is not None and x.speaker_character_id != speaker)
+            ):
+                continue
+            if x.id in batch.said:
+                said_by, outcome = batch.said[x.id]
+            else:
+                made = batch.transitions.get(x.provenance)
+                said_by = None if made is None else made.source_character_id
+                outcome = None if made is None else made.outcome
+            acts.append(SpeechActBelief(x, x.speaker_character_id or said_by, outcome))
+        return acts
     b = beliefs.c
     t = belief_transitions.c
     query = (
@@ -486,7 +767,7 @@ async def speech_acts(
     if speaker is not None:
         query = query.where(b.speaker_character_id == speaker)
     found = []
-    for row in await conn.execute(query):
+    for row in await conn.execute(pending.aware(query)):
         m = row._mapping
         found.append(
             SpeechActBelief(
@@ -495,7 +776,28 @@ async def speech_acts(
                 m["said_outcome"],
             )
         )
-    return found
+    # #754: the commit's pending speech acts (their producing transitions are pending too).
+    batch = pending.current(conn)
+    extra = [
+        x
+        for x in _pending_beliefs(conn, story_id, holder)
+        if x.kind is BeliefKind.SPEECH_ACT
+        and x.attributed_holder_id is None
+        and (not held or _held_row(x, None))
+        and (speaker is None or x.speaker_character_id == speaker)
+    ]
+    if batch is None or not extra:
+        return found
+    for x in extra:
+        made = batch.transitions.get(x.provenance)
+        found.append(
+            SpeechActBelief(
+                x,
+                x.speaker_character_id or (None if made is None else made.source_character_id),
+                None if made is None else made.outcome,
+            )
+        )
+    return sorted(found, key=lambda a: a.belief.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,6 +870,24 @@ async def nested_of(
     ``partition``'s does), only those attributed to ``attributed_holder``, about ``subjects`` or
     of ``predicate`` when given; ``held`` false: every active row, closed ones included. By
     id."""
+    sliced = await _slice(conn, story_id, holder)
+    if sliced is not None:
+        rows = sorted(
+            (
+                x
+                for x in sliced
+                if x.kind is BeliefKind.NESTED
+                and (
+                    row_active(x.operation_id, x.membership) if not held else _held_row(x, through)
+                )
+                and (attributed_holder is None or x.attributed_holder_id == attributed_holder)
+                and _about(
+                    x, subjects=None if subjects is None else list(subjects), predicate=predicate
+                )
+            ),
+            key=lambda x: x.id,
+        )
+        return [NestedBelief(r, await _chain(conn, story_id, r)) for r in rows]
     b = beliefs.c
     p = propositions.c
     where: list[ColumnElement[bool]] = [
@@ -591,7 +911,20 @@ async def nested_of(
         where.append(p.subject_id.in_(list(subjects)))
     if predicate is not None:
         where.append(p.predicate_id == predicate)
-    rows = [_belief_of(r) for r in await conn.execute(_select().where(*where).order_by(b.id))]
+    stored = [
+        _belief_of(r)
+        for r in await conn.execute(pending.aware(_select().where(*where).order_by(b.id)))
+    ]
+    # #754: the commit's pending nested rows.
+    extra = [
+        x
+        for x in _pending_beliefs(conn, story_id, holder)
+        if x.kind is BeliefKind.NESTED
+        and (row_active(x.operation_id, x.membership) if not held else _held_row(x, through))
+        and (attributed_holder is None or x.attributed_holder_id == attributed_holder)
+        and _about(x, subjects=None if subjects is None else list(subjects), predicate=predicate)
+    ]
+    rows = _merged(stored, extra)
     return [NestedBelief(r, await _chain(conn, story_id, r)) for r in rows]
 
 
@@ -960,11 +1293,92 @@ def _comparable(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-async def refresh(conn: AsyncConnection, story_id: str, keys: Iterable[Key]) -> int:
-    """Re-derive the ``belief_state`` rows of ``keys`` and write the difference; answers the
-    rows changed."""
+def refresh_sync(conn: Connection, story_id: str, keys: Iterable[Key]) -> None:
+    """``refresh`` of every key at once, on a sync connection (#754's flush: a batched commit
+    re-derives its touched keys once, in a fixed number of statements)."""
     chosen = sorted(set(keys))
     if not chosen:
+        return
+    b = beliefs.c
+    s = belief_state.c
+    wanted = derive(
+        _belief_of(r)
+        for r in conn.execute(
+            _select().where(
+                b.story_id == story_id,
+                *_open(),
+                b.held_to_turn.is_(None),
+                tuple_(b.holder_character_id, b.proposition_id).in_(chosen),
+            )
+        )
+    )
+    stored = {
+        (str(r.holder_character_id), str(r.proposition_id)): _comparable(dict(r._mapping))
+        for r in conn.execute(
+            select(belief_state).where(
+                s.story_id == story_id,
+                tuple_(s.holder_character_id, s.proposition_id).in_(chosen),
+            )
+        )
+    }
+    stale = [
+        k
+        for k in chosen
+        if k in stored and (k not in wanted or _comparable(wanted[k]) != stored[k])
+    ]
+    if stale:
+        conn.execute(
+            delete(belief_state).where(
+                s.story_id == story_id,
+                tuple_(s.holder_character_id, s.proposition_id).in_(stale),
+            )
+        )
+    fresh = [wanted[k] for k in chosen if k in wanted and (k not in stored or k in stale)]
+    if fresh:
+        conn.execute(insert(belief_state), fresh)
+    nested = derive_nested(
+        _belief_of(r)
+        for r in conn.execute(
+            _select().where(
+                b.story_id == story_id,
+                active_only(beliefs),
+                b.tx_to.is_(None),
+                b.held_to_turn.is_(None),
+                b.kind == BeliefKind.NESTED.value,
+                tuple_(b.holder_character_id, b.proposition_id).in_(chosen),
+            )
+        )
+    )
+    n = nested_belief_state.c
+    had = {
+        str(r.belief_id): _nested_comparable(dict(r._mapping))
+        for r in conn.execute(
+            select(nested_belief_state).where(
+                n.story_id == story_id,
+                tuple_(n.holder_character_id, n.proposition_id).in_(chosen),
+            )
+        )
+    }
+    gone = [i for i in sorted(had) if i not in nested or _nested_comparable(nested[i]) != had[i]]
+    if gone:
+        conn.execute(
+            delete(nested_belief_state).where(n.story_id == story_id, n.belief_id.in_(gone))
+        )
+    added = [nested[i] for i in sorted(nested) if i not in had or i in gone]
+    if added:
+        conn.execute(insert(nested_belief_state), added)
+
+
+async def refresh(conn: AsyncConnection, story_id: str, keys: Iterable[Key]) -> int:
+    """Re-derive the ``belief_state`` rows of ``keys`` and write the difference; answers the
+    rows changed. #754: when ``conn``'s commit batches, the keys are kept for its flush (which
+    refreshes them all at once) and 0 is answered."""
+    chosen = sorted(set(keys))
+    if not chosen:
+        return 0
+    batch = pending.current(conn)
+    if batch is not None:
+        batch.projection.setdefault(story_id, set()).update(chosen)
         return 0
     wanted = derive(await _open_rows(conn, story_id, chosen))
     s = belief_state.c
@@ -1096,7 +1510,8 @@ async def refresh_nested(conn: AsyncConnection, story_id: str, keys: Iterable[Ke
 
 
 async def _project(conn: AsyncConnection, change: BeliefChange) -> None:
-    """``BELIEF_HOOKS``: the write's key re-derived in its transaction."""
+    """``BELIEF_HOOKS``: the write's key re-derived in its transaction (#754: at the batch's
+    flush, once for every key, when the commit batches)."""
     keys = {(change.belief.holder_character_id, change.belief.proposition_id)}
     if change.closed is not None:
         keys.add((change.closed.holder_character_id, change.closed.proposition_id))
@@ -1265,6 +1680,15 @@ async def _subject_characters(
     )
 
 
+_EVENT_INSERT = insert(events)
+"""#754: a batched commit's derived events (numbered by the flush)."""
+
+_BELIEF_INSERT = insert(beliefs).values(
+    membership=Membership.ACTIVE.value, membership_tx=func.transaction_timestamp()
+)
+"""#754: a batched commit's beliefs (``insert_derived``'s membership columns)."""
+
+
 def _event_provenance(operation: BeliefOperation) -> Provenance:
     found = getattr(operation, "provenance", None)
     return found if isinstance(found, Provenance) else Provenance.ENGINE
@@ -1284,30 +1708,33 @@ async def _append_event(
     transition's own; 0 outside declared steps)."""
     body = validate(type_, payload).model_dump(mode="json")
     event_id = new_ulid()
-    # #620: the next seq in the insert itself (the caller holds the story lock).
-    following = (
-        select(func.coalesce(func.max(events.c.seq), 0) + 1)
-        .where(events.c.story_id == story_id)
-        .scalar_subquery()
-    )
-    await conn.execute(
-        insert(events).values(
-            id=event_id,
-            story_id=story_id,
-            seq=following,
-            operation_id=operation.operation_id,
-            category=EventCategory.DERIVED.value,
-            narrative_turn=operation.narrative_turn,
-            turn_variant=operation.turn_variant,
-            beat=beat,
-            step=step,
-            principal=operation.principal,
-            type=type_,
-            payload=body,
-            provenance=_event_provenance(operation).value,
-            authority=Authority.AUTHORITATIVE.value,
+    row = {
+        "id": event_id,
+        "story_id": story_id,
+        "operation_id": operation.operation_id,
+        "category": EventCategory.DERIVED.value,
+        "narrative_turn": operation.narrative_turn,
+        "turn_variant": operation.turn_variant,
+        "beat": beat,
+        "step": step,
+        "principal": operation.principal,
+        "type": type_,
+        "payload": body,
+        "provenance": _event_provenance(operation).value,
+        "authority": Authority.AUTHORITATIVE.value,
+    }
+    batch = pending.current(conn)
+    if batch is not None:
+        # #754: held for the flush, which numbers its ``seq``.
+        batch.events[event_id] = batch.defer(_EVENT_INSERT, [row])[0]
+    else:
+        # #620: the next seq in the insert itself (the caller holds the story lock).
+        following = (
+            select(func.coalesce(func.max(events.c.seq), 0) + 1)
+            .where(events.c.story_id == story_id)
+            .scalar_subquery()
         )
-    )
+        await conn.execute(insert(events).values(**row, seq=following))
     await index_records(
         conn,
         [
@@ -1323,6 +1750,36 @@ async def _append_event(
 def _bounds(valid_time: Interval | Instant) -> tuple[int | None, int | None]:
     lo, hi = valid_time.possible()
     return lo, hi
+
+
+async def _proposition_of(
+    conn: AsyncConnection,
+    story_id: str,
+    proposition_id: str,
+    prior: Belief | None,
+    stored: Proposition,
+) -> Proposition:
+    """The stored proposition ``proposition_id`` a pending belief joins (#754): its prior's, a
+    proposition this commit wrote, another pending belief's, or the stored row."""
+    if prior is not None and prior.proposition_id == proposition_id:
+        return prior.proposition
+    batch = pending.current(conn)
+    if batch is not None and proposition_id in batch.propositions:
+        found: Proposition = batch.propositions[proposition_id]
+        return found
+    for other in _pending_beliefs(conn, story_id, None):
+        if other.proposition_id == proposition_id:
+            return other.proposition
+    row = (
+        await conn.execute(
+            pending.aware(
+                select(propositions).where(
+                    propositions.c.story_id == story_id, propositions.c.id == proposition_id
+                )
+            )
+        )
+    ).one_or_none()
+    return stored if row is None else proposition_from_row(row)
 
 
 async def _insert_belief(
@@ -1400,24 +1857,51 @@ async def _insert_belief(
     # and polarity; its time is the belief's own): the new row reuses its proposition and closes
     # it. Otherwise the proposition is stored as canon's are (#131's store).
     candidates: list[Belief] = []
-    if kind is BeliefKind.FIRST_ORDER:
-        candidates = [
-            _belief_of(r)
-            for r in await conn.execute(
-                _select()
-                .where(
-                    b.story_id == story_id,
-                    b.holder_character_id == holder,
-                    p.subject_id == stored.subject_id,
-                    p.predicate_id == stored.predicate_id,
-                    b.polarity == stored.polarity.value,
-                    *_open(),
-                    b.held_to_turn.is_(None),
+    batch = pending.current(conn)
+    sliced = None if kind is not BeliefKind.FIRST_ORDER else await _slice(conn, story_id, holder)
+    if sliced is not None:
+        candidates = sorted(
+            (
+                x
+                for x in sliced
+                if x.kind is BeliefKind.FIRST_ORDER
+                and x.polarity == stored.polarity.value
+                and _held_row(x, None)
+                and _about(x, subjects=[stored.subject_id], predicate=stored.predicate_id)
+            ),
+            key=lambda x: x.id,
+        )
+    elif kind is BeliefKind.FIRST_ORDER:
+        candidates = _merged(
+            [
+                _belief_of(r)
+                for r in await conn.execute(
+                    pending.aware(
+                        _select()
+                        .where(
+                            b.story_id == story_id,
+                            b.holder_character_id == holder,
+                            p.subject_id == stored.subject_id,
+                            p.predicate_id == stored.predicate_id,
+                            b.polarity == stored.polarity.value,
+                            *_open(),
+                            b.held_to_turn.is_(None),
+                        )
+                        .order_by(b.id)
+                        .with_for_update(of=beliefs)
+                    )
                 )
-                .order_by(b.id)
-                .with_for_update(of=beliefs)
-            )
-        ]
+            ],
+            # #754: the commit's pending rows of the key.
+            [
+                x
+                for x in _pending_beliefs(conn, story_id, holder)
+                if x.kind is BeliefKind.FIRST_ORDER
+                and x.polarity == stored.polarity.value
+                and _held_row(x, None)
+                and _about(x, subjects=[stored.subject_id], predicate=stored.predicate_id)
+            ],
+        )
     prior = next(
         (x for x in candidates if x.proposition.normalized_key() == stored.normalized_key()), None
     )
@@ -1456,10 +1940,13 @@ async def _insert_belief(
         beat,
         step=step,
     )
-    if closed is not None:
+    if closed is not None and patch_pending(conn, closed.id, start.columns("held_to")) is None:
         await conn.execute(
-            update(beliefs).where(b.id == closed.id).values(**start.columns("held_to"))
+            pending.aware(
+                update(beliefs).where(b.id == closed.id).values(**start.columns("held_to"))
+            )
         )
+        updated_stored(conn, closed.id)
     now = await tx_now(conn)
     row: dict[str, Any] = {
         "id": belief_id,
@@ -1489,7 +1976,17 @@ async def _insert_belief(
         "resolution_operation_id": operation.operation_id if resolution else None,
         **extra,
     }
-    await insert_derived(conn, beliefs, [row])
+    if batch is not None:
+        # #754: held for the flush (``insert_derived``'s columns: its step, its membership).
+        if "step" not in row:
+            row["step"] = step_of(row.get("beat"), operation.operation_id) or 0
+        held = batch.defer(_BELIEF_INSERT, [row])[0]
+        batch.belief_rows[belief_id] = held
+        batch.beliefs[belief_id] = _pending_belief(
+            held, await _proposition_of(conn, story_id, proposition_id, prior, stored), now
+        )
+    else:
+        await insert_derived(conn, beliefs, [row])
     await index_records(
         conn,
         [

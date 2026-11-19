@@ -1044,9 +1044,15 @@ async def record_change(
     stamped = await _stamp(conn, story_id)
     if stamped is None:
         return
-    await conn.execute(
-        insert(proposition_changes), change_rows(story_id, int(stamped), operation_id, changes)
+    from epistrel.core import pending
+
+    # #754: held when the commit batches its epistemic writes.
+    await pending.execute(
+        conn, _CHANGES_INSERT, change_rows(story_id, int(stamped), operation_id, changes)
     )
+
+
+_CHANGES_INSERT = insert(proposition_changes)
 
 
 def change_rows(

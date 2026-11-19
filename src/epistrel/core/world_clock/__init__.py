@@ -604,23 +604,29 @@ async def _stamped_at(conn: AsyncConnection, story_id: str, at: Position) -> int
 async def _read_stamped_at(conn: AsyncConnection, story_id: str, at: Position) -> int | None:
     from sqlalchemy import func
 
+    from epistrel.core import pending
     from epistrel.core.tables.events import events
 
     e = events.c
-    return await conn.scalar(
-        select(e.valid_time_minutes)
-        .where(
-            e.story_id == story_id,
-            e.narrative_turn == at.turn,
-            e.turn_variant == at.variant,
-            func.coalesce(e.slot_k, 0) == at.slot_k,
-            e.beat == at.beat,
-            func.coalesce(e.step, 0) == at.step,
-            e.valid_time_minutes.is_not(None),
+    # #754: a batched commit's pending events are derived ones, which carry no valid time, so
+    # this read never needs them (``pending.aware``: no flush for it).
+    found: int | None = await conn.scalar(
+        pending.aware(
+            select(e.valid_time_minutes)
+            .where(
+                e.story_id == story_id,
+                e.narrative_turn == at.turn,
+                e.turn_variant == at.variant,
+                func.coalesce(e.slot_k, 0) == at.slot_k,
+                e.beat == at.beat,
+                func.coalesce(e.step, 0) == at.step,
+                e.valid_time_minutes.is_not(None),
+            )
+            .order_by(e.seq)
+            .limit(1)
         )
-        .order_by(e.seq)
-        .limit(1)
     )
+    return found
 
 
 async def elapsed_since(conn: AsyncConnection, story_id: str) -> Callable[[Position], int]:

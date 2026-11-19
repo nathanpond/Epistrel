@@ -162,6 +162,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from types import SimpleNamespace
@@ -172,6 +173,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate, turn_memo, world_clock
 from epistrel.core import outbox as core_outbox
+from epistrel.core import pending as pending_writes
 from epistrel.core.bench import PRESENT
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
@@ -6592,162 +6594,172 @@ async def play(
         results: list[perception.PerceptionResult] = []
         hidden_commits: list[hidden.HiddenCommit] = []
         with belief_transitions.tallying() as tally:
-            if partitioned:
-                # #169 (FR-COMMIT-4): the hidden latents, with their noticers' observations.
-                hidden_commits = await hidden_committed(
-                    conn,
-                    op,
-                    checked,
-                    read,
-                    ids=ids,
-                    level=level,
-                    settings=settings,
-                    registry=registry,
-                )
-                # #171: the narrated identities, held by who perceived them.
-                hidden_commits += await identities_committed(
-                    conn,
-                    op,
-                    checked,
-                    read,
-                    identity_requests,
-                    ids=ids,
-                    level=level,
-                    settings=settings,
-                    registry=registry,
-                )
-            if level == perception.NONE:
-                await records.write_episodic(
-                    conn,
-                    op,
-                    _episodic(checked, read, say=say_, do=do_, ids=ids),
-                    settings=settings,
-                )
-            else:
-                # #164: the observation sink writes each perceiver's observations here.
-                fixed["perception"] = await route_committed(
-                    conn,
-                    op,
-                    checked,
-                    read,
-                    say=say_,
-                    do=do_,
-                    ids=ids,
-                    level=level,
-                    settings=settings,
-                    routed=results,
-                    joined=joined,
-                    participants=participants,
-                    # #212: the outcome step's narration routes after the intent's moves.
-                    mode=perception.SEQUENTIAL
-                    if outcome_step
-                    else _simultaneous_of(multis) or perception.SEQUENTIAL,
-                    input_qualifiers=None if outcome_step else input_qualifiers[0],
-                )
-                # #162: every witness's speech act, and the testimony its salience calls for;
-                # #164: the other witnesses' exposures, and the lazy resolutions it needs.
-                told = await adjudicate.testify_committed(
-                    conn,
-                    op,
-                    results,
-                    checked=checked,
-                    actor=read.actor.id,
-                    say=say_,
-                    cast=list(read.names),
-                    ids=ids,
-                    adjudications=checked.adjudications,
-                    read_set=read_set,
-                    utterances={
-                        beat: utterance_ids[n]
-                        for n, (beat, _, _) in enumerate(said)
-                        if n < len(utterance_ids)
-                    },
-                    stage=turn_stage,
-                )
-            used = 0 if told is None else sum(told.exposures["resolutions"].values())
-            contexts = rendered.contexts or ([] if rendered.context is None else [rendered.context])
-            for knowing in contexts:
-                needed = knowing.needed
-                if not (partitioned and needed and exposure_records.lazy_on(settings)):
-                    continue
-                # #170: the exposures the character's context needed (#164's need site), with
-                # the model's adjudications where the turn afforded them (#174: each
-                # primary's).
-                needing = exposure_records.Pass(
-                    cap=max(0, exposure_records.max_lazy_resolutions(settings) - used)
-                )
-                await exposure_records.resolve_needed(
-                    conn,
-                    op,
-                    knowing.character_id,
-                    [n.exposure.proposition for n in needed],
-                    budget=needing,
-                    settings=settings,
-                    registry=registry,
-                    decisions={
-                        n.exposure.id: n.adjudicated for n in needed if n.adjudicated is not None
-                    },
-                )
-                used += len(needing.made)
-                if context_resolved is None:
-                    context_resolved = needing
-                else:
-                    context_resolved.made += needing.made
-                    context_resolved.capped = context_resolved.capped or needing.capped
-            if checked.verifier is not None and checked.verifier.beliefs is not None:
-                # #166: what the first-person claims license: the speaker's exposures on the
-                # claims' keys (the need site), licensed beliefs and the lies' divergences.
-                spoken = await speech.speech_committed(
-                    conn,
-                    op,
-                    _spoken(checked, said, utterance_ids, ids),
-                    settings=settings,
-                    registry=registry,
-                    resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
-                )
-            if partitioned and authority and authority[0].fiats:
-                # #598 (FR-RESP-14): each presupposition of the co-author's narration the
-                # narrated character had no path to, as its ``author_fiat`` knowledge.
-                await authority_rules.fiats_committed(
-                    conn,
-                    op,
-                    authority[0],
-                    input_event_id=ids.get(1),
-                    settings=settings,
-                    registry=registry,
-                )
-            if checked.verifier is not None and checked.verifier.beliefs is not None:
-                # #168: each render's verified steps: observations (with their memories) and
-                # beliefs citing them (``antecedent = render_step``; #174: a staged beat's
-                # through the turn's stage).
-                for step_set in checked.step_sets:
-                    if not step_set.verdicts:
-                        continue
-                    wrote = await render_steps.steps_committed(
+            # #754: the testimony, lazy-resolution and speech passes batch their epistemic
+            # writes (``core.pending``); the batch is flushed after the speech pass.
+            async with AsyncExitStack() as batched:
+                if partitioned:
+                    # #169 (FR-COMMIT-4): the hidden latents, with their noticers' observations.
+                    hidden_commits = await hidden_committed(
                         conn,
                         op,
-                        holder=step_set.holder,
-                        steps=step_set.steps,
-                        verdicts=step_set.verdicts,
-                        first_beat=step_set.first_beat,
-                        beat_owner=owners_of(checked),
+                        checked,
+                        read,
+                        ids=ids,
+                        level=level,
                         settings=settings,
                         registry=registry,
-                        remember=partial(
-                            _remember_observation,
-                            op=op,
-                            holder=step_set.holder,
-                            settings=settings,
-                            registry=registry,
-                        ),
+                    )
+                    # #171: the narrated identities, held by who perceived them.
+                    hidden_commits += await identities_committed(
+                        conn,
+                        op,
+                        checked,
+                        read,
+                        identity_requests,
+                        ids=ids,
+                        level=level,
+                        settings=settings,
+                        registry=registry,
+                    )
+                if level == perception.NONE:
+                    await records.write_episodic(
+                        conn,
+                        op,
+                        _episodic(checked, read, say=say_, do=do_, ids=ids),
+                        settings=settings,
+                    )
+                else:
+                    # #164: the observation sink writes each perceiver's observations here.
+                    fixed["perception"] = await route_committed(
+                        conn,
+                        op,
+                        checked,
+                        read,
+                        say=say_,
+                        do=do_,
+                        ids=ids,
+                        level=level,
+                        settings=settings,
+                        routed=results,
+                        joined=joined,
+                        participants=participants,
+                        # #212: the outcome step's narration routes after the intent's moves.
+                        mode=perception.SEQUENTIAL
+                        if outcome_step
+                        else _simultaneous_of(multis) or perception.SEQUENTIAL,
+                        input_qualifiers=None if outcome_step else input_qualifiers[0],
+                    )
+                    # #162: every witness's speech act, and the testimony its salience calls for;
+                    # #164: the other witnesses' exposures, and the lazy resolutions it needs.
+                    await batched.enter_async_context(pending_writes.batching(conn))
+                    told = await adjudicate.testify_committed(
+                        conn,
+                        op,
+                        results,
+                        checked=checked,
+                        actor=read.actor.id,
+                        say=say_,
+                        cast=list(read.names),
+                        ids=ids,
+                        adjudications=checked.adjudications,
+                        read_set=read_set,
+                        utterances={
+                            beat: utterance_ids[n]
+                            for n, (beat, _, _) in enumerate(said)
+                            if n < len(utterance_ids)
+                        },
                         stage=turn_stage,
                     )
-                    if stepped is None:
-                        stepped = wrote
+                used = 0 if told is None else sum(told.exposures["resolutions"].values())
+                await batched.enter_async_context(pending_writes.batching(conn))
+                contexts = rendered.contexts or (
+                    [] if rendered.context is None else [rendered.context]
+                )
+                for knowing in contexts:
+                    needed = knowing.needed
+                    if not (partitioned and needed and exposure_records.lazy_on(settings)):
+                        continue
+                    # #170: the exposures the character's context needed (#164's need site), with
+                    # the model's adjudications where the turn afforded them (#174: each
+                    # primary's).
+                    needing = exposure_records.Pass(
+                        cap=max(0, exposure_records.max_lazy_resolutions(settings) - used)
+                    )
+                    await exposure_records.resolve_needed(
+                        conn,
+                        op,
+                        knowing.character_id,
+                        [n.exposure.proposition for n in needed],
+                        budget=needing,
+                        settings=settings,
+                        registry=registry,
+                        decisions={
+                            n.exposure.id: n.adjudicated
+                            for n in needed
+                            if n.adjudicated is not None
+                        },
+                    )
+                    used += len(needing.made)
+                    if context_resolved is None:
+                        context_resolved = needing
                     else:
-                        stepped.transitions += wrote.transitions
-                        stepped.memories += wrote.memories
-                        stepped.refused += wrote.refused
+                        context_resolved.made += needing.made
+                        context_resolved.capped = context_resolved.capped or needing.capped
+                if checked.verifier is not None and checked.verifier.beliefs is not None:
+                    # #166: what the first-person claims license: the speaker's exposures on the
+                    # claims' keys (the need site), licensed beliefs and the lies' divergences.
+                    spoken = await speech.speech_committed(
+                        conn,
+                        op,
+                        _spoken(checked, said, utterance_ids, ids),
+                        settings=settings,
+                        registry=registry,
+                        resolutions_left=exposure_records.max_lazy_resolutions(settings) - used,
+                    )
+                await batched.aclose()  # #754: the batch's writes, before the passes below
+                if partitioned and authority and authority[0].fiats:
+                    # #598 (FR-RESP-14): each presupposition of the co-author's narration the
+                    # narrated character had no path to, as its ``author_fiat`` knowledge.
+                    await authority_rules.fiats_committed(
+                        conn,
+                        op,
+                        authority[0],
+                        input_event_id=ids.get(1),
+                        settings=settings,
+                        registry=registry,
+                    )
+                if checked.verifier is not None and checked.verifier.beliefs is not None:
+                    # #168: each render's verified steps: observations (with their memories) and
+                    # beliefs citing them (``antecedent = render_step``; #174: a staged beat's
+                    # through the turn's stage).
+                    for step_set in checked.step_sets:
+                        if not step_set.verdicts:
+                            continue
+                        wrote = await render_steps.steps_committed(
+                            conn,
+                            op,
+                            holder=step_set.holder,
+                            steps=step_set.steps,
+                            verdicts=step_set.verdicts,
+                            first_beat=step_set.first_beat,
+                            beat_owner=owners_of(checked),
+                            settings=settings,
+                            registry=registry,
+                            remember=partial(
+                                _remember_observation,
+                                op=op,
+                                holder=step_set.holder,
+                                settings=settings,
+                                registry=registry,
+                            ),
+                            stage=turn_stage,
+                        )
+                        if stepped is None:
+                            stepped = wrote
+                        else:
+                            stepped.transitions += wrote.transitions
+                            stepped.memories += wrote.memories
+                            stepped.refused += wrote.refused
         reveals: list[hidden.Reveal] = []
         if partitioned:
             # #169: a sincere say or a do of a hidden fact by one who knows it widens it to the

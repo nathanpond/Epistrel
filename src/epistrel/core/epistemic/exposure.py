@@ -65,9 +65,10 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import event, exists, or_, select, update
+from sqlalchemy import bindparam, event, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import pending
 from epistrel.core.enums import (
     BeliefConfidenceLevel,
     BeliefKind,
@@ -109,13 +110,15 @@ MAX_LAZY_RESOLUTIONS_PER_TURN = 20
 """The default of the profile dial ``character_knowledge.max_lazy_resolutions_per_turn`` (#181):
 the most exposures one narrative turn resolves; the rest wait for a later need."""
 
-MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN = 250
+MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN = 400
 """#620 (the owner's decision of 2026-11-05, "(b) now, (a) later"): the SQL statements one
 transaction's lazy resolutions may spend before no further resolution starts. The check runs
-before each resolution, so the last one can overrun the budget by its own cost, about 100
-statements on P-04's knowledge. Statements are counted, not timed, so a regenerated turn
-resolves the same exposures however loaded the host is. #754's batched writes are to make
-each resolution cheaper, so more fit."""
+before each resolution, so the last one can overrun the budget by its own cost. Statements are
+counted, not timed, so a regenerated turn resolves the same exposures however loaded the host
+is. #754 (ADR-199): the structured commit batches its epistemic writes, so a resolution spends
+its reads (about 16 statements on P-04's knowledge, from about 100) and its writes cost a fixed
+few statements at the batch's flush, outside this count; 400 lets the default 20 resolutions
+(``MAX_LAZY_RESOLUTIONS_PER_TURN``) run with room to spare."""
 
 DEFAULTED = "defaulted"
 ADJUDICATED = "adjudicated"
@@ -512,8 +515,34 @@ class Resolution:
     reads: tuple[QueryKey, ...]
 
 
+_RESOLVE = (
+    update(exposures)
+    .where(exposures.c.id == bindparam("exposure_id"))
+    .values(
+        state=bindparam("state"),
+        resolved_by_transition=bindparam("resolved_by_transition"),
+        resolution_operation_id=bindparam("resolution_operation_id"),
+    )
+)
+"""An exposure's resolution (#754: one statement for a batched commit's)."""
+
+
 async def _intent(conn: AsyncConnection, event_id: str) -> str | None:
-    payload = await conn.scalar(select(events.c.payload).where(events.c.id == event_id))
+    """The perceived intent the event ``event_id`` carries. #754: an event's payload never
+    changes, so a batched commit reads it once (a pending event's from its row)."""
+    key = ("event_payload", event_id)
+    payload = pending.remembered(conn, key)
+    if payload is pending.MISSING:
+        batch = pending.current(conn)
+        held = None if batch is None else batch.events.get(event_id)
+        payload = (
+            held["payload"]
+            if held is not None
+            else await conn.scalar(
+                pending.aware(select(events.c.payload).where(events.c.id == event_id))
+            )
+        )
+        pending.remember(conn, key, payload)
     return payload.get("intent") if isinstance(payload, dict) else None
 
 
@@ -733,15 +762,17 @@ async def resolve_exposure(
         belief = refreshed or belief
     resolving = written[1] if len(written) > 1 else (written[0] if written else None)
     if resolving is not None:
-        await conn.execute(
-            update(exposures)
-            .where(exposures.c.id == exposure.id)
-            .values(
-                state=ExposureState.RESOLVED.value,
-                resolved_by_transition=resolving.transition.id,
-                resolution_operation_id=op.operation_id,
-            )
-        )
+        resolved = {
+            "exposure_id": exposure.id,
+            "state": ExposureState.RESOLVED.value,
+            "resolved_by_transition": resolving.transition.id,
+            "resolution_operation_id": op.operation_id,
+        }
+        batch = pending.current(conn)
+        if batch is not None:
+            batch.exposures.append((_RESOLVE, resolved))  # #754: at the flush
+        else:
+            await conn.execute(_RESOLVE, [resolved])
         await partitions._append_event(
             conn,
             story_id,

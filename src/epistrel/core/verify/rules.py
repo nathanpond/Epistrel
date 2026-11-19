@@ -1743,6 +1743,13 @@ async def closed_sets_for(
 ) -> list[ClosedSetRecord]:
     """The story's asserted closed sets of ``predicate_id``, by id (``check_with``'s read, and
     #142's ``fact_neighborhood``)."""
+    from epistrel.core import pending
+
+    # #754: once per batched commit (until an unaware write).
+    memo_key = ("closed_sets", story_id, predicate_id)
+    memo = pending.remembered(conn, memo_key)
+    if memo is not pending.MISSING:
+        return list(memo)
     t = closed_sets_table
     rows = await conn.execute(
         select(t.c.id, t.c.key, t.c.members, t.c.valid_from, t.c.valid_to, t.c.key_set)
@@ -1765,6 +1772,7 @@ async def closed_sets_for(
                 key_set=row.key_set,
             )
         )
+    pending.remember(conn, memo_key, tuple(found))
     return found
 
 

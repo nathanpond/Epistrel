@@ -80,9 +80,84 @@ async def probe_record(
     table = RECORD_TABLES.get(table_name)
     if table is None:
         return None
+    from epistrel.core import pending
+
+    # #754: within a batched commit a probe is answered once (until an unaware write), and a
+    # record the commit has not flushed yet is probed in hand.
+    key = ("probe_record", story_id, table_name, record_id, operation_id)
+    memo = pending.remembered(conn, key)
+    if memo is not pending.MISSING:
+        found_memo: RecordAntecedent | None = memo
+        return found_memo
+    batch = pending.current(conn)
+    held = _pending_record(batch, story_id, table_name, record_id, operation_id)
+    if held is not None:
+        return held
+    answer = await _probe(conn, story_id, table, table_name, record_id, operation_id=operation_id)
+    if answer is not None:
+        pending.remember(conn, key, answer)
+    return answer
+
+
+def _pending_record(
+    batch: Any, story_id: str, table_name: str, record_id: str, operation_id: str
+) -> RecordAntecedent | None:
+    """A record ``batch`` holds unflushed (#754): one of its operation's events or beliefs."""
+    if batch is None:
+        return None
+    if table_name == "events" and record_id in batch.events:
+        row = batch.events[record_id]
+        if str(row["story_id"]) != story_id:
+            return None
+        position = _position(_InHand(row), events)
+        return RecordAntecedent(
+            table_name,
+            record_id,
+            position,
+            True,
+            category=str(row["category"]),
+            type=str(row["type"]),
+            speaker_id=None,
+            operation_id=str(row["operation_id"]),
+        )
+    if table_name == "beliefs" and record_id in batch.beliefs:
+        belief = batch.beliefs[record_id]
+        if belief.story_id != story_id:
+            return None
+        return RecordAntecedent(
+            table_name,
+            record_id,
+            belief.held_from,
+            True,
+            holder_id=belief.holder_character_id,
+            operation_id=belief.operation_id,
+        )
+    return None
+
+
+class _InHand:
+    """A row in hand read like a result row (``_mapping``)."""
+
+    def __init__(self, row: Any) -> None:
+        self._mapping = row
+
+
+async def _probe(
+    conn: AsyncConnection,
+    story_id: str,
+    table: Table,
+    table_name: str,
+    record_id: str,
+    *,
+    operation_id: str,
+) -> RecordAntecedent | None:
+    from epistrel.core import pending
+
     row = (
         await conn.execute(
-            select(table).where(table.c.story_id == story_id, table.c.id == record_id)
+            pending.aware(
+                select(table).where(table.c.story_id == story_id, table.c.id == record_id)
+            )
         )
     ).one_or_none()
     if row is None:

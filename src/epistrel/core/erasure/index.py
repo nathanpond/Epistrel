@@ -522,6 +522,10 @@ async def _delete_records(conn: AsyncConnection, keys: Sequence[tuple[str, str]]
     return removed
 
 
+_INSERT = insert(subject_references)
+"""#754: a fresh record's rows (one statement; held by a batched commit)."""
+
+
 async def _write(conn: AsyncConnection, rows: Sequence[RowKey]) -> None:
     for start in range(0, len(rows), CHUNK):
         await conn.execute(
@@ -561,7 +565,16 @@ async def index_records(
     rows = await compute(conn, records)
     if not fresh:
         await _delete_records(conn, list(dict.fromkeys((r.table, r.record_id) for r in records)))
-    await _write(conn, rows)
+        await _write(conn, rows)
+    else:
+        # #754: a fresh record's rows are held when the commit batches its epistemic writes.
+        from epistrel.core import pending
+
+        batch = pending.current(conn)
+        if batch is None:
+            await _write(conn, rows)
+        elif rows:
+            batch.defer(_INSERT, [_values(r) for r in rows])
     stories_named = {r.story_id for r in records}
     log.debug(
         "subject references indexed",

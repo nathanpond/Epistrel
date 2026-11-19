@@ -209,9 +209,19 @@ async def _attributable(conn: AsyncConnection, story_id: str, holder: str, other
             "a nested belief attributes a belief to someone other than its holder",
             {"field": "attributed_holder", "reason": "attributed_self"},
         )
-    found = await conn.scalar(
-        select(characters.c.id).where(characters.c.story_id == story_id, characters.c.id == other)
-    )
+    from epistrel.core import pending
+
+    # #754: once per batched commit (``transitions``' source check shares the key).
+    key = ("character", story_id, other)
+    found = pending.remembered(conn, key)
+    if found is pending.MISSING:
+        found = await conn.scalar(
+            select(characters.c.id).where(
+                characters.c.story_id == story_id, characters.c.id == other
+            )
+        )
+        if found is not None:
+            pending.remember(conn, key, found)
     if found is None:
         raise InvalidRequest(
             "an attributed holder is a character of the story",

@@ -116,7 +116,7 @@ from sqlalchemy import func, insert, literal, select, text, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core import edges, readset
+from epistrel.core import edges, pending, readset
 from epistrel.core.antecedents import RecordAntecedent, is_author_act, probe_record
 from epistrel.core.canon.errors import UnknownPredicate
 from epistrel.core.enums import (
@@ -147,6 +147,7 @@ from epistrel.core.membership import (
     position_key,
     position_literal,
     register_follower,
+    row_active,
 )
 from epistrel.core.propositions.model import Cardinality, Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, canonical, load
@@ -682,22 +683,45 @@ async def _replay(
     t = belief_transitions.c
     row = (
         await conn.execute(
-            select(belief_transitions)
-            .where(
-                t.story_id == story_id,
-                t.holder_character_id == holder,
-                t.belief_id == belief_id,
-                t.kind == kind.value,
-                t.antecedent_kind == antecedent.kind.value,
-                t.antecedent_ref.contains(antecedent.ref),
-                t.antecedent_ref.contained_by(antecedent.ref),
-                active_only(belief_transitions),
+            pending.aware(
+                select(belief_transitions)
+                .where(
+                    t.story_id == story_id,
+                    t.holder_character_id == holder,
+                    t.belief_id == belief_id,
+                    t.kind == kind.value,
+                    t.antecedent_kind == antecedent.kind.value,
+                    t.antecedent_ref.contains(antecedent.ref),
+                    t.antecedent_ref.contained_by(antecedent.ref),
+                    active_only(belief_transitions),
+                )
+                .order_by(t.id)
+                .limit(1)
             )
-            .order_by(t.id)
-            .limit(1)
         )
     ).one_or_none()
-    return None if row is None else _transition_of(row)
+    found = None if row is None else _transition_of(row)
+    ref = _json(dict(antecedent.ref))
+    for x in _pending_transitions(conn, story_id):
+        if (
+            x.holder_character_id == holder
+            and x.belief_id == belief_id
+            and x.kind is kind
+            and x.antecedent.kind is antecedent.kind
+            and _jsonb_contains(x.antecedent.ref, ref)
+            and _jsonb_contains(ref, x.antecedent.ref)
+            and row_active(x.operation_id, x.membership)
+            and (found is None or x.id < found.id)
+        ):
+            found = x
+    return found
+
+
+def _json(value: Any) -> Any:
+    """``value`` as a JSONB column stores and answers it."""
+    import json
+
+    return json.loads(json.dumps(value))
 
 
 async def _check_source(
@@ -714,9 +738,16 @@ async def _check_source(
             f"a {kind.value} transition names no source",
             {"field": "source", "reason": "not_admitted"},
         )
-    found = await conn.scalar(
-        select(characters.c.id).where(characters.c.story_id == story_id, characters.c.id == source)
-    )
+    key = ("character", story_id, source)
+    found = pending.remembered(conn, key)
+    if found is pending.MISSING:
+        found = await conn.scalar(
+            select(characters.c.id).where(
+                characters.c.story_id == story_id, characters.c.id == source
+            )
+        )
+        if found is not None:
+            pending.remember(conn, key, found)  # #754: once per batched commit
     if found is None:
         raise InvalidRequest(
             "a transition's source is a character of the story",
@@ -725,16 +756,17 @@ async def _check_source(
 
 
 async def _set_state(conn: AsyncConnection, belief: Belief, after: HeldState) -> None:
-    await conn.execute(
-        update(beliefs)
-        .where(beliefs.c.id == belief.id)
-        .values(
-            confidence_level=after.level.value,
-            confidence_scalar=after.scalar,
-            accessibility=after.accessibility,
-            state=after.state.value,
+    values = {
+        "confidence_level": after.level.value,
+        "confidence_scalar": after.scalar,
+        "accessibility": after.accessibility,
+        "state": after.state.value,
+    }
+    if partitions.patch_pending(conn, belief.id, values) is None:
+        await conn.execute(
+            pending.aware(update(beliefs).where(beliefs.c.id == belief.id).values(**values))
         )
-    )
+        partitions.updated_stored(conn, belief.id)
 
 
 async def _record_changes(
@@ -762,16 +794,21 @@ async def _record_changes(
 async def _close(conn: AsyncConnection, priors: Sequence[Belief], *, at: Position, by: str) -> None:
     """Close ``priors`` whole at ``at`` (held), now (transaction-time), corrected by ``by``."""
     for prior in priors:
-        await conn.execute(
-            update(beliefs)
-            .where(beliefs.c.id == prior.id)
-            .values(
-                **at.columns("held_to"),
-                tx_to=func.clock_timestamp(),
-                state=BeliefHoldState.CORRECTED.value,
-                corrected_by=by,
+        values = {
+            **at.columns("held_to"),
+            "state": BeliefHoldState.CORRECTED.value,
+            "corrected_by": by,
+        }
+        # #754: a pending prior is written closed (its ``tx_to`` by the flush).
+        if partitions.patch_pending(conn, prior.id, values, close=True) is None:
+            await conn.execute(
+                pending.aware(
+                    update(beliefs)
+                    .where(beliefs.c.id == prior.id)
+                    .values(**values, tx_to=func.clock_timestamp())
+                )
             )
-        )
+            partitions.updated_stored(conn, prior.id)
 
 
 async def transition(
@@ -1203,38 +1240,45 @@ async def _transition(
         step=position.step,
     )
     now = await partitions.tx_now(conn)
-    inserted = await conn.execute(
-        insert(belief_transitions)
-        .values(
-            id=transition_id,
-            story_id=story_id,
-            holder_character_id=holder,
-            belief_id=belief_id,
-            kind=kind.value,
-            antecedent_kind=antecedent.kind.value,
-            antecedent_ref=dict(antecedent.ref),
-            source_character_id=source,
-            valid_at=when,
-            confidence_level=after.level.value,
-            confidence_scalar=after.scalar,
-            accessibility=after.accessibility,
-            state=after.state.value,
-            outcome=outcome,
-            prior_belief_ids=list(prior_ids),
-            prior=prior_state,
-            **position.columns("position"),
-            tx_from=now,
-            operation_id=op.operation_id,
-            source_event_ids=[event_id],
-            narrative_turn=op.narrative_turn,
-            turn_variant=op.turn_variant,
-            membership=Membership.ACTIVE.value,
-            membership_tx=func.transaction_timestamp(),
-            inferred=INFERRED.get(),
+    values: dict[str, Any] = {
+        "id": transition_id,
+        "story_id": story_id,
+        "holder_character_id": holder,
+        "belief_id": belief_id,
+        "kind": kind.value,
+        "antecedent_kind": antecedent.kind.value,
+        "antecedent_ref": dict(antecedent.ref),
+        "source_character_id": source,
+        "valid_at": when,
+        "confidence_level": after.level.value,
+        "confidence_scalar": after.scalar,
+        "accessibility": after.accessibility,
+        "state": after.state.value,
+        "outcome": outcome,
+        "prior_belief_ids": list(prior_ids),
+        "prior": prior_state,
+        **position.columns("position"),
+        "tx_from": now,
+        "operation_id": op.operation_id,
+        "source_event_ids": [event_id],
+        "narrative_turn": op.narrative_turn,
+        "turn_variant": op.turn_variant,
+        "membership": Membership.ACTIVE.value,
+        "inferred": INFERRED.get(),
+    }
+    batch = pending.current(conn)
+    if batch is not None:
+        # #754: held for the flush; the row as the insert would answer it.
+        batch.transition_rows[transition_id] = batch.defer(_TRANSITION_INSERT, [values])[0]
+        written: Any = SimpleNamespace(_mapping=_as_returned(values, now))
+        batch.transitions[transition_id] = _transition_of(written)
+    else:
+        inserted = await conn.execute(
+            insert(belief_transitions)
+            .values(**values, membership_tx=func.transaction_timestamp())
+            .returning(*belief_transitions.c)
         )
-        .returning(*belief_transitions.c)
-    )
-    written = inserted.one()
+        written = inserted.one()
     await index_records(
         conn,
         [
@@ -1325,6 +1369,23 @@ async def _transition(
 
 _OUTCOMES = frozenset({"accept", "reject", "suspend", "speech_act_only"})
 
+_TRANSITION_INSERT = insert(belief_transitions).values(membership_tx=func.transaction_timestamp())
+"""#754: a batched commit's transitions."""
+
+
+def _as_returned(values: Mapping[str, Any], now: Any) -> dict[str, Any]:
+    """A pending transition's row as ``RETURNING`` answers it (#754): its rounded numerics, its
+    JSON columns round-tripped, ``membership_tx`` the transaction's time."""
+    return {
+        **values,
+        "antecedent_ref": _json(values["antecedent_ref"]),
+        "prior": None if values["prior"] is None else _json(values["prior"]),
+        "confidence_scalar": pending.numeric3(values["confidence_scalar"]),
+        "accessibility": pending.numeric3(values["accessibility"]),
+        "membership_tx": now,
+        "tx_to": None,
+    }
+
 
 Signature = tuple[tuple[str, ...], str | None]
 """A nested belief's attribution (#167): its attributed holders, outermost first, and the
@@ -1366,11 +1427,53 @@ async def transitions_of(
     if active:
         where.append(active_only(belief_transitions))
     rows = await conn.execute(
-        select(belief_transitions)
-        .where(*where)
-        .order_by(*position_key(belief_transitions, "position").clauses, t.tx_from, t.id)
+        pending.aware(
+            select(belief_transitions)
+            .where(*where)
+            .order_by(*position_key(belief_transitions, "position").clauses, t.tx_from, t.id)
+        )
     )
-    return [_transition_of(r) for r in rows]
+    found = [_transition_of(r) for r in rows]
+    # #754: the commit's pending transitions (their ``tx_from`` is the transaction's: last).
+    extra = [
+        x
+        for x in _pending_transitions(conn, story_id)
+        if (holder is None or x.holder_character_id == holder)
+        and (belief_ids is None or x.belief_id in belief_ids)
+        and (not active or row_active(x.operation_id, x.membership))
+    ]
+    if not extra:
+        return found
+    return sorted([*found, *extra], key=lambda x: (x.position.key(), x.tx_from, x.id))
+
+
+def _pending_transitions(conn: AsyncConnection, story_id: str) -> list[Transition]:
+    """The transitions ``conn``'s commit has written but not yet flushed (#754)."""
+    batch = pending.current(conn)
+    if batch is None or not batch.transitions:
+        return []
+    return [x for x in batch.transitions.values() if x.story_id == story_id]
+
+
+def _jsonb_contains(outer: Any, inner: Any) -> bool:
+    """PostgreSQL's ``jsonb @>`` over values in hand (#754's replay of a pending transition)."""
+    if isinstance(inner, Mapping):
+        return isinstance(outer, Mapping) and all(
+            k in outer and _jsonb_contains(outer[k], v) for k, v in inner.items()
+        )
+    if isinstance(inner, list):
+        if not isinstance(outer, list):
+            return False
+        return all(any(_jsonb_contains(o, i) for o in outer) for i in inner)
+    if isinstance(outer, list):
+        return any(_jsonb_contains(o, inner) for o in outer)
+    return bool(outer == inner and type(outer) is type(inner)) or (
+        isinstance(outer, int | float)
+        and isinstance(inner, int | float)
+        and not isinstance(outer, bool)
+        and not isinstance(inner, bool)
+        and outer == inner
+    )
 
 
 @dataclass(frozen=True, slots=True)

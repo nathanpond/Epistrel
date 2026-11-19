@@ -15342,3 +15342,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #754
 - **Evidence (#754, after the change, P-04 first turn):** 116 statements at cap 0, 463 at cap 20 (20 resolutions) and 2,192 per belief at cap 20. That is (463 − 116) / 20 = 17.4 statements a resolution, against ≤ 20; 463 against ≤ 600. All 11 epistemic tables are equal between the batched and the per-belief turns.
   **Issue:** #754
+- **Evidence (#754, full suite):** the local run of the epistemic integration files, `test_batched_commit`, scenario, property, redteam and conformance (1,285 tests) hit its 90-minute wall-clock bound (`rc=124`) after 1,225 passed with no failures. The 60 it hadn't reached then ran on their own: 60 passed in 116 s. The bound was too tight for a sequential run of this size; no test hung (the next one, `test_c_15__replay`, passes in 27 s alone). CI on #963 (27 checks, with `evals-zero-leak` standard/full/max) was the full gate, and all were green.
+  **Issue:** #754
+- **Decision (#754, AC 2 time side):** the weekly P-04 structured run, dispatched on the branch (run 44413253574: PASS, 98.9% of 281 commits within 250 ms), uses single-character turns. So it doesn't measure AC 2's first multi-character turn. I timed that turn locally with an uncommitted scratch timer over the commit's statements, on three template copies of the P-04 fixture at cap 20: 0.686 s, 0.645 s and 0.684 s first-to-last statement (463 statements, 20 resolutions), against ≤ 1 s. The figures are on #754.
+  **Issue:** #754
+- **Merged (#754):** PR #963 was squash-merged as a573425 with CI green (27/27), and #754 closed on merge. The linked set was {754}; there were no casualties. The CI budget was 73 min (1.5 × #961's longest check, 49 min); CI finished in about 52 min.
+  **Issue:** #754

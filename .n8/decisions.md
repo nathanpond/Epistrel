@@ -15370,3 +15370,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #818
 - **Decision (#818):** the new ADR is ADR-200. ADR-179 gains an "Amended by: ADR-200" clause and a `*[superseded by ADR-200 …]*` marker on its certified-model definition, per the 05 header. docs/03 FR-PROF-16 and §22's M11 row, and docs/04 C-18 `[M11: NFR-QUAL-11]` and the §15 NFR-QUAL-11 row, are updated with it. Every preset's fingerprint moved once, and INDEX.md was regenerated. All four presets were already uncertified.
   **Issue:** #818
+- **Merged (#818's agent half):** PR #965 was squash-merged as `4832c12` on 2026-11-19 (CI all pass). #818 stays open, and the owner's baseline run is next. Evidence comment: #818 issuecomment-6999596107. The AC boxes ticked so far are ADR-179 amended and R1 (a). Paid runs this exec run: 0.
+  **Issue:** #818

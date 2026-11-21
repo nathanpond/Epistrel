@@ -15513,3 +15513,22 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939, #978, #979
 - **Merge (/n8-exec M11 run 11):** PR #983 squash-merged as `13283d9` after CI passed on the first round. The linked set was exactly #939, which is now CLOSED, with no casualties. Paid runs used in run 11: 1 of 5 (the confirming certify).
   **Issue:** #939
+
+## /n8-exec M11 run 12 (2026-11-21)
+
+- **Decision:** run 12 takes #747 (NFR-QUAL-3). It is next in the M11 order after #939. Branch `milestone/m11-run12-e03-judge`, cut from `main` at `5c55300`. Preflight: M1–M10 are closed, and M11 has open stories. The drift check found no unreconciled `## Ad-hoc` entry (the last ones were reconciled by `/n8-replan M11` on 2026-11-17). #747's file claims match the code (`e03_consolidation.py`, `judge_model.py`, `CaseContext.judge_models`). #978/#979 are not M11 issues (no milestone, `needs-triage`).
+  **Issue:** #747
+- **Decision (#747, the judge does not enter the fingerprint; deviates from the planner's discretion):** the planner put judge models into the run fingerprint under `judges: {purpose: model}` so a judge change would retire certifications. Not done: a deployment computes its fingerprint with no eval judge, so a certification made with a Sonnet `entailment` judge would never match any deployment's fingerprint, and Haiku deployments could never report certified. Instead the judge is named in `Report.judges`, E-03's `SuiteJudge`, and `CertificationRecord.judges` (record only, `SCHEMA_VERSION` 3, as #937 did with `identity_types`). A `quality_judge` judge still enters the fingerprint as #475 had it. Recorded in ADR-204's Alternatives.
+  **Issue:** #747
+- **Fix (#747, Rule 1, the journal key):** with the entailment judge outside the fingerprint, a resumed run would reuse journal lines another judge had judged. `runner.journal_scope` files E-03's lines (and their trace keys) under `#judge:entailment=<model>` when E-03 has a judge the fingerprint doesn't name. Every other suite's key is unchanged, so existing journals still resume. Test: `test_journal_scope_names_a_judge_the_fingerprint_does_not`.
+  **Issue:** #747
+- **Decision (#747, routing shape):** the planner asked for one dispatching layer behind `CaseContext.judge_models`. Built instead: one `JudgeModels` layer per distinct judge endpoint (`runner.judge_layers_for`), keyed by purpose, and `CaseContext.judge_models_for(purpose)`. `judge_models` stays as `quality_judge`'s. A layer that dispatches inside every Model Access Layer method would override far more surface for the same effect. `AdapterConfig.judge_name` / `self_judged` / `judge_endpoint` now mean `quality_judge`'s judge (the calibration's and the fingerprint's). `judge_name_for(purpose)` gives any purpose's.
+  **Issue:** #747
+- **Decision (#747, calibration per purpose):** no `judge_calibrated` per purpose was added. The entailment judge's calibration is E-03's labelled pairs (the planner's own reading), and ADR-204's trust gate applies it inside the run. `judge_calibrated` stays the quality judge's.
+  **Issue:** #747
+- **Decision (#747, the re-judge's cause rule):** a failing window (the journal's judge found it unfaithful) is `consolidation` only when the candidate also refuses one of its reflections *and* judged both of that window's labelled pairs right. Otherwise it is `judge`. A tie in the majority goes to `judge`. This follows the planner's second pass ("decided by the candidate judge's re-judge; ties → judge"); the first pass's rule (the run judge mis-called a labelled pair) is not used. Sources are rebuilt with `records.render_line("do", …)`, the turn commit's own formatter, so the candidate sees E-03's text. Labelled pairs are judged once per case, not per seed.
+  **Issue:** #747
+- **Decision (#747, an untrusted floor in a record):** when the trust gate makes `nfr_qual_3.faithfulness` report only, `certify.floors_of` puts it in none of a record's passed/failed/insufficient lists (it skips report-only rows, as for any informational row), so NFR-QUAL-3 is simply not evidenced. Stated in ADR-204's Consequences.
+  **Issue:** #747
+- **Decision (#747, API surface):** `CertificationRecord` is the body of `POST /admin/certifications/import`, so `docs/openapi.json` gains the optional `judges` field and `schema_version` 3. The change is additive; #937's `identity_types` took the same path. No Console change is needed: the Console doesn't author records.
+  **Issue:** #747

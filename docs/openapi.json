@@ -3566,6 +3566,13 @@
             "title": "Judge Calibrated",
             "type": "boolean"
           },
+          "judges": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Judges",
+            "type": "object"
+          },
           "model_tier": {
             "default": "other",
             "enum": [
@@ -3680,7 +3687,8 @@
           "schema_version": {
             "enum": [
               1,
-              2
+              2,
+              3
             ],
             "title": "Schema Version",
             "type": "integer"

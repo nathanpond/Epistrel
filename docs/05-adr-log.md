@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -267,6 +267,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 | 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
+| 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Current | — |
 
 ---
 
@@ -2283,6 +2284,23 @@ Tuning and its exit certification come after every milestone that may change a p
 - A fallback line is short, so a case whose render is replaced always keeps the length rule; length is judged on the message the turn released, as NFR-QUAL-7 states it.
 - docs/04 §8's E-06 entry, e06's `reading_notes` and `docs/evals/README.md` state the rule; `tools/e06_tally.py` tallies released fallbacks by `fallback_code` apart from structure misses.
 - Tests: `tests/eval/test_e_06.py`, `test_e_06__m11_render_structure` (a replaced say beat and a dropped think beat read as rendered; complement: an empty original or a think-only render is a miss) and `test_e_06__m11_fallback_conforms` (a valid render under a fallback conforms and is counted in `e06.released_fallback`).
+
+### ADR-204 — E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own
+**Status:** Accepted.
+**Context:** #747. E-03 judges each reflection against its window's episodes with the `entailment` purpose. On a single-model run that judge is the model under test. In the #818 baseline on `claude-haiku-5-5` (2026-11-19/21), `nfr_qual_3.faithfulness` passed on Standard and Max and failed on Full (98.21% ± 1.55%), while the same judge agreed with only 61.78% of E-03's labelled windows on Full (`e03.judge_agreement`). A verdict from a judge that mis-calls more than a third of the labelled windows says little about the consolidation. The owner's round-two decision on #747 (R4, 2026-11-16) is that the verdict counts only when the judge is trustworthy, and that certification may use a separate, stronger judge for `entailment` (`claude-sonnet-5-5`, cost seen and accepted).
+**Decision:** Applied by #747 (NFR-QUAL-3, NFR-QUAL-8). Amends NFR-QUAL-3 and docs/04 §8's E-03 entry.
+- `e03.judge_agreement` is counted per labelled **pair**: a window's labelled entailed reflection judged entailed is one good pair, and its labelled non-entailed reflection judged not entailed is another (two pairs a window, 300 a seed on the 150-window set). Before this ADR it was one observation a window, true only when both matched.
+- `nfr_qual_3.faithfulness`'s verdict counts only when the mean across seeds of `e03.judge_agreement` is at least 75% (`judging.CALIBRATION_FLOOR`, the quality judge's calibration floor). Below it, or when it was not measured, the row is `report_only` with a note quoting the agreement (`Suite.trusted_by`, applied by `runner.trusted`). This holds for self-judged runs too. The labelled pairs are the `entailment` judge's calibration: no separate calibration set is needed.
+- `--judge-model-for P=MODEL`, `--judge-base-url-for P=URL` and `--judge-api-key-env-for P=ENVVAR` (on `run`, `certify`, `calibrate-judge` and the new `rejudge`) give one judge purpose (`entailment` or `quality_judge`) a judge of its own, over `--judge-model` for that purpose. Keys come from the environment only. Each distinct judge endpoint is probed once.
+- A judge for `entailment` does not enter the configuration fingerprint. The report names it (`Report.judges` and a "Judge for `entailment`" line, and E-03's suite Judge), the certification record names it (`CertificationRecord.judges`, record only, `schema_version` 3), and the results journal files E-03's lines under it (`runner.journal_scope`), so a resumed run never reuses another judge's verdicts. A `quality_judge` judge still enters the fingerprint as before (#475).
+- `evals rejudge --suite e03 --from-journal <journal>` judges a journal's reflections and the labelled pairs again with the candidate judge, offline (judge calls only), and names each failing window's cause (`evals.rejudge`).
+**Alternatives considered:** Putting the entailment judge in the fingerprint (the planner's first shape, `judges: {purpose: model}`): a deployment computes its fingerprint without any eval judge, so a certification made with one would never match a deployment's fingerprint, and no deployment could report itself certified. Keeping the per-window agreement: at 150 windows a seed it is short of the calibration's 200-pair minimum, and it counts a window wrong when only one of its two pairs is.
+**Consequences:**
+- The #818 baseline recorded only the per-window figure, so its per-pair agreement is unknown: on Full it lies between 61.78% (both pairs wrong in every missed window) and 80.89% (one). The committed reports and records are not rewritten. New runs apply the rule.
+- With a separate judge, a judge change does not retire a certification: the record and the report say which judge certified NFR-QUAL-3.
+- An untrusted judge's NFR-QUAL-3 is in none of a record's passed, failed or insufficient lists: the floor is not evidenced.
+- docs/03 NFR-QUAL-3, docs/04 §8's E-03 entry, E-03's `reading_notes` and `docs/evals/README.md` state the rule.
+- Tests: `tests/eval/test_e_03.py` (`test_e_03`: per-pair counts and a trusted verdict; `test_e_03__untrusted_judge`: a judge at 50% agreement makes faithfulness report only) and `tests/evals/test_judge_for.py` (the flags, routing with zero entailment calls on the run adapter, the journal scope, the trust rule at 75%, and the re-judge's cause rule).
 
 ---
 

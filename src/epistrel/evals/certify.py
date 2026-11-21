@@ -197,6 +197,7 @@ def record_from(
         intervention_types_insufficient=lacking,
         identity_types=[kind for kind in covered if kind in IDENTITY_TYPES],
         judge_calibrated=calibrated,
+        judges={purpose: judge.model for purpose, judge in sorted(report.judges.items())},
         sample_sizes={f.metric_id: f.n for f in (*passed, *failed, *insufficient)},
         seed_count=len(report.seeds),
         model_tier=tier,

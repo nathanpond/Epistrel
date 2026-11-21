@@ -662,6 +662,37 @@ row, apart from a self-judged run of the same model. E-13 pools the committed re
 means only with means from the same judge. A report written before #475 records no judge: it
 was self-judged.
 
+## A judge for one purpose, and E-03's trust rule (#747, ADR-204)
+
+`--judge-model-for P=MODEL` gives one judge purpose a judge of its own: `entailment` (E-03) or
+`quality_judge` (E-12, E-13, the calibration). It wins over `--judge-model` for that purpose
+alone. `--judge-base-url-for P=URL` and `--judge-api-key-env-for P=ENVVAR` set its endpoint and
+the environment variable that holds its key (a key is never given on the command line). For
+example, Haiku certified with Sonnet judging E-03:
+
+```sh
+uv run epistrel evals certify --presets standard,full,max --suite e03 \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 \
+    --judge-model-for entailment=claude-sonnet-5-5 …
+```
+
+A judge for `entailment` does not enter the configuration fingerprint (a deployment has none,
+so its certification must still match the deployment's fingerprint). The report names it on a
+**Judge for `entailment`** line, E-03's Judge names it, the certification record lists it in
+`judges`, and the results journal files E-03's lines under it, so a resumed run never mixes
+judges.
+
+`e03.judge_agreement` counts each labelled **pair** (two a window: the entailed reflection and
+the non-entailed one). `nfr_qual_3.faithfulness` counts only when that agreement's mean across
+seeds is at least 75%; below it the row is report only, with a note quoting the agreement.
+
+`evals rejudge --suite e03 --from-journal <journal>` judges a results journal's E-03
+reflections and labelled pairs again with the run's `entailment` judge, offline (judge calls
+only; no consolidation runs), and writes `build/evals/rejudge-<journal>-e03.json`: the
+candidate's faithfulness and agreement per seed, and each failing window's cause
+(`consolidation` when the candidate also refuses a reflection and judged both of that window's
+pairs right, else `judge`).
+
 Voice fidelity and plot adherence are outside the guarantee (NFR-QUAL-13): the engine delivers
 each character's definition and the director's drivers to the right contexts (C-25), and E-13
 reports how the output reads as signals, never as a floor or a gate. The only prose floor is

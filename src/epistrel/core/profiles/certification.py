@@ -1,8 +1,9 @@
 """Certification records and the quality status they produce (FR-PROF-15..17, NFR-QUAL-8,11;
 #233).
 
-**A record** (``CertificationRecord``, ``schema_version`` 2; #937 added ``identity_types``,
-kept in the record only, and a version 1 record is read as recorded) is what an eval run against one
+**A record** (``CertificationRecord``, ``schema_version`` 3; #937 added ``identity_types`` in
+version 2 and #747 added ``judges`` in version 3, both kept in the record only, and an earlier
+record is read as recorded) is what an eval run against one
 configuration fingerprint certifies: the floors it passed, each with its rule, mean, standard
 deviation, sample size, seeds and bound (``FloorResult``), the floors it failed or could not
 decide (recorded, never hidden), the intervention types NFR-QUAL-14's floor covers and those it
@@ -87,8 +88,9 @@ from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 2
-"""#937: version 2 adds ``identity_types``; a version 1 record keeps its verdicts as recorded."""
+SCHEMA_VERSION = 3
+"""#937: version 2 adds ``identity_types``; #747: version 3 adds ``judges``. An earlier record
+keeps its verdicts as recorded."""
 SEEDS_DIR = Path(__file__).resolve().parent.parent / "seeds" / "certifications"
 """The committed certification records the start-up loader imports (#235 writes them)."""
 VALID = "valid"
@@ -151,7 +153,7 @@ class CertificationRecord(BaseModel):
         },
     )
 
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
     certification_id: str = Field(pattern=ULID_PATTERN)
     fingerprint: str = Field(pattern=FINGERPRINT_PATTERN)
     profile_id: str | None = Field(default=None, pattern=ULID_PATTERN)
@@ -168,6 +170,10 @@ class CertificationRecord(BaseModel):
     """#937: the identity intervention types that passed (kept in the record only, not
     stored)."""
     judge_calibrated: bool = False
+    judges: dict[str, str] = Field(default_factory=dict)
+    """#747: per judge purpose of the eval harness (``entailment``, ``quality_judge``), the
+    model that judged it when it was not the run model (kept in the record only, not
+    stored)."""
     sample_sizes: dict[str, int] = Field(default_factory=dict)
     seed_count: int = Field(ge=1)
     model_tier: Literal["reference", "other"] = "other"
@@ -267,7 +273,7 @@ def check_report(record: CertificationRecord, report_md: str | None) -> None:
 
 def _values(record: CertificationRecord, via: str) -> dict[str, Any]:
     dumped = record.model_dump(
-        mode="json", exclude={"schema_version", "report_md", "identity_types"}
+        mode="json", exclude={"schema_version", "report_md", "identity_types", "judges"}
     )
     dumped["id"] = dumped.pop("certification_id")
     dumped["run_at"] = record.run_at

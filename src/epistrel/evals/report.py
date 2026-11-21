@@ -291,7 +291,11 @@ class Report(BaseModel):
     engine_sha: str
     host: Host
     judge: JudgeModel | None = None
-    """The run's second judge model (#475); ``None``: the run model judged (self-judged)."""
+    """``quality_judge``'s second judge model (#475); ``None``: the run model judged it."""
+    judges: dict[str, JudgeModel] = Field(default_factory=dict)
+    """Per judge purpose, the judge that was not the run model (#747: ``--judge-model-for``,
+    or #475's ``--judge-model`` for every purpose); a purpose it does not name was
+    self-judged. Empty in a report written before #747."""
     real_purposes: list[str] | None = None
     """The purposes a real-model run sent to its endpoint (#179); ``None``: every purpose."""
     resumed: Resumed | None = None
@@ -677,6 +681,15 @@ def render_markdown(report: Report) -> str:
         )
     else:
         judge_line = "- **Judge:** the run model (self-judged)"
+    for purpose, own in sorted(report.judges.items()):
+        if own == report.judge:
+            continue
+        at = f" at `{own.endpoint}`" if own.endpoint else ""
+        judge_line += (
+            f"\n- **Judge for `{purpose}`:** `{own.model}` (reported version: "
+            f"{_version_text(own.model_version)}){at}, for that purpose's judge calls alone "
+            "(#747)"
+        )
     lines = [
         f"# Eval report {report.run_id}",
         "",

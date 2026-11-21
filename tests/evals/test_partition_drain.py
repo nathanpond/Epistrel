@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import embeddings
 from epistrel.core.memory import story_partitions
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.core.tables.jobs import jobs
@@ -122,14 +123,14 @@ async def test_the_embedding_is_pinned_before_any_story_when_configured(
     engine: Any = SimpleNamespace(
         db=_Db(), models=SimpleNamespace(embeddings=SimpleNamespace(probe=probe))
     )
-    monkeypatch.setattr(scenes.embeddings, "pin_first", pin_first)
+    monkeypatch.setattr(embeddings, "pin_first", pin_first)
     for configured in (False, True):
 
         async def embedding_configured(_: Any, configured: bool = configured) -> bool:
             return configured
 
         monkeypatch.setattr(scenes, "embedding_configured", embedding_configured)
-        found = await scenes.pin_embedding(engine)
+        found: Any = await scenes.pin_embedding(engine)
         assert found == ("pin" if configured else None)
     assert probes == [1]
     assert pinned == [{"version": "nomic@1", "dimension": 768}]

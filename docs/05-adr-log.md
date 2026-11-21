@@ -23,7 +23,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
 | FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174, 193 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173, 199 |
-| FR-TURN | §6 | 024, 043, 143, 166, 169, 170, 202 |
+| FR-TURN | §6 | 024, 043, 143, 166, 169, 170, 202, 203 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -266,6 +266,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Current | — |
 | 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
+| 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
 
 ---
 
@@ -2265,6 +2266,23 @@ Tuning and its exit certification come after every milestone that may change a p
 - docs/04 §8's E-06 entry, e06's `reading_notes` and `docs/evals/README.md` state the host rule.
 - The flag is not preset configuration, so no fingerprint moves.
 - Tests: `tests/eval/test_e_06.py`, the `test_e_06__m11_*` tests (a differing repeat on a non-deterministic host leaves conformance passing and is counted in `e06.repeatable`; on a deterministic host the same difference fails it).
+
+---
+
+### ADR-203 — E-06 judges structure on the model's render, and a released fallback is reported apart
+**Status:** Accepted.
+**Context:** #939. E-06 judged FR-TURN-1's structure on the turn as released, so a render the verifier's safe fallback replaced was a structure miss (docs/04 §8; `structured_turns.structure_problems`). On `claude-haiku-5-5` (Full, E-06, 3 seeds, 2026-11-21, `docs/evals/full-bca1e50d0af4-2026-11-21.md`), conformance was 74.50% and every one of its 153 misses was the safe fallback over a valid render: unsupported claims 20.83%, contradicted or undecided 11.83%, `player_character` denials 10.33% of cases. Those are verifier and permission outcomes on ordinary beats, which no render wording reaches, so NFR-QUAL-7's ≥ 98% measured the verifier rather than the render's structure. The owner chose option (c) on #939 (2026-11-21): this rule now, and the engine fixes as ordinary bugs (#978, #979).
+**Decision:** Applied by #939 (NFR-QUAL-7, FR-TURN-1). Amends docs/04 §8's E-06 structure rule.
+- `e06.structure_valid` and the structure part of `nfr_qual_7.conformance` judge the model's render (`structured_turns.render_problems`): each beat the repair ladder replaced is read by its original text (its `render_rejected` event, attempt 0), and a beat the ladder dropped counts as the `think` or `latent` beat it was (only those are dropped). The checks are unchanged: at least one beat, known channels, text on every beat, at least one `say` or `do`, and a non-empty message.
+- `e06.released_fallback` (informational) counts the cases whose turn released the safe fallback. It leaves the verdict. A line names its fallback in `detail.fallback_code` (`fallback:<cause>[:<constraint classes>]`), and keeps the released turn's check in `detail.released_problems`. `detail.structure_code` now names only a render's structure miss.
+- Length (the composed message within 125% of its budget) and ADR-202's repeatability rule are unchanged.
+**Alternatives considered:** (a) Engine fixes alone, keeping the released-turn rule: the fallback's other causes (contradicted or undecided claims, 11.83%) are correct verifier outcomes, so the floor would stay unreachable whatever the render does. Dropping fallback cases from the denominator: a run with many fallbacks would then look better than one with few.
+**Consequences:**
+- Every E-06 figure before this ADR counted a released fallback as a structure miss, so it is not comparable with later ones. `e06.released_fallback` carries that share forward.
+- How often a turn releases the fallback is no longer gated by E-06. #978 and #979 own its causes, and E-01's entailment floors still gate the verifier.
+- A fallback line is short, so a case whose render is replaced always keeps the length rule; length is judged on the message the turn released, as NFR-QUAL-7 states it.
+- docs/04 §8's E-06 entry, e06's `reading_notes` and `docs/evals/README.md` state the rule; `tools/e06_tally.py` tallies released fallbacks by `fallback_code` apart from structure misses.
+- Tests: `tests/eval/test_e_06.py`, `test_e_06__m11_render_structure` (a replaced say beat and a dropped think beat read as rendered; complement: an empty original or a think-only render is a miss) and `test_e_06__m11_fallback_conforms` (a valid render under a fallback conforms and is counted in `e06.released_fallback`).
 
 ---
 

@@ -27,10 +27,12 @@ from epistrel.evals.suites import e06_conformance as e06
 from epistrel.evals.suites.e06_conformance import (
     CONFORMANCE,
     NOT_DETERMINISTIC_NOTE,
+    RELEASED_FALLBACK,
     REPEATABLE,
     ConformanceCase,
     E06Suite,
     conforms,
+    fallback_code,
     structure_code,
     within_length,
 )
@@ -220,15 +222,92 @@ def test_e_06__m11_report_says_so() -> None:
 
 @pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06__m11_structure_code() -> None:
-    """A fallback names its cause and the rejected constraint kinds; otherwise the first
-    problem; no code for a valid structure."""
-    fallback = "the safe fallback replaced the render"
-    assert structure_code([], [], []) is None
-    assert structure_code([fallback], ["repair"], ["state_constraint", "uncertain"]) == (
+    """A structure miss is coded by its first render problem, a released fallback by its cause
+    and the rejected constraint classes (ADR-203); no code for neither."""
+    assert structure_code([]) is None
+    assert structure_code(["no say or do beat", "a beat without text"]) == "no say or do beat"
+    assert fallback_code([], []) is None
+    assert fallback_code(["repair"], ["state_constraint", "uncertain"]) == (
         "fallback:repair:state_constraint,uncertain"
     )
-    assert structure_code([fallback], ["repair"], []) == "fallback:repair"
-    assert structure_code(["no say or do beat"], [], []) == "no say or do beat"
+    assert fallback_code(["repair"], []) == "fallback:repair"
+
+
+def _beat(channel: str, text: str, beat: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        kind=f"beat_{channel}", channel=channel, text=text, beat=beat, operation_id=None
+    )
+
+
+def _turn(*beats: SimpleNamespace, fallback: bool = False) -> SimpleNamespace:
+    cause = [SimpleNamespace(step="safe_fallback", cause="repair")] if fallback else []
+    return SimpleNamespace(
+        beats=list(beats),
+        message=SimpleNamespace(text=" ".join(b.text for b in beats) or "…"),
+        degradation=["safe_fallback"] if fallback else [],
+        degradation_details=cause,
+    )
+
+
+@pytest.mark.part("M11", "NFR-QUAL-7")
+def test_e_06__m11_render_structure() -> None:
+    """ADR-203: structure is judged on the model's render. A say beat the safe fallback
+    replaced is read by its original text, and a think beat the ladder dropped still counts
+    as a think, so the render is valid where the released turn is not.
+
+    Complement asserted: a render whose only say/do was empty, or that rendered only a
+    (dropped) think, is still a structure miss."""
+    from epistrel.evals.suites.structured_turns import render_problems, structure_problems
+
+    released: Any = _turn(_beat("say", "I can't say more.", 1), fallback=True)
+    originals = {1: "The lamp was lit at dusk.", 2: "She hides the key."}
+    assert structure_problems(released) == ["the safe fallback replaced the render"]
+    assert render_problems(released, originals) == []
+    assert render_problems(released, {1: "  "}) == ["a beat without text"]
+    only_think: Any = _turn(_beat("think", "", 1))
+    only_think.beats = []
+    only_think.message.text = "…"
+    assert render_problems(only_think, {1: "Hidden."}) == ["no say or do beat"]
+
+
+@pytest.mark.part("M11", "NFR-QUAL-7")
+async def test_e_06__m11_fallback_conforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A valid render the safe fallback replaced conforms; ``e06.released_fallback`` counts it,
+    and its line names the fallback (``fallback_code``) and keeps the released turn's problems.
+
+    Complement asserted: the same turn with an empty original render is a structure miss, and
+    a turn with no fallback reports ``released_fallback`` false."""
+    turn = _turn(_beat("say", "I can't say more.", 1), fallback=True)
+
+    async def outcome(originals: dict[int, str], result: Any) -> Outcome:
+        async def play(*_: Any, **__: Any) -> Any:
+            return result
+
+        async def originals_of(*_: Any) -> dict[int, str]:
+            return originals
+
+        async def kinds(*_: Any) -> list[str]:
+            return ["do_not_assert:unsupported"]
+
+        monkeypatch.setattr(e06, "play", play)
+        monkeypatch.setattr(e06, "render_originals", originals_of)
+        monkeypatch.setattr(e06, "rejected_kinds", kinds)
+        ctx: Any = SimpleNamespace(deterministic=False)
+        return await E06Suite().evaluate(ctx, _case(repeat=False))
+
+    kept = await outcome({1: "The lamp was lit at dusk."}, turn)
+    assert kept.observations[CONFORMANCE] is True
+    assert kept.observations[e06.STRUCTURE] is True
+    assert kept.observations[RELEASED_FALLBACK] is True
+    assert kept.detail["fallback_code"] == "fallback:repair:do_not_assert:unsupported"
+    assert kept.detail["structure_code"] is None
+    assert kept.detail["released_problems"] == ["the safe fallback replaced the render"]
+    empty = await outcome({1: ""}, turn)
+    assert empty.observations[CONFORMANCE] is False
+    assert empty.detail["structure_code"] == "a beat without text"
+    clean = await outcome({}, _turn(_beat("say", "Welcome.", 1)))
+    assert clean.observations[RELEASED_FALLBACK] is False
+    assert clean.detail["fallback_code"] is None
 
 
 def _line(observations: Mapping[str, bool | None], **detail: Any) -> dict[str, Any]:
@@ -257,11 +336,15 @@ def test_e_06__m11_tally() -> None:
                 REPEATABLE: False,
             }
         ),
+        _line(
+            {CONFORMANCE: True, "e06.structure_valid": True, RELEASED_FALLBACK: True},
+            fallback_code="fallback:repair:do_not_assert:unsupported",
+        ),
         {"suite": "e12", "observations": {}, "detail": {}},
     ]
     result = tally(lines)
-    assert result["outcomes"] == 5
-    assert result["parts"]["structure"] == (3, 5)
+    assert result["outcomes"] == 6
+    assert result["parts"]["structure"] == (3, 6)
     assert result["parts"]["length"] == (1, 5)
     assert result["parts"]["repeat"] == (1, 1)
     assert result["codes"] == {
@@ -270,7 +353,10 @@ def test_e_06__m11_tally() -> None:
         "model_error:model_unavailable:invalid_structure": 1,
     }
     assert code_of(lines[0]) is None
-    assert "`fallback:repair` | 1 | 20.00% | yes" in render(result, None)
+    assert code_of(lines[5]) is None
+    assert result["fallbacks"] == {"fallback:repair:do_not_assert:unsupported": 1}
+    assert "`fallback:repair` | 1 | 16.67% | yes" in render(result, None)
+    assert "`fallback:repair:do_not_assert:unsupported` | 1 | 16.67% |" in render(result, None)
 
 
 @pytest.mark.part("M11", "NFR-QUAL-7")

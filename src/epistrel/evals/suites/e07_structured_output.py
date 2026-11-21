@@ -20,7 +20,8 @@ cleared, so the injected parse error never changes how later cases call the mode
   model's structured-call validity counts (the owner's decision on #465, as #437 decided for
   the smoke scorer): what verification, repair or the output gate did with a valid render
   afterwards (a released safe fallback, a deterministic repair) is not an invalid structure
-  here; E-06 (``structure_problems``) still judges the released turn. A turn that fails
+  here; E-07's report-only ``problems`` still check the released turn (``structure_problems``;
+  E-06 judges the render since ADR-203). A turn that fails
   ``model_unavailable`` is a miss: ``invalid_structure`` means the render never validated, and
   any other model error fails the case (#134).
 - ``e07.first_attempt_valid`` (report-only): over the cases not injected, the render's first

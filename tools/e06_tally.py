@@ -12,7 +12,11 @@ the repeat part has no denominator):
 - **structure, by code:** each structure miss's stable code (``structure_code``): a model
   error's ``model_error:<code>:<reason>``, else the line's ``detail.structure_code``
   (``e06_conformance.structure_code``; derived the same way for a line written before it),
-  with its share of all outcomes. A code at or above ``THRESHOLD`` (0.5 %) needs a fix;
+  with its share of all outcomes. A code at or above ``THRESHOLD`` (0.5 %) needs a fix. Since
+  ADR-203 structure is judged on the render, so a released fallback is no structure miss;
+- **released fallbacks, by code** (ADR-203): each outcome whose turn released the safe
+  fallback (``e06.released_fallback``), by its ``detail.fallback_code`` (a failures file
+  lists only the misses, so there this counts only the fallbacks that also missed);
 - **first-attempt refusals, by shape** (with ``--calls``): every retried render call
   (``generation`` and ``regeneration`` purposes) is a refused earlier attempt, and its
   correction message names the refusal. The shape is the correction's problem with numbers
@@ -45,6 +49,7 @@ PARTS = (
     ("length", "e06.length_honoured"),
     ("repeat", "e06.repeatable"),
 )
+RELEASED_FALLBACK = "e06.released_fallback"
 _PREFIX = "Your previous answer could not be used: "
 _SUFFIX = re.compile(r"\.\s*Reply again with only the JSON object, and nothing else\.\s*$")
 _VALUE_ERROR = re.compile(r"^the object: Value error, ")
@@ -64,6 +69,13 @@ def code_of(line: Mapping[str, Any]) -> str | None:
         return f"fallback:{causes[0]}"
     problems = detail.get("problems") or []
     return str(problems[0]) if problems else "unknown"
+
+
+def fallback_of(line: Mapping[str, Any]) -> str | None:
+    """A journal line's released-fallback code (module docstring); ``None``: none released."""
+    if (line.get("observations") or {}).get(RELEASED_FALLBACK) is not True:
+        return None
+    return str((line.get("detail") or {}).get("fallback_code") or "fallback")
 
 
 def shape(correction: str) -> str:
@@ -102,7 +114,13 @@ def tally(lines: Iterable[Mapping[str, Any]], total: int | None = None) -> dict[
         else:
             parts[name] = (missed, 0 if name == "repeat" else total)
     codes = Counter(code for line in outcomes if (code := code_of(line)) is not None)
-    return {"outcomes": len(outcomes) if total is None else total, "parts": parts, "codes": codes}
+    fallbacks = Counter(code for line in outcomes if (code := fallback_of(line)) is not None)
+    return {
+        "outcomes": len(outcomes) if total is None else total,
+        "parts": parts,
+        "codes": codes,
+        "fallbacks": fallbacks,
+    }
 
 
 def refusals(calls: Iterable[Mapping[str, Any]]) -> Counter[tuple[str, str]]:
@@ -139,6 +157,14 @@ def render(result: Mapping[str, Any], shapes: Counter[tuple[str, str]] | None) -
     for code, n in result["codes"].most_common():
         flag = "yes" if total and n / total >= THRESHOLD else "no"
         out.append(f"| `{code}` | {n} | {_pct(n, total)} | {flag} |")
+    if result.get("fallbacks"):
+        out += [
+            "",
+            "| Released fallback (not in the verdict: ADR-203) | Outcomes | Share of outcomes |",
+            "|---|---|---|",
+        ]
+        for code, n in result["fallbacks"].most_common():
+            out.append(f"| `{code}` | {n} | {_pct(n, total)} |")
     if shapes is not None:
         out += [
             "",

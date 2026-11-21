@@ -15491,3 +15491,23 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939, #978, #979
 - **Owner decision (#939, 2026-11-21):** option (c). (b): E-06 judges structure on the model's render, and a verifier fallback becomes the report-only row `e06.released_fallback`. A new ADR amends E-06's structure rule, then comes the confirming 3-preset run. (a): #978 and #979 are fixed as ordinary engine bugs, with each one's fix option still the owner's call on its issue. `blocked` and `needs-owner-action` removed from #939.
   **Issue:** #939, #978, #979
+
+## /n8-exec M11 run 11 (2026-11-21)
+
+- **Decision (#939, ADR-203, the owner's option (c) part (b)):** E-06 judges structure on the model's render (`structured_turns.render_problems`). Each repaired beat is read by its original text (`render_rejected`, attempt 0), and a dropped beat counts as `think`/`latent`, since `repair.ladder.DETERMINISTIC_KINDS` drops only those.
+  - A released safe fallback is the report-only row `e06.released_fallback`. The line carries `detail.fallback_code`, and `detail.released_problems` keeps the old released-turn check.
+  - `structure_code` now names only render misses, replacing run 10's `fallback:` codes there. `tools/e06_tally.py` tallies fallbacks in a table of their own. In a failures file (misses only) it sees only the fallbacks that also missed, as its docstring says.
+  **Issue:** #939
+- **Decision (#939, length unchanged):** length is still judged on the composed message the turn released, as NFR-QUAL-7 states it, not on the render. So a case whose render the fallback replaced keeps the length rule trivially; ADR-203's Consequences say so. Judging length on the render would be a second scoring change the owner didn't choose.
+  **Issue:** #939
+- **Decision (#939, ADR-203 amends docs/04, not an ADR):** E-06's released-turn structure rule was never an ADR. It lived in docs/04 §8 and #157. So ADR-203 adds no **Amended by** line to any earlier ADR, and ADR-202 still holds as written.
+  **Issue:** #939
+- **Process note (#939):** the plan comment was posted after the code was written (comment 7067033518), not before. Run 10's options comment and the owner's (c) had already fixed the approach.
+  **Issue:** #939
+- **Decision (#939, the confirming run, 3 of 5 paid runs):** `certify --presets standard,full,max --suite e06` on hosted `claude-haiku-5-5`, 3 seeds, `--fresh`, at `70863be`.
+  - `nfr_qual_7.conformance` (mean ± SD): Standard 100.00% ± 0.00%, Full 100.00% ± 0.00%, Max 99.83% ± 0.29%. All pass on mean − SD ≥ 98%.
+  - Length is 100% on Standard and Full, 99.83% on Max. Max's one miss is a model error (`invalid_structure`).
+  - `e06.released_fallback` (report-only): Standard 19.50%, Full 24.67%, Max 22.21%, all `repair:do_not_assert`; the fallbacks go to #978 and #979.
+  - The reports are committed: `docs/evals/standard-9571b4ca2e03-2026-11-21.md`, `full-bca1e50d0af4-2026-11-21-2.md` (`-2`, since run 10's report holds the name), and `max-9b6b43379c0f-2026-11-21.md`.
+  - The run's certification records are not committed. They come from an E-06-only run, and committing them would mark the fingerprints certified (ADR-200). #819 certifies.
+  **Issue:** #939, #978, #979

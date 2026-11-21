@@ -3,8 +3,10 @@
 Each case is one structured turn (``suites.structured_turns``: ``Engine.respond`` on
 ``Structured``) with the case's ``prompt_params``. A case **conforms** when, together:
 
-- **structure** (FR-TURN-1): the released turn is a valid say/think/do/latent render
-  (``structure_problems``);
+- **structure** (FR-TURN-1): the model's render is a valid say/think/do/latent structure
+  (``structured_turns.render_problems``: a repaired beat by its original text). #939, ADR-203,
+  the owner's option (c): a render the verifier's safe fallback replaced is judged as the model
+  wrote it, and the fallback is counted apart, in ``e06.released_fallback``;
 - **length**: the composed message is within the requested length — at most 125 % of its token
   budget (``short`` 150, ``medium`` 400, ``long`` 800, or the integer cap), counting a token
   as four characters, as the stub adapter and the model matrix's estimate do;
@@ -21,14 +23,19 @@ Each case is one structured turn (``suites.structured_turns``: ``Engine.respond`
 - ``nfr_qual_7.conformance`` (rate, ≥ 98 %): one combined per-case rate (the planner's choice).
 - ``e06.structure_valid``, ``e06.length_honoured``, ``e06.repeatable`` (report-only): the
   parts, so a miss names its cause.
+- ``e06.released_fallback`` (report-only, ADR-203): the safe fallback replaced the render, so
+  the turn released the fallback line. A verifier or permission outcome, not the render's
+  structure: #978 and #979 own its causes.
 
 Its stub answers are scripted per case (a valid render), so CI gates on its stub run.
 
 ``detail.structure_code`` (#939) names a structure miss stably, for ``tools/e06_tally.py``:
-``fallback:<cause>`` (with ``:<kinds>``, the sorted constraint kinds of the turn's
-``render_rejected`` events, when there are any) for a render the safe fallback replaced, else
-the first of ``structure_problems``; ``None`` when the structure is valid. A model error's
-line has no ``structure_code``: its ``model_error`` and ``reason`` name it.
+the first of ``render_problems``; ``None`` when the render's structure is valid.
+``detail.fallback_code`` names a released fallback: ``fallback:<cause>`` (with ``:<kinds>``,
+the sorted constraint classes of the turn's ``render_rejected`` events, when there are any);
+``None`` when none was released. A model error's line has neither: its ``model_error`` and
+``reason`` name it. ``detail.released_problems`` keeps the released turn's check
+(``structure_problems``), the rule before ADR-203.
 """
 
 from __future__ import annotations
@@ -44,7 +51,13 @@ from epistrel.core.settings_schema import LENGTH_TOKENS
 from epistrel.core.tables import events
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, Summary, register
-from epistrel.evals.suites.structured_turns import play, render_output, structure_problems
+from epistrel.evals.suites.structured_turns import (
+    play,
+    render_originals,
+    render_output,
+    render_problems,
+    structure_problems,
+)
 from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, RespondResult
 from epistrel.orchestrator.models.registry import GENERATION
 
@@ -55,6 +68,7 @@ CONFORMANCE = "nfr_qual_7.conformance"
 STRUCTURE = "e06.structure_valid"
 LENGTH = "e06.length_honoured"
 REPEATABLE = "e06.repeatable"
+RELEASED_FALLBACK = "e06.released_fallback"
 LENGTH_TOLERANCE = 1.25
 CHARS_PER_TOKEN = 4
 NOT_DETERMINISTIC_NOTE = (
@@ -101,14 +115,17 @@ def conforms(*, structure: bool, length: bool, repeated: bool | None, determinis
     return structure and length and (repeated is not False or not deterministic)
 
 
-def structure_code(problems: list[str], fallback_causes: list[str], kinds: list[str]) -> str | None:
+def structure_code(problems: list[str]) -> str | None:
     """A structure miss's stable code (module docstring); ``None``: no miss."""
-    if not problems:
+    return problems[0] if problems else None
+
+
+def fallback_code(fallback_causes: list[str], kinds: list[str]) -> str | None:
+    """A released fallback's stable code (module docstring); ``None``: none released."""
+    if not fallback_causes:
         return None
-    if fallback_causes:
-        code = f"fallback:{fallback_causes[0]}"
-        return f"{code}:{','.join(kinds)}" if kinds else code
-    return problems[0]
+    code = f"fallback:{fallback_causes[0]}"
+    return f"{code}:{','.join(kinds)}" if kinds else code
 
 
 _CONSTRAINT_CLASSES = (
@@ -176,13 +193,23 @@ class E06Suite(Suite):
             "valid say/think/do/latent structure, within the requested length, and, on a host "
             "that honours temperature 0, the same render again",
         ),
-        Metric(STRUCTURE, Rule.informational, description="a valid structure was released"),
+        Metric(
+            STRUCTURE,
+            Rule.informational,
+            description="the model's render had a valid structure (ADR-203)",
+        ),
         Metric(LENGTH, Rule.informational, description="the message kept the requested length"),
         Metric(
             REPEATABLE,
             Rule.informational,
             description="temperature 0 repeated the render call's output (in the verdict only "
             "on a deterministic host)",
+        ),
+        Metric(
+            RELEASED_FALLBACK,
+            Rule.informational,
+            description="the safe fallback replaced the render (a verifier outcome; not in the "
+            "verdict: ADR-203)",
         ),
     )
     reading_notes = (
@@ -193,19 +220,26 @@ class E06Suite(Suite):
         "owner's decision on #464). Repeatability counts only on a host that honours "
         "temperature 0 (its `deterministic` flag; #939, ADR-202): elsewhere `e06.repeatable` is "
         "measured and reported but leaves the verdict.",
+        "Structure is judged on the model's render, a repaired beat by its original text (#939, "
+        "ADR-203): a render the verifier's safe fallback replaced still conforms when the model "
+        "wrote a valid structure. `e06.released_fallback` reports how often the turn released "
+        "the fallback line instead; it is a verifier outcome and leaves the verdict.",
     )
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, ConformanceCase)  # noqa: S101 - load() validated it
         params = case.inputs.prompt_params.model_dump()
         result = await play(ctx, case.inputs.say, params)
-        problems = structure_problems(result)
+        originals = await render_originals(ctx, result)
+        problems = render_problems(result, originals)
         text = result.message.text
         length_ok = within_length(text, case.inputs.prompt_params.length)
         observations: dict[str, bool | None] = {
             STRUCTURE: not problems,
             LENGTH: length_ok,
         }
+        causes = [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK]
+        observations[RELEASED_FALLBACK] = bool(causes)
         repeated: bool | None = None
         if case.inputs.repeat:
             again = await play(ctx, case.inputs.say, params)
@@ -217,18 +251,19 @@ class E06Suite(Suite):
             repeated=repeated,
             deterministic=ctx.deterministic,
         )
-        causes = [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK]
         kinds = await rejected_kinds(ctx, result) if causes else []
         return Outcome(
             observations,
             output=text,
             detail={
                 "problems": problems,
+                "released_problems": structure_problems(result),
                 "chars": len(text),
                 "degradation": result.degradation,
                 "fallback_causes": causes,
                 "rejected_kinds": kinds,
-                "structure_code": structure_code(problems, causes, kinds),
+                "structure_code": structure_code(problems),
+                "fallback_code": fallback_code(causes, kinds),
                 "deterministic": ctx.deterministic,
             },
         )
@@ -240,7 +275,8 @@ class E06Suite(Suite):
         return Summary()
 
     def error_metrics(self, case: CaseModel) -> frozenset[str]:
-        """#530: structure, length and conformance; ``repeatable`` only on a repeat case."""
+        """#530: structure, length and conformance; ``repeatable`` only on a repeat case. A model
+        error releases no fallback, so ``released_fallback`` is not counted."""
         assert isinstance(case, ConformanceCase)  # noqa: S101 - load() validated it
         rows = {STRUCTURE, LENGTH, CONFORMANCE}
         return frozenset(rows | {REPEATABLE} if case.inputs.repeat else rows)
@@ -253,10 +289,12 @@ class E06Suite(Suite):
 __all__ = [
     "CONFORMANCE",
     "NOT_DETERMINISTIC_NOTE",
+    "RELEASED_FALLBACK",
     "ConformanceCase",
     "E06Suite",
     "conforms",
     "constraint_class",
+    "fallback_code",
     "structure_code",
     "within_length",
 ]

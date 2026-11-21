@@ -81,6 +81,9 @@ class Host(BaseModel):
 
     kind: Literal["ci", "local", "hosted"]
     """``hosted``: a provider's endpoint, not a machine of the owner's (#757)."""
+    deterministic: bool = True
+    """Whether the endpoint honours temperature 0 (#939, ADR-202): E-06's repeatability counts
+    toward its conformance only when it does."""
     hardware: str = ""
     server_version: str = ""
     endpoint: str | None = None
@@ -662,6 +665,8 @@ def render_markdown(report: Report) -> str:
     host = report.host
     host_bits: list[str] = [host.kind]
     host_bits += [bit for bit in (host.hardware, host.server_version) if bit]
+    if not host.deterministic:
+        host_bits.append("temperature 0 not honoured (`deterministic` off)")
     endpoint = f"`{report.adapter}`" + (f" at `{host.endpoint}`" if host.endpoint else "")
     if report.judge is not None:
         at = f" at `{report.judge.endpoint}`" if report.judge.endpoint else ""

@@ -23,7 +23,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
 | FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174, 193 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173, 199 |
-| FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
+| FR-TURN | §6 | 024, 043, 143, 166, 169, 170, 202 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -265,6 +265,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 199 | The structured commit batches its epistemic writes | Current | — |
 | 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Current | — |
 | 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
+| 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 
 ---
 
@@ -2248,6 +2249,22 @@ Tuning and its exit certification come after every milestone that may change a p
 **Consequences:**
 - The 2026-11-19/21 baseline records are no longer at the current fingerprints. Releases fail the current-fingerprint gate (ADR-200) until #819's exit run.
 - Tests: `tests/test_structured_headroom.py` (a stub `hidden_tokens` share fails a short render without the headroom and passes with it; the `thinking` extra on api.anthropic.com alone; the 400 fallback and its memory), `tests/evals/test_case_filter.py`.
+
+---
+
+### ADR-202 — E-06's repeatability counts only on a host that honours temperature 0
+**Status:** Accepted.
+**Context:** #939. E-06 counts a `repeat` case as conforming only when a second scratch story at temperature 0 gives the same render call output (the owner's decision on #464, docs/04 §8). On `claude-haiku-5-5`, `e06.repeatable` was 0% on every preset in the #818 baseline: the render is never reproduced. The 2026-11-21 trace shows hosted Haiku is not sent `temperature` at all, because the adapter drops sampling parameters after the 400 that api.anthropic.com returns for `temperature` together with `top_p`. Even when it is sent, a hosted endpoint does not promise deterministic sampling. Scoring repeatability there fails one case in five for a property of the provider rather than of the engine. The owner chose option (b) on 2026-11-16 (`/n8-plan M11`).
+**Decision:** Applied by #939 (NFR-QUAL-7, FR-TURN-1).
+- Every eval run's endpoint has a `deterministic` flag (`AdapterConfig.deterministic`; `--deterministic` / `--no-deterministic` on `evals run` and `evals certify`). By default a hosted endpoint is not deterministic (api.anthropic.com is not), and a local server (LM Studio) and the stub are. The report's host line says when the flag is off.
+- On a deterministic host, #464's rule stands: exact equality of the render call's output.
+- On any other host, `e06.repeatable` is still measured and reported, but `nfr_qual_7.conformance` leaves it out: a case conforms on a valid structure within its length. The E-06 section of the report then carries a note saying so.
+- E-06's journal lines record the flag (`detail.deterministic`), and a structure miss's stable code (`detail.structure_code`) for #939's tally (`tools/e06_tally.py`).
+**Alternatives considered:** (a) Keep exact repeatability everywhere: a hosted model could never pass NFR-QUAL-7, whatever the engine does. (c) A similarity threshold instead of equality: it would re-open #464's decision with no measured threshold to set it from.
+**Consequences:**
+- docs/04 §8's E-06 entry, e06's `reading_notes` and `docs/evals/README.md` state the host rule.
+- The flag is not preset configuration, so no fingerprint moves.
+- Tests: `tests/eval/test_e_06_m11.py` (a differing repeat on a non-deterministic host leaves conformance passing and is counted in `e06.repeatable`; on a deterministic host the same difference fails it).
 
 ---
 

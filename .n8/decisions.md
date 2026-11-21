@@ -15504,3 +15504,10 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939
 - **Process note (#939):** the plan comment was posted after the code was written (comment 7067033518), not before. Run 10's options comment and the owner's (c) had already fixed the approach.
   **Issue:** #939
+- **Decision (#939, the confirming run, 3 of 5 paid runs):** `certify --presets standard,full,max --suite e06` on hosted `claude-haiku-5-5`, 3 seeds, `--fresh`, at `70863be`.
+  - `nfr_qual_7.conformance` (mean ± SD): Standard 100.00% ± 0.00%, Full 100.00% ± 0.00%, Max 99.83% ± 0.29%. All pass on mean − SD ≥ 98%.
+  - Length is 100% on Standard and Full, 99.83% on Max. Max's one miss is a model error (`invalid_structure`).
+  - `e06.released_fallback` (report-only): Standard 19.50%, Full 24.67%, Max 22.21%, all `repair:do_not_assert`; the fallbacks go to #978 and #979.
+  - The reports are committed: `docs/evals/standard-9571b4ca2e03-2026-11-21.md`, `full-bca1e50d0af4-2026-11-21-2.md` (`-2`, since run 10's report holds the name), and `max-9b6b43379c0f-2026-11-21.md`.
+  - The run's certification records are not committed. They come from an E-06-only run, and committing them would mark the fingerprints certified (ADR-200). #819 certifies.
+  **Issue:** #939, #978, #979

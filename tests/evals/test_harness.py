@@ -358,7 +358,13 @@ def test_a_report_never_names_the_machine() -> None:
     is kept."""
     config = AdapterConfig(hardware="Apple M3 Max, 128 GB", server_version="LM Studio 0.4.26")
     host = host_of(config)
-    assert set(host.model_dump()) == {"kind", "hardware", "server_version", "endpoint"}
+    assert set(host.model_dump()) == {
+        "kind",
+        "hardware",
+        "server_version",
+        "endpoint",
+        "deterministic",
+    }
     report = _report("m", "2026-10-17", {"x.rate": Verdict.passed})
     report.host = host
     markdown = render_markdown(report)

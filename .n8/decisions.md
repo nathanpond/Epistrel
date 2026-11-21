@@ -15459,7 +15459,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939
 - **Fix (#939, Rule 1, the E-06/E-07 harness):** `structured_turns.play` never placed its cast. The run's preset routes perception, and an unplaced character perceives nothing, so every E-06 and E-07 render was sent the bare user message `Wren:` without the player's line. That is 705 + 36 renders on E-06 and 540 + 29 on E-07 in the #818 Full trace, and all 721 first-attempt E-06 renders in #735's rerun. Haiku then answered an empty turn: it reasoned about it in prose ("The message is just a single "ö"…") or invented the scene.
   - The fix places Wren and Maren at one place, `the common room` (`place_cast`), as #572 did for `scenario_play`.
-  - Regression test: `tests/eval/test_e_06_m11.py::test_e_06_m11__render_hears_the_player`. Its complement, with no placement, still gets the bare `Wren:`.
+  - Regression test: `tests/eval/test_e_06.py::test_e_06__m11_render_hears_the_player`. Its complement, with no placement, still gets the bare `Wren:`.
   - Every E-06/E-07 figure recorded before this fix measured a turn with no player input.
   - The strict rule itself is the owner's decision on #579 (2026-10-26, option (a)), so no engine issue is filed. E-12's harness was fixed then, and E-06/E-07's was missed.
   **Issue:** #939, #579

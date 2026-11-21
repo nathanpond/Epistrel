@@ -2264,7 +2264,7 @@ Tuning and its exit certification come after every milestone that may change a p
 **Consequences:**
 - docs/04 §8's E-06 entry, e06's `reading_notes` and `docs/evals/README.md` state the host rule.
 - The flag is not preset configuration, so no fingerprint moves.
-- Tests: `tests/eval/test_e_06_m11.py` (a differing repeat on a non-deterministic host leaves conformance passing and is counted in `e06.repeatable`; on a deterministic host the same difference fails it).
+- Tests: `tests/eval/test_e_06.py`, the `test_e_06__m11_*` tests (a differing repeat on a non-deterministic host leaves conformance passing and is counted in `e06.repeatable`; on a deterministic host the same difference fails it).
 
 ---
 

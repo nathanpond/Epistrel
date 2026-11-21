@@ -3,6 +3,7 @@
   "const:epistrel.core.settings_schema.DEFAULT_LITE_SUMMARY_MAX_TOKENS": "81a83544cf93c245178cbc1620030f1123f435af867c79d87135983c52ab39d9",
   "const:epistrel.core.settings_schema.LENGTH_TOKENS": "17302cc2605132728a2ce217bfd75b523f617f01126bb7e5e48489adad998fec",
   "const:epistrel.core.settings_schema.MAX_LENGTH_TOKENS": "b090147020e033534635010c4f7eb6fc270d44e5df67ea9e744a8087df9ca106",
+  "const:epistrel.core.states.effects.CLOCK_LINE": "686e0ea9060d093bac5b6da8152bcad9066dbebbb9644b94cf8bdf6f5e88001d",
   "const:epistrel.core.summary.ACTIVE": "db0fb2bf5ebc424454c3e11b5ee8bfb43af24a52e561aa49e94143831dc6fd93",
   "const:epistrel.core.summary.CANDIDATES": "3788658cecc0d3a36ca047ef0eac668cd22edbb8005fb500481738ed0c829cfc",
   "const:epistrel.core.summary.INCLUSION_CHANGED_SETTING": "8cb373eb0f597c9f471f8cabd0f75b2d32d94b164d146ae47ab12dcb0010bfb1",
@@ -494,6 +495,7 @@
   "schema:rewrite_record": "2151bf04a05451c40f5dc19bdb2ad8d84e5047a76492a7a49a98f35ed3e5fa29",
   "schema:salience_detection": "502c3d670a604f6327c011b3f8fad146eba33132b5d4c972f5603f2e30861869",
   "schema:time_estimation": "4e65c457f59878c92277b50361ca791f1bdd61c5e806226209e76570dfd92279",
+  "source:epistrel.core.states.effects.syntax": "0b29b02ea3b206ad4b305e6bebaae2f62ebb177f01266356062f67972fe450e9",
   "source:epistrel.orchestrator.models.openai_compatible.provider_headers": "c56b67e7d902e5b19ea42bcf865677a3602c641394beac3bddf7209750639165",
   "source:epistrel.orchestrator.models.openai_compatible.request_body": "0a411c266be90b2e3b873b1dd080df75805bd33c1d08161d9328fefa3ea9bdb6",
   "source:epistrel.orchestrator.models.openai_compatible.sdk_args": "bdec8063ba8382add821107aef5579716d1bea7ac9699d6f605c62703bc235cd",
@@ -504,5 +506,5 @@
   "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "063c69c6770a8b9769701fa0901fbb4716ee6f02d5c8c12548af2f3f110a0155",
   "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd"
  },
- "revision": 3
+ "revision": 4
 }

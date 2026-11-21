@@ -2,6 +2,12 @@
 (the innkeeper) on ``Structured``, one ``Engine.respond`` with the player's line, read at
 the omniscient viewpoint so every channel (say, think, do, latent) is visible.
 
+Both are placed in the inn's common room first (``PLACE``, #939). The run's preset routes
+perception, and an unplaced character perceives nothing (``core.epistemic.perception``), so
+without the placement Maren's render never got the player's line: its user message was the
+bare ``Wren:``, on every E-06 and E-07 render of the 2026-11-19 baseline (#572 fixed the same
+gap in ``scenario_play``).
+
 ``structure_problems(result)`` is FR-TURN-1's check on what the turn released: at least one
 rendered beat, every beat on a known channel with text, at least one ``say`` or ``do``, a
 non-empty message, and no safe fallback (a render the output gate replaced is not the
@@ -19,6 +25,10 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from epistrel.core.mutation import FactRequest
+from epistrel.core.propositions import store
+from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.core.tables import events
 from epistrel.evals import scenes
@@ -37,6 +47,8 @@ CAST = (
         true_age=46,
     ),
 )
+PLACE = "the common room"
+LOCATED_AT = CORE_BY_NAME["located_at"].id
 CHANNELS = frozenset({"say", "think", "do", "latent"})
 RENDER_KINDS = frozenset({"beat_say", "beat_think", "beat_do", "beat_latent"})
 
@@ -47,6 +59,7 @@ async def play(
     """One structured turn of a new scratch story (see the module docstring)."""
     created = await ctx.story(StorySpec(characters=list(CAST)))
     await scenes.structured(ctx.engine, ctx.principal, created.story_id)
+    await place_cast(ctx, created.story_id, [c.id for c in created.characters])
     actor = next(c.id for c in created.characters if c.name == PLAYER)
     request = RespondRequest.model_validate(
         {
@@ -57,6 +70,27 @@ async def play(
         }
     )
     return await ctx.engine.respond(ctx.principal, created.story_id, request)
+
+
+async def place_cast(ctx: CaseContext, story_id: str, cast: Sequence[str]) -> str:
+    """``cast`` located at ``PLACE`` (the author's facts; see the module docstring); the
+    place's id."""
+    async with ctx.engine.db.begin() as conn:
+        place = await store.add_entity(conn, story_id, "place", PLACE)
+    for character in cast:
+        await ctx.engine.commit_fact(
+            ctx.principal,
+            story_id,
+            FactRequest(
+                proposition=Proposition(
+                    subject_id=character,
+                    predicate_id=LOCATED_AT,
+                    object_id=place,
+                    valid_time=Interval.of(None, None),
+                )
+            ),
+        )
+    return place
 
 
 def rendered(result: RespondResult) -> list[Any]:
@@ -118,8 +152,10 @@ async def render_output(ctx: CaseContext, result: RespondResult) -> RenderKey:
 __all__ = [
     "CAST",
     "INNKEEPER",
+    "PLACE",
     "PLAYER",
     "RenderKey",
+    "place_cast",
     "play",
     "render_key",
     "render_output",

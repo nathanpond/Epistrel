@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncEngine
 from tools.e06_tally import code_of, refusals, render, shape, tally
 
 from epistrel.evals.report import Host
@@ -239,3 +240,102 @@ def test_e_06_m11__refusal_shapes() -> None:
             "beats.N.effects.N.state: the world clock moves only by a time advance",
         ): 1
     }
+
+
+def test_e_06_m11__clock_example() -> None:
+    """#939's largest refusal shape on Full: with the world clock as the only tracked value, the
+    effect syntax's example was a ``change`` on it, which the render refuses. The syntax now
+    gives the time-advance line instead, and with another State listed the example is over
+    that State and the clock line follows.
+
+    Complement asserted: the example a ``gold`` State gets is still a ``change`` on it."""
+    from epistrel.core.enums import StateType
+    from epistrel.core.states.effects import CLOCK_LINE, syntax
+    from epistrel.core.states.model import StateDefinition
+
+    clock = StateDefinition(name="world_clock", type=StateType.CLOCK, unit="minutes")
+    gold = StateDefinition(name="gold", type=StateType.NUMBER)
+    refused = '"kind": "change", "state": "world_clock"'
+    alone = syntax([clock], character=True)
+    assert alone == CLOCK_LINE
+    assert refused not in alone
+    both = syntax([clock, gold], character=True)
+    assert refused not in both
+    assert '{"kind": "change", "state": "gold", "delta": -1' in both
+    assert both.endswith(CLOCK_LINE)
+    assert CLOCK_LINE not in syntax([gold], character=True)
+
+
+async def _render_user_lines(
+    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """E-06's stub run of one case; the user messages its renders were sent."""
+    from epistrel.evals import SUITES
+    from epistrel.orchestrator.models import stub as stub_mod
+    from tests.eval.suite_support import SETS, stub_run
+
+    seen: list[str] = []
+    original = stub_mod.StubAdapter.complete
+
+    async def spy(self: Any, purpose: str, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        schema = args[1] if len(args) > 1 else kwargs.get("response_schema")
+        if purpose == "generation" and schema is not None and schema.__name__.endswith("Render"):
+            seen.extend(m.content for m in messages if m.role == "user")
+        return await original(self, purpose, messages, *args, **kwargs)
+
+    monkeypatch.setattr(stub_mod.StubAdapter, "complete", spy)
+    suite = SUITES["e06"]
+    cases = [c for c in suite.load(SETS) if c.id == "generation_conformance-length-medium-0142"]
+    await stub_run(pg_url, engine, suite, cases=cases)
+    return seen
+
+
+@pytest.mark.integration
+async def test_e_06_m11__render_hears_the_player(
+    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#939: E-06's story places Wren and Maren together, so Maren's render is sent the
+    player's line (``Wren: "Who else is staying at the inn?"``); before the fix every E-06
+    and E-07 render got the bare ``Wren:``.
+
+    Complement asserted: with the placement skipped, the render gets the bare ``Wren:`` (the
+    run's preset routes perception, and an unplaced character perceives nothing)."""
+    from epistrel.evals.suites import structured_turns
+
+    heard = await _render_user_lines(pg_url, engine, monkeypatch)
+    assert heard
+    assert all("Who else is staying at the inn?" in line for line in heard), heard
+
+    async def unplaced(*_: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(structured_turns, "place_cast", unplaced)
+    deaf = await _render_user_lines(pg_url, engine, monkeypatch)
+    assert deaf
+    assert all(line.strip() == "Wren:" for line in deaf), deaf
+
+
+def test_e_06_m11__tally_failures_file() -> None:
+    """An ``evals run``'s failures file holds misses only: with ``total`` the shares are over
+    the run's outcomes, and the repeat part has no denominator."""
+    miss = {CONFORMANCE: False, "e06.structure_valid": False, "e06.length_honoured": True}
+    result = tally([_line(miss, structure_code="fallback:repair")] * 3, total=600)
+    assert result["outcomes"] == 600
+    assert result["parts"]["structure"] == (3, 600)
+    assert result["parts"]["repeat"] == (0, 0)
+    assert "`fallback:repair` | 3 | 0.50% | yes" in render(result, None)
+
+
+def test_e_06_m11__constraint_class() -> None:
+    """A rejected render's constraint is coded by the ladder's wording class, never its text:
+    an unpermitted claim keeps only its denial reason."""
+    from epistrel.evals.suites.e06_conformance import constraint_class
+
+    secret = "Do not introduce facts about Tomas: it is not this speaker's to tell (not in canon)."
+    assert constraint_class("do_not_assert", secret) == "do_not_assert:unpermitted(not_in_canon)"
+    assert constraint_class("do_not_assert", "Do not assert that Tomas is a smith.") == (
+        "do_not_assert:contradicted_or_undecided"
+    )
+    assert constraint_class("do_not_assert", "Gold cannot go below 0.") == "do_not_assert:state"
+    assert constraint_class("policy", "anything") == "policy"
+    assert "Tomas" not in constraint_class("do_not_assert", secret)

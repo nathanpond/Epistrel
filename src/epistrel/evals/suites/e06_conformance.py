@@ -33,6 +33,7 @@ line has no ``structure_code``: its ``model_error`` and ``reason`` name it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -110,8 +111,34 @@ def structure_code(problems: list[str], fallback_causes: list[str], kinds: list[
     return problems[0]
 
 
+_CONSTRAINT_CLASSES = (
+    ("Do not assert what another character privately", "think_leak"),
+    ("Do not claim to remember", "confabulation"),
+    ("Do not assert what this beat could not support", "unsupported"),
+    ("Do not settle that", "hidden"),
+    ("Do not introduce facts about", "unpermitted"),
+    ("Do not assert that", "contradicted_or_undecided"),
+)
+_REASON = re.compile(r"\(([a-z ]+)\)\.$")
+
+
+def constraint_class(kind: str, text: str) -> str:
+    """A rejected render's constraint as a stable code with no story content (#939): its kind,
+    and for ``do_not_assert`` the repair ladder's wording class (``ladder._constraint``), an
+    unpermitted claim with its denial reason (an enum value)."""
+    if kind != "do_not_assert":
+        return kind
+    for prefix, name in _CONSTRAINT_CLASSES:
+        if text.startswith(prefix):
+            if name == "unpermitted" and (found := _REASON.search(text)):
+                return f"{kind}:{name}({found.group(1).replace(' ', '_')})"
+            return f"{kind}:{name}"
+    return f"{kind}:state"
+
+
 async def rejected_kinds(ctx: CaseContext, result: RespondResult) -> list[str]:
-    """The sorted constraint kinds of the turn's ``render_rejected`` events (no text)."""
+    """The sorted constraint classes of the turn's ``render_rejected`` events
+    (``constraint_class``: no story text)."""
     operation = next((b.operation_id for b in result.beats), None)
     if operation is None:
         return []
@@ -125,7 +152,9 @@ async def rejected_kinds(ctx: CaseContext, result: RespondResult) -> list[str]:
         for (payload,) in rows:
             for constraint in (payload or {}).get("constraints") or ():
                 if isinstance(constraint, dict) and constraint.get("kind"):
-                    found.add(str(constraint["kind"]))
+                    found.add(
+                        constraint_class(str(constraint["kind"]), str(constraint.get("text") or ""))
+                    )
     return sorted(found)
 
 
@@ -227,6 +256,7 @@ __all__ = [
     "ConformanceCase",
     "E06Suite",
     "conforms",
+    "constraint_class",
     "structure_code",
     "within_length",
 ]

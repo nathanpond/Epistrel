@@ -2,7 +2,10 @@
 results journal and, when given, its per-call trace (#737).
 
 ``uv run python tools/e06_tally.py <journal.jsonl> [--calls <run.calls.jsonl.gz>]`` prints a
-Markdown tally:
+Markdown tally. The first argument is a ``certify`` results journal (every outcome), or an
+``evals run``'s ``<run_id>-failures.jsonl`` (its misses only) with ``--total``, the run's
+case-seed outcome count, as the denominator (a part's misses are then over ``--total``, and
+the repeat part has no denominator):
 
 - **by part:** of the E-06 case-seed outcomes, how many miss conformance, structure, length
   and (repeat cases) repeatability;
@@ -84,7 +87,9 @@ def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
                     continue  # a torn last line (the journal's durability note)
 
 
-def tally(lines: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def tally(lines: Iterable[Mapping[str, Any]], total: int | None = None) -> dict[str, Any]:
+    """Misses by part and by structure code; ``total``: the outcome count of a failures file
+    (module docstring)."""
     outcomes = [line for line in lines if line.get("suite") == SUITE]
     parts: dict[str, tuple[int, int]] = {}
     for name, metric in PARTS:
@@ -92,9 +97,12 @@ def tally(lines: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             line for line in outcomes if (line.get("observations") or {}).get(metric) is not None
         ]
         missed = sum(1 for line in seen if (line.get("observations") or {}).get(metric) is False)
-        parts[name] = (missed, len(seen))
+        if total is None:
+            parts[name] = (missed, len(seen))
+        else:
+            parts[name] = (missed, 0 if name == "repeat" else total)
     codes = Counter(code for line in outcomes if (code := code_of(line)) is not None)
-    return {"outcomes": len(outcomes), "parts": parts, "codes": codes}
+    return {"outcomes": len(outcomes) if total is None else total, "parts": parts, "codes": codes}
 
 
 def refusals(calls: Iterable[Mapping[str, Any]]) -> Counter[tuple[str, str]]:
@@ -146,9 +154,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("journal", type=Path, help="the run's results journal (.jsonl)")
     parser.add_argument("--calls", type=Path, help="the run's call trace (.calls.jsonl.gz)")
+    parser.add_argument(
+        "--total", type=int, help="the run's case-seed outcomes, for a failures file (misses only)"
+    )
+    parser.add_argument("--session", help="only the call trace's records of this session")
     args = parser.parse_args(argv)
-    result = tally(read_jsonl(args.journal))
-    shapes = refusals(read_jsonl(args.calls)) if args.calls else None
+    result = tally(read_jsonl(args.journal), args.total)
+    calls = read_jsonl(args.calls) if args.calls else None
+    if calls is not None and args.session:
+        calls = (c for c in calls if c.get("session") == args.session)
+    shapes = refusals(calls) if calls is not None else None
     sys.stdout.write(render(result, shapes) + "\n")
     return 0
 

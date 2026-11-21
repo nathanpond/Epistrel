@@ -62,6 +62,7 @@ from epistrel.core.states.authorize import (
 )
 from epistrel.core.states.contingency import NOBODY, contingency_of
 from epistrel.core.states.model import (
+    WORLD_CLOCK,
     StateDefinition,
     Undefined,
     UndefinedType,
@@ -1118,9 +1119,23 @@ def _initial(definition: StateDefinition) -> Value | UndefinedType:
     return Undefined if definition.initial_value is None else definition.initial_value
 
 
+CLOCK_LINE: Final = (
+    "The world clock is never a `change`: time moves only by a `time_advance` effect "
+    '(`{"kind": "time_advance", "state": "world_clock", "minutes": <minutes>, "reason": <why>}`).'
+)
+"""#939: the line that replaces the example when the world clock is listed. E-06's Full run had
+the world clock as the only tracked value, so the example was a ``change`` on it, which the
+render then refused (``the world clock moves only by a time advance``)."""
+
+
 def syntax(definitions: Sequence[StateDefinition], *, character: bool) -> str:
-    """How to declare an effect, with one example over the first State listed."""
-    first = definitions[0] if definitions else None
+    """How to declare an effect, with one example over the first State listed that is not the
+    world clock (#939: the clock moves only by a time advance, ``CLOCK_LINE``)."""
+    clock = any(d.name == WORLD_CLOCK for d in definitions)
+    changeable = [d for d in definitions if d.name != WORLD_CLOCK]
+    if clock and not changeable:
+        return CLOCK_LINE
+    first = changeable[0] if changeable else None
     example = '{"kind": "change", "state": "gold", "delta": -5, "reason": "paid for a meal"}'
     if first is not None:
         amount: str
@@ -1142,19 +1157,21 @@ def syntax(definitions: Sequence[StateDefinition], *, character: bool) -> str:
         if character
         else "A per-character value names the character's id in `scope_key`."
     )
-    return (
+    text = (
         "When a beat changes one of these values, declare it on that beat in `effects`: "
         '`{"kind": "change", "state": <name>, "delta": <amount> or "value": <new value>, '
         f'"reason": <why>}}`. {whose} For example: `{example}`. Never change a value only in '
         "prose. An action the value cannot cover is an attempt that fails: narrate it failing "
         "and declare nothing."
     )
+    return f"{text} {CLOCK_LINE}" if clock else text
 
 
 __all__ = [
     "AMOUNT",
     "ANY_CHARACTER",
     "CHARACTER_SOURCE",
+    "CLOCK_LINE",
     "EFFECT_UNRESOLVED",
     "EXTERNAL_OUTCOME_UNCONFIRMED",
     "EXTERNAL_VALUE",

@@ -15461,8 +15461,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The fix places Wren and Maren at one place, `the common room` (`place_cast`), as #572 did for `scenario_play`.
   - Regression test: `tests/eval/test_e_06_m11.py::test_e_06_m11__render_hears_the_player`. Its complement, with no placement, still gets the bare `Wren:`.
   - Every E-06/E-07 figure recorded before this fix measured a turn with no player input.
-  **Issue:** #939
+  - The strict rule itself is the owner's decision on #579 (2026-10-26, option (a)), so no engine issue is filed. E-12's harness was fixed then, and E-06/E-07's was missed.
+  **Issue:** #939, #579
 - **Fix (#939, Rule 1, the effect-syntax example):** `core.states.effects.syntax` built its example over the first tracked State. In E-06's story that is the world clock, so the prompt showed `{"kind": "change", "state": "world_clock", …}`, which the render validator refuses ("the world clock moves only by a time advance"). That was the largest validator refusal in #735's rerun: 59 retries.
   - The example now skips the clock. When the clock is listed, `CLOCK_LINE` follows, saying time moves only by a `time_advance`. With the clock alone, `CLOCK_LINE` replaces the example.
   - This is core text, outside the planner's list (`structured_generation.j2`, `render.py`), but it is the text the template renders as `tracked_syntax`. `CLOCK_LINE` and `syntax` join the guarded set.
+  **Issue:** #939
+- **Decision (#939, the tally run, 1 of 5 paid runs):** Full, E-06, 3 seeds, at `0bdad2b`. Report: `docs/evals/full-9c73abc94c1f-2026-11-21-2.md`.
+  - Conformance 81.17%, length 100%, 0 model errors.
+  - All 113 misses are `fallback:repair:do_not_assert`.
+  - Refusal shapes: prose 66 and world clock 30. Both come from the harness bug, which this run exposed.
+  - Posted on #939 (comment 7063191306).
+  **Issue:** #939
+- **Decision (#939, iteration 1, 2 of 5 paid runs):** Full, E-06, 3 seeds, at `00ae51d`. Report: `docs/evals/full-bca1e50d0af4-2026-11-21.md`.
+  - Conformance 74.50%, length 100%, 0 model errors.
+  - All 153 misses are the safe fallback over a valid render: unsupported 20.83%, contradicted or undecided 11.83%, unpermitted (player character) 10.33%.
+  - Prose fell from 66 to 2, and the world clock from 30 to 0.
+  **Issue:** #939
+- **Decision (#939, no wording iteration 2):** the remaining misses are verifier and permission outcomes on ordinary beats, which template wording can't reach. Filed as #978 (an unnormalizable everyday-object claim is repaired under a constraint that names nothing) and #979 (an action toward the player's character is denied as `player_character`).
+  - The first-attempt validator shapes at ≥ 0.5% (`step` 1.67%, narrator `kind` 1.67%, two at 0.50%) all recover on retry and cost no case, so they get no wording change.
+  - The AC's 0.5% share is read over case-level outcomes, the planner's definition.
+  - The confirming 3-preset run is not spent until the owner picks an option.
+  **Issue:** #939, #978, #979
+- **Blocker (#939):** `blocked` and `needs-owner-action`. NFR-QUAL-7 ≥ 98% isn't reachable within the story's wording-only scope. Options on #939: (a) engine fixes first (#978, #979); (b) E-06 scores structure on the render, with the fallback as an informational row (an ADR); (c) both, which is my recommendation.
   **Issue:** #939

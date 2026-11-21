@@ -15436,3 +15436,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #750
 - **Decision (#750, a test failure not caused by this story):** `tests/perf/test_p_05.py::test_p_05` failed in the local pipeline-reader run. It fails the same way on `d80c2d7`, without #750, when run after `tests/integration/test_i_18.py` alone (`assert 2 == (1 + 0)` on `test_i_18__m7_skips`'s census entry). It depends on run order and is gated by CI's shards. `test_p_04__multi_smoke` is the known local-only failure.
   **Issue:** #750
+- **Merge (/n8-exec M11 run 9):** PR #974 squash-merged as `140c032` after CI passed 27 of 27. It closed #750 and #970 (linked set `[750, 970]`, closes settled, no casualties). #735 stays open with `needs-owner-action`: its prose-answer shape is the owner's call (recommendation on #735: close it and carry the shape in #939). Paid runs used in run 9: 2 of 5. Fingerprints are now Lite `c3f38fd00ba2`, Standard `7ee8bc44b8b1`, Full `9c73abc94c1f` and Max `6cf00825b56a` (`MODEL_CALL_REVISION` 3), all uncertified, so the release gate fails until #819.
+  **Issue:** #735, #750, #970

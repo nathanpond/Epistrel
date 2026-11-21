@@ -15387,3 +15387,28 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #818, #735, #750, #939
 - **Merged:** PR #971 squash-merged as `1195901`, with CI all green. Floor figures were posted on #735, #939, #750, #528, #540, #529, #747, #748, #749 and #474, and NFR-QUAL-2 on #935. #818 was closed by hand with an evidence comment, all of its AC ticked; the PR carried no `Closes`. Paid runs by the agent in run 8: 0 (the baseline was the owner's own run).
   **Issue:** #818
+
+## /n8-exec M11 run 9 (#735, #970) — 2026-11-21
+
+- **Decision:** run 9 takes #735 first (the M11 plan's next unblocked story now that #818's baseline is merged), then #970 (a harness bug that would break #819's exit run the same way it broke #818's). Branch `milestone/m11-run9-735` from `main` at `534318b`. Preflight: M1–M10 closed; no `## Ad-hoc` entry since `/n8-replan M11` (2026-11-17). Run 8's finding (renders run parse-validate-retry on Anthropic, not strict) changes #735's premise, not its AC: a `length` finish ends a parse-validate-retry render the same way, and the headroom and `thinking` fix both modes. Making the render schema strict-compatible stays the owner's call (posted on #735 in run 8) and is not done here.
+  **Issue:** #735, #935
+- **Process slip (#735):** the plan comment went up after the code was drafted, not before. The comment says so.
+  **Issue:** #735
+- **Decision (#735, planner discretion: the operator cap):** an operator `max_tokens` on the purpose's own model-config row does not cap the headroom ceiling. `EffectiveConfig` does not record which row a value came from, and a call's own params already override the config's (`ModelParams.merged`), so today's precedence is kept. ADR-201 records this as a rejected alternative.
+  **Why:** a row-origin flag would change `EffectiveConfig` and the resolver for a cap no preset sets. Cost if wrong: an operator who sets a purpose cap below 1,024 + the length figure sees the larger ceiling on structured calls.
+  **Issue:** #735
+- **Decision (#735):** `thinking` is carried in `request_body()` as a top-level key, so the trace records the wire body as sent, and `sdk_args()` moves it into the SDK's `extra_body` at the call. The 400 check (`rejects_thinking`) runs before the sampling and legacy-`max_tokens` checks. The memory `_no_thinking` is cleared when the configuration revision moves.
+  **Issue:** #735
+- **Decision (#735):** `MODEL_CALL_REVISION` 1 → 2 (owner's round-two decision). The guarded set gains `sends_thinking`, `sdk_args` and `structured.with_headroom` (sources), plus `THINKING_DISABLED` and `STRUCTURED_HEADROOM_TOKENS` (found as constants). The snapshot now has 502 entries. New fingerprints: Standard `34b44b18b61e`, Full `c74a3d9da152`, Max `77867d454b08`, Lite `ededc0fe39fe`. INDEX.md was regenerated, and every preset is uncertified until #819. ADR-201.
+  **Issue:** #735, #819
+- **Decision (#735, test plan):** the red/green test monkeypatches `STRUCTURED_HEADROOM_TOKENS` to 0 for its red half (the old cap), instead of inlining the old formula. Since the headroom is added centrally, a test-side formula would still get the headroom. The new tests carry no part marker, like `tests/test_length_rules.py`. A marker in a file with no docs/04 test id fails `check-traceability`.
+  **Issue:** #735
+- **Decision (#735, `--case`):** `evals run --case ID` keeps exact ids in every suite of the run, so a suite with no match plays nothing (the plan's rule). The targeted rerun therefore passes E-06's 200 ids as `--case` too, which keeps it to one invocation. A `--case` run never merges into the same day's run. A later `--suite` run that would merge into a partial run starts its own id instead. `Report.only_cases` names the cases, and the report shows a **Partial** line.
+  **Issue:** #735
+- **Rule 1 (#735):** `tests/test_structured_output.py::test_a_schema_error_retry_keeps_the_calls_temperature_a_prose_one_does_not` pinned the retry's `max_tokens` at the caller's 64. It now pins 64 + headroom on both attempts, which is the intended behaviour.
+  **Issue:** #735
+- **Decision (#970, the fix shape; the story left it open):** both (a) and (b), plus the error label. (a) `scenes.pin_embedding` probes the embedding once and runs `pin_first` before the run creates any story, including the judge calibration's. (b) `scenes.drop_partition` runs each deleted scratch story's queued `memory_partition_drop` job in process, inside the scratch DDL lock (#953), as `drain_embeddings` runs `embed`. `sweep()` also runs `sweep_orphans` at the run's start and end. A drop that fails (a lock timeout under concurrency) is logged and left to its retries, never the case's error. (c) `error_label` records a failed in-process job as `<Class> (<SQLSTATE> <condition>)`, never the server's message, since a message can quote row values (invariant 3). The production worker's job errors are unchanged (still the class name), because the AC's failure was the harness's.
+  **Why:** (b) alone bounds the partition count and `/dev/shm`, and (a) alone removes the retype cost. Together, a resumed or fresh three-preset run needs neither workaround.
+  **Issue:** #970
+- **Decision (#735, #970):** `evals/runner.py` carries both stories' changes (`--case` and the drain), so one commit carries `Refs #735` and `Refs #970`, as the skill allows.
+  **Issue:** #735, #970

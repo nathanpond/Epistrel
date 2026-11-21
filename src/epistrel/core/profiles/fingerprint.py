@@ -65,8 +65,9 @@ from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
-MODEL_CALL_REVISION: Final[int] = 1
-"""The engine's model-call revision, a fingerprint input (#818; ADR-200). Bump it with any
+MODEL_CALL_REVISION: Final[int] = 2
+"""The engine's model-call revision, a fingerprint input (#818; ADR-200). 2: #735's structured
+headroom and api.anthropic.com's ``thinking`` extra (ADR-201). Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

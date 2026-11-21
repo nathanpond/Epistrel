@@ -18,7 +18,11 @@ and later accept only their default sampling; the model's default then applies).
 native Anthropic API, which answers a request without it with a 400 (#235). A structured call
 to ``api.anthropic.com`` sends ``json_schema.strict: true`` with the schema's strict wire form,
 as that endpoint refuses any other (#761, ``provider_schema``); every other endpoint's request is
-unchanged. SDK
+unchanged. Every chat call to ``api.anthropic.com`` (probe, capability and judge calls included)
+also sends ``thinking: {"type": "disabled"}`` (#735, ADR-201): the model's hidden reasoning
+counted against ``max_tokens`` and ended short structured renders before their JSON closed. A
+400 naming ``thinking`` is retried once without it and remembered per endpoint and model until
+the ``config_revision`` moves; the trace keeps both requests (#737). SDK
 exceptions escape as themselves; the Model Access Layer maps them
 (``errors.map_provider_error``), and a 200 that is not a chat completion raises
 ``ProviderGarbage``.
@@ -70,6 +74,7 @@ def request_body(
     legacy_max_tokens: bool = False,
     sampling: bool = True,
     strict: bool = False,
+    thinking: bool = False,
 ) -> dict[str, Any]:
     """The Chat Completions arguments (everything but the timeout); without ``sampling``, no
     ``temperature`` or ``top_p``. With a ``response_schema``, ``response_format`` is
@@ -78,13 +83,16 @@ def request_body(
     strict wire form (``provider_schema.strict_wire_schema``). A schema with no wire form is sent
     as without ``strict``; ``structured_call`` never asks for one (``json_schema_mode``). A
     message with image parts is sent as a content array of ``text`` and ``image_url`` parts
-    (#258)."""
+    (#258). With ``thinking`` (an api.anthropic.com endpoint, #735) the body carries
+    ``THINKING_DISABLED`` as ``thinking``; ``_send`` passes it through the SDK's ``extra_body``."""
     body: dict[str, Any] = {
         "model": model,
         # A multimodal message's parts go as OpenAI's content array (#258).
         "messages": [m.wire() for m in messages],
         "stream": False,
     }
+    if thinking:
+        body["thinking"] = dict(THINKING_DISABLED)
     if sampling and params.temperature is not None:
         body["temperature"] = params.temperature
     if sampling and params.top_p is not None:
@@ -106,6 +114,9 @@ def request_body(
     return body
 
 
+THINKING_DISABLED: dict[str, str] = {"type": "disabled"}
+"""The ``thinking`` body extra every chat call to api.anthropic.com carries (#735, ADR-201)."""
+
 ANTHROPIC_VERSION = "2023-06-01"
 """The ``anthropic-version`` header Anthropic's ``GET /v1/models`` requires."""
 
@@ -116,6 +127,21 @@ def provider_headers(base_url: str) -> dict[str, str]:
     if is_anthropic(base_url):
         return {"anthropic-version": ANTHROPIC_VERSION}
     return {}
+
+
+def sends_thinking(base_url: str) -> bool:
+    """Whether a chat call to ``base_url`` carries ``THINKING_DISABLED`` (api.anthropic.com
+    only, #735)."""
+    return is_anthropic(base_url)
+
+
+def rejects_thinking(exc: openai.BadRequestError) -> bool:
+    """Whether a 400 names ``thinking`` (case-insensitive, in its message or JSON body)."""
+    try:
+        body = json.dumps(exc.body) if exc.body is not None else ""
+    except TypeError, ValueError:
+        body = ""
+    return "thinking" in f"{exc.message} {body}".casefold()
 
 
 def rejects_sampling(exc: openai.BadRequestError) -> bool:
@@ -200,6 +226,9 @@ class OpenAICompatibleAdapter:
         self._legacy_max_tokens: set[str] = set()
         self._default_sampling: set[tuple[str, str]] = set()
         """``(base_url, model)`` pairs that refused ``temperature``/``top_p``."""
+        self._no_thinking: set[tuple[str, str]] = set()
+        """``(base_url, model)`` pairs that refused ``thinking`` (#735), until the revision
+        moves."""
         self.closed_clients = 0
         """How many superseded clients have been closed (observable by tests)."""
 
@@ -209,6 +238,7 @@ class OpenAICompatibleAdapter:
             # closed now if idle, else by the last of its in-flight calls (``_release``).
             superseded, self._clients = list(self._clients.values()), {}
             self._revision = config.revision
+            self._no_thinking.clear()
             for old in superseded:
                 old.retired = True
                 if old.in_flight == 0:
@@ -280,6 +310,7 @@ class OpenAICompatibleAdapter:
         timeout = effective.timeout or DEFAULT_TIMEOUT_S
         legacy = base_url in self._legacy_max_tokens
         sampling = (base_url, model) not in self._default_sampling
+        thinking = sends_thinking(base_url) and (base_url, model) not in self._no_thinking
         started = time.perf_counter()
         while True:
             body = request_body(
@@ -290,11 +321,12 @@ class OpenAICompatibleAdapter:
                 legacy_max_tokens=legacy,
                 sampling=sampling,
                 strict=is_anthropic(base_url),
+                thinking=thinking,
             )
             traced = call_trace.exchange(body)
             sent_at = time.perf_counter()
             try:
-                completion = await client.chat.completions.create(**body, timeout=timeout)
+                completion = await client.chat.completions.create(**sdk_args(body), timeout=timeout)
                 if traced is not None:
                     traced.latency_ms = round((time.perf_counter() - sent_at) * 1000)
                     traced.response = traced_response(completion)
@@ -305,6 +337,15 @@ class OpenAICompatibleAdapter:
                     traced.error = call_trace.error_of(exc)
                 if not isinstance(exc, openai.BadRequestError):
                     raise
+                if thinking and rejects_thinking(exc):
+                    self._no_thinking.add((base_url, model))
+                    thinking = False
+                    log.info(
+                        "model_call_thinking_fallback purpose=%s model=%s",
+                        purpose_label(purpose),
+                        model,
+                    )
+                    continue
                 sent = "temperature" in body or "top_p" in body
                 if sampling and sent and rejects_sampling(exc):
                     self._default_sampling.add((base_url, model))
@@ -385,11 +426,24 @@ class OpenAICompatibleAdapter:
             await client.sdk.close()
 
 
+def sdk_args(body: dict[str, Any]) -> dict[str, Any]:
+    """``body`` as ``chat.completions.create`` keyword arguments: a key the SDK does not name
+    (``thinking``) goes through ``extra_body``, so the wire body is ``body`` itself."""
+    args = {k: v for k, v in body.items() if k != "thinking"}
+    if "thinking" in body:
+        args["extra_body"] = {"thinking": body["thinking"]}
+    return args
+
+
 __all__ = [
+    "THINKING_DISABLED",
     "OpenAICompatibleAdapter",
     "provider_headers",
     "rejects_sampling",
+    "rejects_thinking",
     "reported_cost",
     "request_body",
+    "sdk_args",
+    "sends_thinking",
     "traced_response",
 ]

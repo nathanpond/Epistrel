@@ -334,6 +334,15 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
     run.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        dest="cases",
+        metavar="ID",
+        help="play only this case id (exact, repeatable; #735): a suite holding none of them "
+        "plays nothing, and the partial run is new, never merged",
+    )
+    run.add_argument(
         "--full",
         action="append",
         default=[],
@@ -422,7 +431,7 @@ def _run_id(args: argparse.Namespace, base: str) -> tuple[str, Path | None]:
         ),
         key=lambda p: (len(p.stem), p.stem),
     )
-    if args.suite and not args.new_run and same_day:
+    if args.suite and not args.new_run and not getattr(args, "cases", None) and same_day:
         return same_day[-1].stem, same_day[-1]
     taken = [*json_dir.glob(f"{base}*.json"), *reports.report_files(args.reports_dir)]
     return reports.unique_run_id(base, taken), None
@@ -522,6 +531,10 @@ async def _run(args: argparse.Namespace) -> int:
     )
     run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now, config.preset))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
+    if prior is not None and prior.only_cases:
+        # #735: a partial run never takes later suites; this one starts its own.
+        taken = [*args.json_dir.glob(f"{run_id}*.json"), *reports.report_files(args.reports_dir)]
+        run_id, prior = reports.unique_run_id(run_id, taken), None
     if prior is not None and (prior.dials or None) != dials:
         print(
             f"error: run {run_id} ran with dials {prior.dials or 'none'}, this one with "
@@ -571,6 +584,7 @@ async def _run(args: argparse.Namespace) -> int:
             calibration_file=args.calibration_file,
             dials=dials,
             trace=trace,
+            only=args.cases,
         )
     except (EndpointUnavailable, CalibrationMissing) as exc:
         print(f"error: {exc}", file=sys.stderr)

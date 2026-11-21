@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `d298c9a0ad1c` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `775abe41184a` | `01M7TQ7MTD5H2FHW81XS8FD6Y5` | NFR-QUAL-2, NFR-QUAL-3, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-7, smoke | NFR-QUAL-14 | age_repair, repair_rung_2, repair_rung_3 | composition_fallback, composition_polished, repair_rung_1, repair_rung_4 | `claude-haiku-5-5` | 3 | 2026-11-19 | [standard-775abe41184a-2026-11-19.md](standard-775abe41184a-2026-11-19.md) |
-| Full | `4a6a6e02a0c4` | `01M7VBS4P98MFGJWYFAB1MR29C` | NFR-QUAL-2, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-3, NFR-QUAL-4, NFR-QUAL-7, NFR-QUAL-14, smoke | — | age_repair, composition_fallback, repair_rung_2 | composition_polished, repair_rung_1, repair_rung_3 | `claude-haiku-5-5` | 3 | 2026-11-19 | [full-4a6a6e02a0c4-2026-11-19.md](full-4a6a6e02a0c4-2026-11-19.md) |
-| Max | `eb4d3335eb58` | `01M7XSHMGEVE01ZDV8VM16HY2X` | NFR-QUAL-2, NFR-QUAL-3, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-4, NFR-QUAL-7, NFR-QUAL-14, smoke | — | age_repair, composition_fallback, repair_rung_2, repair_rung_3 | composition_polished, repair_rung_1 | `claude-haiku-5-5` | 3 | 2026-11-21 | [max-eb4d3335eb58-2026-11-21.md](max-eb4d3335eb58-2026-11-21.md) |
+| Lite | `ededc0fe39fe` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `34b44b18b61e` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `c74a3d9da152` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `77867d454b08` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 

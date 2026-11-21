@@ -292,6 +292,11 @@ class StubAdapter:
         self._cases: dict[tuple[str, str | None, int | None], str] = {}
         self._latches: dict[str, StubLatch] = {}
         self._parrots: list[tuple[re.Pattern[str], str, str | None]] = []
+        self.hidden_tokens: dict[str, int] = {}
+        """#735: per purpose, output tokens an answer spends unseen (a reasoning model's hidden
+        share) before its visible text, against the call's ``max_tokens``. Visible text costs
+        ``len(text) // 4``; what does not fit is cut and the answer finishes ``length``.
+        ``tokens_out`` counts both."""
         self.fault_hook: Callable[[str], FaultKind | None] | None = None
         """Consulted on every call with no queued fault (chaos tests draw faults at random)."""
 
@@ -493,6 +498,11 @@ class StubAdapter:
             text = self._answer(purpose, messages, digest, response_schema)
             if finish_reason == "length":
                 text = text[: len(text) // 2]
+        hidden = self.hidden_tokens.get(purpose, 0)
+        if hidden and params.max_tokens is not None:
+            visible = max(params.max_tokens - hidden, 0)
+            if len(text) // 4 > visible:
+                text, finish_reason = text[: visible * 4], "length"
         return ModelResult(
             text=text,
             finish_reason=finish_reason,
@@ -500,7 +510,7 @@ class StubAdapter:
             model=model,
             latency_ms=1,
             tokens_in=sum(len(m.content) for m in messages) // 4,
-            tokens_out=len(text) // 4,
+            tokens_out=len(text) // 4 + hidden,
             cost=0.0,
             request_id=f"stub-{digest[:24]}",
             reported_version=self.reported_version,

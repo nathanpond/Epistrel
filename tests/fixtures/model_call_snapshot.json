@@ -176,6 +176,7 @@
   "const:epistrel.orchestrator.models.facts.TEMPLATE_PACKAGE": "e864b71426ecf500c51170906dd420eedd321cd38f82392bfa311cbdb4c67628",
   "const:epistrel.orchestrator.models.facts.TEMPLATE_SUFFIX": "196306fbc0b6cb0a68c3505abc2aca1285de76224461190e64ab087f1e43e924",
   "const:epistrel.orchestrator.models.openai_compatible.ANTHROPIC_VERSION": "389a770965e85672dafebf3eeea162b8c68b485e4092ca5d5ed5f8ee2ca3bdcd",
+  "const:epistrel.orchestrator.models.openai_compatible.THINKING_DISABLED": "d12700b52885ce0aa254aa4a6878ffde0ed64de8349a4afbabb3bb2f7e865906",
   "const:epistrel.orchestrator.models.prompts.BLOCKS": "386b504e42ab043cbed0bb87294ff56535287e2c26c014cea584f2e61b3fe846",
   "const:epistrel.orchestrator.models.prompts.HISTORY_MACRO": "42d2b70866ba77b84620696f6c6cb2814379e3e65f3027c8ec4692eaf7dad0be",
   "const:epistrel.orchestrator.models.provider_schema.ANTHROPIC_HOST": "126241d9437e00228636d0f7ca2788c236e012eae729ba60c3ae17bc9c50e5ba",
@@ -229,6 +230,7 @@
   "const:epistrel.orchestrator.models.structured.PROSE_STRIKES": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
   "const:epistrel.orchestrator.models.structured.PUBLIC": "b78532572a08261cbc0c918d293a0d4fb83b1a83e9dacef857e52efbd4b5c78b",
   "const:epistrel.orchestrator.models.structured.SCHEMA_INSTRUCTION": "d569f2ab831ef7cab799b9cd615ac44ec01f2eec128ef7ed40e9343b79b90b3a",
+  "const:epistrel.orchestrator.models.structured.STRUCTURED_HEADROOM_TOKENS": "e39eef82f61b21e2e7f762fcc4307358f165757f2e77ec855d6992f7e0191932",
   "const:epistrel.orchestrator.policies.catalog_check.AGE_CONDITIONED": "dbb3c5cb4961e314848d1f05fdce6d0e831fcf9bc1fe7b0afbc26f664d73a7fb",
   "const:epistrel.orchestrator.policies.catalog_check.BUDGET_EXHAUSTED": "115d527206267cb4b51744d795e7d1567bd4a709fe969fe77b3f75595f85a09a",
   "const:epistrel.orchestrator.policies.catalog_check.MODEL_ASSISTED": "2e759cd835c4db619df20b6a893aad8e75c5f80d42babe1d1ad9781c67e7a4dd",
@@ -492,11 +494,14 @@
   "schema:salience_detection": "502c3d670a604f6327c011b3f8fad146eba33132b5d4c972f5603f2e30861869",
   "schema:time_estimation": "4e65c457f59878c92277b50361ca791f1bdd61c5e806226209e76570dfd92279",
   "source:epistrel.orchestrator.models.openai_compatible.provider_headers": "c56b67e7d902e5b19ea42bcf865677a3602c641394beac3bddf7209750639165",
-  "source:epistrel.orchestrator.models.openai_compatible.request_body": "1b7917afcb61c09a5cb27e8cff419ab764da8144aac6317d20d40835235ab1a0",
+  "source:epistrel.orchestrator.models.openai_compatible.request_body": "0a411c266be90b2e3b873b1dd080df75805bd33c1d08161d9328fefa3ea9bdb6",
+  "source:epistrel.orchestrator.models.openai_compatible.sdk_args": "bdec8063ba8382add821107aef5579716d1bea7ac9699d6f605c62703bc235cd",
+  "source:epistrel.orchestrator.models.openai_compatible.sends_thinking": "dca0c6d3397838f290e0ed9698d0b3e62168147bae0ffe4e64818c04ca3f82aa",
   "source:epistrel.orchestrator.models.provider_schema._strip": "5025149860e0d001f4d30273c1763c7a46ba1414e992bf7b5bb972e4c32ff378",
   "source:epistrel.orchestrator.models.provider_schema.is_anthropic": "d3c5f1384cf6eee88d26e284e300a98ada5e2ed00c2fa6b4155f418ffb391dec",
   "source:epistrel.orchestrator.models.provider_schema.json_schema_mode": "539edf89c20e1fc0fd9c70e2ace00aa8372122f6ce763199ebbcd578b676d4c7",
-  "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "063c69c6770a8b9769701fa0901fbb4716ee6f02d5c8c12548af2f3f110a0155"
+  "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "063c69c6770a8b9769701fa0901fbb4716ee6f02d5c8c12548af2f3f110a0155",
+  "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd"
  },
- "revision": 1
+ "revision": 2
 }

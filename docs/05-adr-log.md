@@ -16,7 +16,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177 |
+| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177, 201 |
 | FR-STORE | §2 | 018, 045, 054, 071, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 157, 167, 172, 175, 176, 187, 188 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 122, 144, 169, 174, 175 |
 | FR-BITEMP | §3 | 189 |
@@ -30,7 +30,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185 |
+| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201 |
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
 | FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
@@ -264,6 +264,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 198 | A composition polish that keeps the draft's words is an identity observation | Current | — |
 | 199 | The structured commit batches its epistemic writes | Current | — |
 | 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Current | — |
+| 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
 
 ---
 
@@ -2234,6 +2235,19 @@ Tuning and its exit certification come after every milestone that may change a p
 - A tag cannot release while Standard, Full and Max lack current records on one model. The next release follows #818's baseline (or #819's exit run).
 - docs/03 FR-PROF-16 lists the revision as a fingerprint input, §22's M11 row reads "at the presets' current fingerprints", and docs/04 C-18 gains the `[M11: NFR-QUAL-11]` part.
 - Tests: `tests/test_model_call_revision.py`, `tests/integration/test_c_18_m11.py`, and `tests/evals/test_certify_presets.py::test_presets_certified_at_current_fingerprints` with its complement `test_the_current_fingerprint_guard_refuses_stale_records`.
+
+### ADR-201 — Structured calls get token headroom, and calls to api.anthropic.com disable thinking
+**Status:** Accepted.
+**Context:** #735. On `claude-haiku-5-5` a structured render's `max_tokens` (four times the Lite length mapping, #464) ran out before its JSON closed: the model spent most of the cap on reasoning it never shows (about 1.1 visible characters per output token by default, about 2.5 with thinking disabled, in the 2026-11-05 probe). The #818 baseline still had E-06 model errors on 13–22% of cases and `parse_error` on the same seven e12/e13 scenarios on every preset. The owner chose option (c), both remedies, on 2026-11-09, and decided at `/n8-plan M11` round two (2026-11-16) that both bump `MODEL_CALL_REVISION`.
+**Decision:** Applied by #735 (FR-RESP-3, FR-MODEL-7, NFR-QUAL-7).
+- `STRUCTURED_HEADROOM_TOKENS` (1,024) is added once to every structured call's `max_tokens`, on every attempt (retries, corrections, the fallback after a `response_format` 400), and clamped to `MAX_COMPLETION_TOKENS` (4,000). A call that sends no `max_tokens` still sends none. The caller's figure is still the length target: `max_chars` holds a render to its length as before (#464). Prose calls (Lite generation, the composition polish) get no headroom.
+- Every chat call to `api.anthropic.com` (story, probe, capability and judge calls) sends `thinking: {"type": "disabled"}` in the request body, through the SDK's `extra_body`. No other endpoint gets it. A 400 that names `thinking` is retried once without it and remembered per endpoint and model until the `config_revision` moves. The trace keeps both requests, and the fallback is logged with the purpose and model only.
+- `MODEL_CALL_REVISION` goes from 1 to 2, so every preset's fingerprint moves (Standard `34b44b18b61e`, Full `c74a3d9da152`, Max `77867d454b08`, Lite `ededc0fe39fe`). The headroom constant, the payload, and the functions that send them join the guarded set. The thinking extra is the adapter's, like `anthropic-version`, and is not preset configuration. It enters the fingerprint only through the revision.
+- `evals run --case ID` (repeatable) plays only the named cases. Such a report is marked partial, never merges with another run, and certifies nothing.
+**Alternatives considered:** Headroom alone: hidden reasoning would still cost tokens and latency on every hosted call. Thinking disabled alone: a provider or model that rejects the extra would be truncated as before. An operator `max_tokens` on the purpose's own model-config row as a hard cap over the ceiling (the planner's simulation): `EffectiveConfig` does not record which row a value came from, and a call's own params already override the config's, so the precedence is unchanged.
+**Consequences:**
+- The 2026-11-19/21 baseline records are no longer at the current fingerprints. Releases fail the current-fingerprint gate (ADR-200) until #819's exit run.
+- Tests: `tests/test_structured_headroom.py` (a stub `hidden_tokens` share fails a short render without the headroom and passes with it; the `thinking` extra on api.anthropic.com alone; the 400 fallback and its memory), `tests/evals/test_case_filter.py`.
 
 ---
 

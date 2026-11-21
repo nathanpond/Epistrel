@@ -60,7 +60,9 @@ request's hash (``stub_example``).
 
 **The call** (``render_beats``): ``structured_call`` through the Model Access Layer and #325's
 routing, under the story's generation settings with ``max_tokens`` four times the Lite mapping
-of the response length; a ``length`` finish is invalid structure. When the retries are spent the
+of the response length, plus ``structured``'s ``STRUCTURED_HEADROOM_TOKENS`` on every attempt
+(#735: a model's hidden reasoning spends the same cap, so the figure is a ceiling, not the
+reply's length); a ``length`` finish is invalid structure. When the retries are spent the
 turn fails: 503 ``model_unavailable`` with ``details.reason = invalid_structure`` and
 ``details.structural_errors`` (what was wrong, never the answer's text), and nothing is recorded.
 

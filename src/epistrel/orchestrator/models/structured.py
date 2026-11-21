@@ -36,7 +36,9 @@ never the model's raw text.
    at ``temperature=0`` a model given a correction that names the fix repeated its answer on
    every attempt). Schema-invalid JSON in ``json_schema`` mode is retried the same way.
 4. **Uncertain** results: retries spent → the last failure's reason; a ``refusal`` or a
-   ``length`` finish → ``parse_error`` at once; a schema with a ``confidence`` field below
+   ``length`` finish → ``parse_error`` at once (each attempt's ``max_tokens`` carries
+   ``STRUCTURED_HEADROOM_TOKENS`` above the caller's, so hidden reasoning does not end it
+   before the JSON closes, #735); a schema with a ``confidence`` field below
    ``uncertain_below`` (deployment setting, default 0.5) → ``low_confidence`` at once; a call
    the budget cannot afford → ``budget_exhausted``. The caller resolves ``Uncertain``
    conservatively (``resolve_uncertain``); for a guardrail that is the policy's ``on_uncertain``.
@@ -61,7 +63,13 @@ from epistrel.core.errors import nul_location, without_nul
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import Policy, Target
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.models.adapter import REQUEST_FIELDS, Message, ModelParams, ModelResult
+from epistrel.orchestrator.models.adapter import (
+    MAX_COMPLETION_TOKENS,
+    REQUEST_FIELDS,
+    Message,
+    ModelParams,
+    ModelResult,
+)
 from epistrel.orchestrator.models.call_trace import STRUCTURED_MODEL, STRUCTURED_SCHEMA
 from epistrel.orchestrator.models.errors import ModelUnavailable, ResponseFormatRejected
 from epistrel.orchestrator.models.prompts import payload_fields
@@ -114,6 +122,22 @@ class Uncertain:
 
 class MissingDeterministicStep(TypeError):
     """A structured call for a purpose that has a deterministic path did not pass one."""
+
+
+STRUCTURED_HEADROOM_TOKENS = 1_024
+"""Tokens every structured call's ``max_tokens`` gets on top of what its caller asks for
+(#735, ADR-201): a model that reasons spends hidden tokens against the same cap, and a
+length-sized cap ran out before the JSON closed. The caller's figure stays the length target
+(``max_chars`` still enforces it, #464); this is a ceiling, clamped to
+``MAX_COMPLETION_TOKENS``. A call that sends no ``max_tokens`` gets none."""
+
+
+def with_headroom(params: ModelParams | None) -> ModelParams | None:
+    """``params`` with ``STRUCTURED_HEADROOM_TOKENS`` added to a ``max_tokens`` it sets."""
+    if params is None or params.max_tokens is None:
+        return params
+    ceiling = min(params.max_tokens + STRUCTURED_HEADROOM_TOKENS, MAX_COMPLETION_TOKENS)
+    return params.model_copy(update={"max_tokens": ceiling})
 
 
 PROSE_STRIKES = 2
@@ -325,7 +349,7 @@ async def structured_messages[T: BaseModel](
                 result = await mal.send(
                     purpose,
                     messages,
-                    call_params,
+                    with_headroom(call_params),  # #735: on every attempt
                     schema if json_mode else None,
                     budget=budget,
                     attempt=attempts,
@@ -411,6 +435,7 @@ def uncertain_verdict(on_uncertain: Literal["violation", "pass"]) -> GuardrailVe
 
 __all__ = [
     "DETERMINISTIC_FIRST_EXEMPT",
+    "STRUCTURED_HEADROOM_TOKENS",
     "DeterministicFirst",
     "MissingDeterministicStep",
     "ResponseFormatMemo",
@@ -425,5 +450,6 @@ __all__ = [
     "uncertain_verdict",
     "unfence",
     "usable",
+    "with_headroom",
     "with_schema",
 ]

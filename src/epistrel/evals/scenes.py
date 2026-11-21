@@ -17,6 +17,7 @@ them even when ``teardown`` does not run.
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -25,11 +26,11 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core import clock
+from epistrel.core import clock, embeddings
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.events import Operation
-from epistrel.core.memory import records
+from epistrel.core.memory import records, story_partitions
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import store
 from epistrel.core.settings_schema import merge_patch
@@ -41,9 +42,9 @@ from epistrel.evals import busy
 from epistrel.evals.presets import RUN_PRESET
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.jobs import queue
-from epistrel.orchestrator.jobs.handlers import reembed
+from epistrel.orchestrator.jobs.handlers import memory_partitions, reembed
 from epistrel.orchestrator.jobs.recurring import NoPayload
-from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext
+from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler
 
 PRINCIPAL = "system:evals"
 
@@ -144,6 +145,8 @@ async def _episode(engine: Engine, story_id: str, actor: str, line: str) -> list
     return kept
 
 
+log = logging.getLogger(__name__)
+
 _CLAIM = text(
     "UPDATE jobs SET status = 'running', lease_until = :lease, attempt = attempt + 1, "
     "worker_id = 'evals', updated_at = :now WHERE id = :j AND status = 'queued' RETURNING *"
@@ -160,6 +163,113 @@ async def embedding_configured(engine: Engine) -> bool:
             select(model_config.c.model).where(model_config.c.purpose == EMBEDDING)
         )
     return bool(found)
+
+
+def error_label(exc: BaseException) -> str:
+    """#970: a failed in-process job's error: the exception's class name and, for a database
+    error, its SQLSTATE and condition name (``OperationalError (55P03 lock_not_available)``).
+    Never the server's message text, which can quote row values (invariant 3)."""
+    label = type(exc).__name__
+    orig = getattr(exc, "orig", exc)
+    state = getattr(orig, "sqlstate", None)
+    if isinstance(state, str) and state:
+        name = getattr(getattr(orig, "diag", None), "condition_name", None)
+        name = name or _CONDITIONS.get(state, "")
+        label += f" ({state} {name})" if name else f" ({state})"
+    return label
+
+
+_CONDITIONS = {
+    "55P03": "lock_not_available",
+    "57014": "query_canceled",
+    "40P01": "deadlock_detected",
+    "53100": "disk_full",
+    "53200": "out_of_memory",
+}
+"""Condition names for the SQLSTATEs a retype or a partition drop meets, when the driver's
+diagnostics carry none."""
+
+
+async def _run_claimed(
+    engine: Engine, job_id: str, handler: JobHandler, payload: Any, *, terminal: bool = True
+) -> bool:
+    """Claim the queued job ``job_id`` as a worker would and run ``handler`` on it; ``False``
+    when another claim got there first. A failure is recorded (``error_label``; ``terminal``:
+    failed at once, else retried by the queue's backoff rules) and raised: a job left running
+    would hold its story."""
+    now = clock.now()
+    async with engine.db.begin() as conn:
+        row = (
+            await conn.execute(
+                _CLAIM, {"j": job_id, "now": now, "lease": now + timedelta(seconds=LEASE_S)}
+            )
+        ).one_or_none()
+    if row is None:
+        return False
+    job = ClaimedJob(
+        id=row.id,
+        kind=row.kind,
+        story_id=row.story_id,
+        payload=dict(row.payload or {}),
+        attempt=int(row.attempt),
+        failures=int(row.failures),
+        due_at=row.due_at,
+        lease_until=row.lease_until,
+        worker_id=row.worker_id,
+        coalesce_key=row.coalesce_key,
+    )
+    ctx = JobContext(db=engine.db, job=job, payload=payload)
+    try:
+        output = await handler.run(ctx)
+        await queue.commit_job(engine.db, job, handler, output, ctx.input_versions)
+    except Exception as exc:
+        attempts = 1 if terminal else (handler.max_attempts or engine.settings.job_max_attempts)
+        await queue.fail_job(
+            engine.db, job, error_label(exc), max_attempts=attempts, terminal=terminal
+        )
+        raise
+    return True
+
+
+async def drop_partition(engine: Engine, story_id: str) -> bool:
+    """#970: run a deleted story's queued ``memory_partition_drop`` job (#865) in process, as
+    ``drain_embeddings`` runs ``embed``: the harness has no worker, and a certify run's
+    undropped partitions made the first embedding pin retype thousands of them and filled the
+    container's ``/dev/shm``. ``False``: no such job was queued, or it failed (a lock timeout
+    under concurrent cases): the failure is logged and the job left to its retries, never the
+    case's error, and ``sweep_partitions`` drops what is left."""
+    key = memory_partitions.coalesce_key(story_id)
+    async with engine.db.connect() as conn:
+        job_id = await conn.scalar(
+            select(jobs.c.id).where(jobs.c.coalesce_key == key, jobs.c.status == "queued")
+        )
+    if job_id is None:
+        return False
+    payload = memory_partitions.DropPayload(story_id=story_id)
+    handler = memory_partitions.MEMORY_PARTITION_DROP_HANDLER
+    try:
+        return await _run_claimed(engine, job_id, handler, payload, terminal=False)
+    except Exception as exc:
+        log.warning("eval partition drop failed: %s", error_label(exc))
+        return False
+
+
+async def sweep_partitions(engine: Engine) -> dict[str, int]:
+    """#970: ``story_partitions.sweep_orphans`` (the hourly sweep a worker would run): every
+    partition whose story is gone is dropped. The run's start and end call it."""
+    return await story_partitions.sweep_orphans(engine.db)
+
+
+async def pin_embedding(engine: Engine) -> embeddings.Pin | None:
+    """#970: pin the deployment's embedding (probe once, then ``embeddings.pin_first``) before
+    the run creates any story, so the first pin's ``memories`` retype runs on an empty table.
+    ``None`` when no embedding model is configured; a deployment already pinned is checked, not
+    moved (a dimension mismatch raises)."""
+    if not await embedding_configured(engine):
+        return None
+    probe = await engine.models.embeddings.probe()
+    async with engine.db.begin() as conn:
+        return await embeddings.pin_first(conn, version=probe.version, dimension=probe.dimension)
 
 
 async def drain_embeddings(engine: Engine, story_id: str) -> int:
@@ -179,36 +289,8 @@ async def drain_embeddings(engine: Engine, story_id: str) -> int:
             )
         if job_id is None:
             break
-        now = clock.now()
-        async with engine.db.begin() as conn:
-            row = (
-                await conn.execute(
-                    _CLAIM, {"j": job_id, "now": now, "lease": now + timedelta(seconds=LEASE_S)}
-                )
-            ).one()
-        job = ClaimedJob(
-            id=row.id,
-            kind=row.kind,
-            story_id=row.story_id,
-            payload=dict(row.payload or {}),
-            attempt=int(row.attempt),
-            failures=int(row.failures),
-            due_at=row.due_at,
-            lease_until=row.lease_until,
-            worker_id=row.worker_id,
-            coalesce_key=row.coalesce_key,
-        )
-        ctx = JobContext(db=engine.db, job=job, payload=NoPayload())
-        try:
-            output = await reembed.EMBED_HANDLER.run(ctx)
-            await queue.commit_job(
-                engine.db, job, reembed.EMBED_HANDLER, output, ctx.input_versions
-            )
-        except Exception as exc:
-            # A job left running would hold the story: the sweep could not delete it.
-            await queue.fail_job(engine.db, job, type(exc).__name__, max_attempts=1, terminal=True)
-            raise
-        runs += 1
+        if await _run_claimed(engine, job_id, reembed.EMBED_HANDLER, NoPayload()):
+            runs += 1
     return runs
 
 
@@ -217,7 +299,11 @@ __all__ = [
     "EntitySpec",
     "add_entities",
     "drain_embeddings",
+    "drop_partition",
     "embedding_configured",
     "episodes",
+    "error_label",
+    "pin_embedding",
     "structured",
+    "sweep_partitions",
 ]

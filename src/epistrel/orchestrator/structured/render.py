@@ -19,6 +19,12 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   left out; ``characters`` names cast members only); ``hidden``
   (``{noticers, observed: fact | signal}``, cast members only) and ``holder`` (``canon`` only:
   any other is ``viewpoint_cannot_assign_truth``, FR-EPI-8) a ``latent``'s alone (#169);
+  #750: a cast member in ``visibility.characters`` or ``hidden.noticers`` may be named instead
+  of identified (``resolve_cast``: the name case-folded, or a first name no one else shares),
+  and a ``latent`` whose ``holder`` names a cast member is repaired before validation:
+  ``holder`` becomes ``canon`` and the member joins ``visibility`` (an absent or ``objective``
+  scope narrows to ``characters``; ``public`` is kept), counted as ``latent_holder_repairs``.
+  The truth stays canon's: a viewpoint still assigns none;
 - the perception qualifiers (#161) are optional and kind-bound: ``whisper_to``, ``aside`` and
   ``language`` a ``say``'s, ``addressee``, ``manner``, ``eavesdrop_by``, ``remote_channel`` and
   ``partial_text`` a ``say``'s or a ``do``'s, ``location`` a narration's; what they name is
@@ -60,7 +66,9 @@ request's hash (``stub_example``).
 
 **The call** (``render_beats``): ``structured_call`` through the Model Access Layer and #325's
 routing, under the story's generation settings with ``max_tokens`` four times the Lite mapping
-of the response length; a ``length`` finish is invalid structure. When the retries are spent the
+of the response length, plus ``structured``'s ``STRUCTURED_HEADROOM_TOKENS`` on every attempt
+(#735: a model's hidden reasoning spends the same cap, so the figure is a ceiling, not the
+reply's length); a ``length`` finish is invalid structure. When the retries are spent the
 turn fails: 503 ``model_unavailable`` with ``details.reason = invalid_structure`` and
 ``details.structural_errors`` (what was wrong, never the answer's text), and nothing is recorded.
 
@@ -92,7 +100,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    create_model,
+    model_validator,
+)
 
 from epistrel.core.states.model import WORLD_CLOCK
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
@@ -871,6 +887,88 @@ class IntroductionDecl(_Strict):
         return TRUE_AGE_MIN, TRUE_AGE_MAX
 
 
+LATENT_HOLDER_REPAIRED = "latent_holder_repaired"
+"""#750 degradation: a render's latent named a cast member as its ``holder``; the holder was
+repaired to ``canon`` and the member added to the latent's ``visibility``."""
+
+
+def cast_keys(cast_ids: frozenset[str], names: Mapping[str, str]) -> dict[str, str | None]:
+    """#750: what a render may name a cast member by: its id, its name case-folded, or its
+    first name when no other member's name starts with it (``None``: ambiguous, refused)."""
+    keys: dict[str, str | None] = {}
+    firsts: dict[str, str | None] = {}
+    for cid, name in names.items():
+        folded = " ".join(name.casefold().split())
+        if not folded:
+            continue
+        keys[folded] = cid if keys.get(folded, cid) == cid else None
+        first = folded.split()[0]
+        firsts[first] = cid if firsts.get(first, cid) == cid else None
+    for first, only in firsts.items():
+        keys.setdefault(first, only)
+    keys.update({cid: cid for cid in cast_ids})
+    return keys
+
+
+def resolve_cast(given: Any, keys: Mapping[str, str | None]) -> Any:
+    """#750: ``given``'s cast id when it names one unambiguously, else ``given`` unchanged (the
+    validator then refuses it)."""
+    if not isinstance(given, str):
+        return given
+    exact = keys.get(given)
+    if exact is not None:
+        return exact
+    return keys.get(" ".join(given.casefold().split())) or given
+
+
+def cast_remedy(names: Mapping[str, str]) -> str:
+    """#750: the remedy an unknown character's refusal carries: the cast, by id and name."""
+    if not names:
+        return ""
+    named = ", ".join(f"{cid} ({name})" for cid, name in sorted(names.items()))
+    return f" (name a cast member by id or full name: {named})"
+
+
+def _resolved(items: Any, keys: Mapping[str, str | None]) -> Any:
+    if not isinstance(items, list):
+        return items
+    out: list[Any] = []
+    for item in items:
+        found = resolve_cast(item, keys)
+        if found not in out:
+            out.append(found)
+    return out
+
+
+def _resolve_beat(beat: Any, keys: Mapping[str, str | None]) -> tuple[Any, int]:
+    """#750: one raw beat with its knowers resolved, and 1 when its named holder was repaired."""
+    if not isinstance(beat, dict) or not keys:
+        return beat, 0
+    fixed = dict(beat)
+    visibility = fixed.get("visibility")
+    if isinstance(visibility, dict) and "characters" in visibility:
+        visibility = {**visibility, "characters": _resolved(visibility["characters"], keys)}
+        fixed["visibility"] = visibility
+    hidden = fixed.get("hidden")
+    if isinstance(hidden, dict) and "noticers" in hidden:
+        fixed["hidden"] = {**hidden, "noticers": _resolved(hidden["noticers"], keys)}
+    holder = fixed.get("holder")
+    if fixed.get("kind") != "latent" or not isinstance(holder, str) or holder == "canon":
+        return fixed, 0
+    member = resolve_cast(holder, keys)
+    if member not in set(keys.values()) - {None}:
+        return fixed, 0  # names no one: refused as viewpoint_cannot_assign_truth
+    fixed["holder"] = "canon"
+    scope = visibility.get("scope", "objective") if isinstance(visibility, dict) else None
+    if visibility is None or scope == "objective":
+        fixed["visibility"] = {"scope": "characters", "characters": [member]}
+    elif isinstance(visibility, dict) and scope == "characters":
+        named = visibility.get("characters")
+        if isinstance(named, list) and member not in named:
+            fixed["visibility"] = {**visibility, "characters": [*named, member]}
+    return fixed, 1
+
+
 class RenderedBeats(_Strict):
     """What one render returns (see the module docstring). Subclassed per render by
     ``render_schema``, which fixes the class variables below."""
@@ -883,11 +981,14 @@ class RenderedBeats(_Strict):
     reactions: list[ReactionDecl] = Field(default_factory=list, max_length=MAX_REACTIONS)
     """#176 (FR-MULTI-9): the reactions this render narrates for other present characters (a
     character's render only)."""
+    _latent_holder_repairs: int = PrivateAttr(default=0)
 
     actor_id: ClassVar[str | None] = None
     """The rendering character (``None``: the narrator's render)."""
     player_id: ClassVar[str | None] = None
     cast_ids: ClassVar[frozenset[str]] = frozenset()
+    cast_names: ClassVar[Mapping[str, str]] = {}
+    """#750: the cast's names by id (empty: ids alone resolve)."""
     allowed: ClassVar[frozenset[str]] = CHARACTER_KINDS
     limit: ClassVar[int] = 6
     states: ClassVar[Mapping[str, TrackedState]] = {}
@@ -911,6 +1012,28 @@ class RenderedBeats(_Strict):
         if not cls.illustrates and isinstance(data, dict) and "illustrate" in data:
             return {k: v for k, v in data.items() if k != "illustrate"}
         return data
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _named(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        """#750: cast names to ids, and a latent's named holder repaired (module docstring)."""
+        repairs = 0
+        if isinstance(data, dict) and isinstance(data.get("beats"), list):
+            keys = cast_keys(cls.cast_ids, cls.cast_names)
+            beats: list[Any] = []
+            for beat in data["beats"]:
+                fixed, repaired = _resolve_beat(beat, keys)
+                beats.append(fixed)
+                repairs += repaired
+            data = {**data, "beats": beats}
+        found = handler(data)
+        found._latent_holder_repairs = repairs
+        return found
+
+    @property
+    def latent_holder_repairs(self) -> int:
+        """#750: the latent beats whose named holder was repaired to ``canon``."""
+        return self._latent_holder_repairs
 
     def hints(self) -> list[Any]:
         """#265: the render's valid ``illustrate`` hints (none when it was not asked)."""
@@ -953,13 +1076,17 @@ class RenderedBeats(_Strict):
                     if not scope.characters:
                         raise ValueError(f"{where}.visibility: a characters scope names some")
                     if not set(scope.characters) <= cls.cast_ids:
-                        raise ValueError(f"{where}.visibility: an unknown character")
+                        raise ValueError(
+                            f"{where}.visibility: an unknown character{cast_remedy(cls.cast_names)}"
+                        )
                 elif scope.characters:
                     raise ValueError(f"{where}.visibility: only a characters scope names some")
             if (beat.hidden is not None or beat.holder is not None) and beat.kind != "latent":
                 raise ValueError(f"{where}.hidden: only a latent commits a hidden fact")
             if beat.hidden is not None and not set(beat.hidden.noticers) <= cls.cast_ids:
-                raise ValueError(f"{where}.hidden.noticers: an unknown character")
+                raise ValueError(
+                    f"{where}.hidden.noticers: an unknown character{cast_remedy(cls.cast_names)}"
+                )
             if beat.holder is not None and beat.holder != "canon":
                 raise ValueError(
                     f"{where}.holder: viewpoint_cannot_assign_truth: a latent's truth is canon's "
@@ -1024,6 +1151,7 @@ def render_schema(
     player_id: str | None,
     cast_ids: Sequence[str],
     max_beats: int,
+    cast_names: Mapping[str, str] | None = None,
     states: Mapping[str, TrackedState] | None = None,
     states_level: str | None = None,
     clock_level: str | None = None,
@@ -1037,7 +1165,8 @@ def render_schema(
     and whether its anchor fixes the time of day, which its time advances are; #630: ``items``,
     whether an effect's ``consideration`` names an entity of the story; #265: ``illustrate``,
     the optional ``illustrate`` hints (``auto.IllustrateHints``: invalid entries dropped, never
-    a structural failure)."""
+    a structural failure); #750: ``cast_names``, the cast's names by id, which a latent's
+    knowers may be given by."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
     extra: dict[str, Any] = {}
     if illustrate:
@@ -1053,6 +1182,7 @@ def render_schema(
     model.actor_id = actor_id
     model.player_id = player_id
     model.cast_ids = frozenset(cast_ids)
+    model.cast_names = {cid: n for cid, n in (cast_names or {}).items() if cid in model.cast_ids}
     model.allowed = NARRATOR_KINDS if actor_id is None else CHARACTER_KINDS
     model.limit = max_beats
     model.states = dict(states or {})
@@ -1380,6 +1510,7 @@ __all__ = [
     "AGE_REPAIR",
     "AGE_UNREPAIRED",
     "INVALID_STRUCTURE",
+    "LATENT_HOLDER_REPAIRED",
     "NARRATOR",
     "RENDER_TOKEN_FACTOR",
     "STRUCTURED",
@@ -1395,6 +1526,8 @@ __all__ = [
     "TrackedState",
     "VisibilityDecl",
     "age_schema",
+    "cast_keys",
+    "cast_remedy",
     "effect_errors",
     "hold_length",
     "length_chars",
@@ -1405,4 +1538,5 @@ __all__ = [
     "render_params",
     "render_schema",
     "repair_ages",
+    "resolve_cast",
 ]

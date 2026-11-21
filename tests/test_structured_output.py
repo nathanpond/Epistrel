@@ -42,6 +42,7 @@ from epistrel.orchestrator.models.registry import (
 )
 from epistrel.orchestrator.models.structured import (
     SCHEMA_INSTRUCTION,
+    STRUCTURED_HEADROOM_TOKENS,
     MissingDeterministicStep,
     ResponseFormatMemo,
     Uncertain,
@@ -158,7 +159,10 @@ async def test_a_schema_error_retry_keeps_the_calls_temperature_a_prose_one_does
         first, second = mal.stub.calls
         assert first.params.temperature == 0.7
         assert second.params.temperature == expected
-        assert second.params.max_tokens == 64
+        # The call's own cap, with #735's headroom on every attempt.
+        assert (
+            first.params.max_tokens == second.params.max_tokens == 64 + STRUCTURED_HEADROOM_TOKENS
+        )
 
 
 # -- the fallback: 400 or prose ---------------------------------------------------------------

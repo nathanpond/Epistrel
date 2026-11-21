@@ -87,6 +87,9 @@ SOURCES = (
     "epistrel.orchestrator.models.provider_schema._strip",
     "epistrel.orchestrator.models.openai_compatible.request_body",
     "epistrel.orchestrator.models.openai_compatible.provider_headers",
+    "epistrel.orchestrator.models.openai_compatible.sends_thinking",
+    "epistrel.orchestrator.models.openai_compatible.sdk_args",
+    "epistrel.orchestrator.models.structured.with_headroom",
 )
 
 

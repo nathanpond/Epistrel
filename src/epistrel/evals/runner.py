@@ -155,6 +155,7 @@ from epistrel.evals.report import (
     SuiteResult,
 )
 from epistrel.evals.run_conditions import run_conditions
+from epistrel.evals.scenes import drop_partition, pin_embedding, sweep_partitions
 from epistrel.evals.suites import CaseModel, Counts, MalformedCase, Outcome, Suite, Summary
 from epistrel.evals.trace import CallTrace, CaseKey
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
@@ -464,6 +465,9 @@ async def sweep(engine: Engine) -> int:
     for story_id in found:
         async with scratch_ddl_lock():
             await engine.delete_story(_ctx(), story_id)
+            await drop_partition(engine, story_id)  # #970: no worker drops it
+    async with scratch_ddl_lock():
+        await sweep_partitions(engine)  # #970: and whatever an earlier drop left
     return len(found)
 
 
@@ -495,6 +499,7 @@ class Scratch:
             story_id = self.ids.pop()
             async with scratch_ddl_lock():
                 await self.engine.delete_story(_ctx(), story_id)
+                await drop_partition(self.engine, story_id)  # #970: no worker drops it
 
 
 @dataclass
@@ -816,6 +821,9 @@ class SuiteRun:
     trace: CallTrace | None = None
     """The run's per-call trace (#737, ``evals.trace``): each case's calls, written as it
     ends; ``None``: no trace."""
+    only: frozenset[str] = frozenset()
+    """#735 (``run --case``): the case ids every suite keeps (exact ids, after ``sample``);
+    empty: every selected case. A suite holding none of them plays nothing."""
 
     @property
     def live(self) -> bool:
@@ -833,6 +841,12 @@ def _select(cases: Sequence[CaseModel], sample: int | None, seed_base: int) -> l
     if sample is None or sample >= len(ordered):
         return ordered
     return sorted(random.Random(seed_base).sample(ordered, sample), key=lambda c: c.id)  # noqa: S311 - a reproducible subset, not a secret
+
+
+def kept(cases: Sequence[CaseModel], only: Collection[str]) -> list[CaseModel]:
+    """#735 (``run --case``): the ``cases`` whose id ``only`` names, in order; every one when
+    ``only`` is empty."""
+    return [c for c in cases if not only or c.id in only]
 
 
 def planned_cases(
@@ -1078,6 +1092,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
         )
         if loaded is None:
             cases += suite.companions(job.sets_dir, sample)
+        cases = kept(cases, job.only)
     except MalformedCase as exc:
         return SuiteResult.errored(suite, [str(exc)], list(job.seeds))
     if job.config.adapter == "stub":
@@ -1278,6 +1293,7 @@ async def run_suites(
     progress: Progress | None = None,
     dials: Mapping[str, Any] | None = None,
     trace: CallTrace | None = None,
+    only: Collection[str] = (),
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1346,12 +1362,15 @@ async def run_suites(
         seeds=list(seeds),
         real_purposes=routed_purposes(config),
         dials=dict(dials) if dials else None,
+        only_cases=sorted(only) or None,
     )
     async with (
         engine_for(config, engine) as live,
         judge_layer_for(config, live) as judging,
     ):
         with routed(live, config), _tracing(trace):
+            # #970: before any story exists, so the first pin retypes an empty ``memories``.
+            await pin_embedding(live)
             if probed is not None:
                 report.model_version, judge_version = probed
             else:
@@ -1402,6 +1421,7 @@ async def run_suites(
                 model_version=report.model_version,
                 dials=dict(dials) if dials else None,
                 trace=trace,
+                only=frozenset(only),
             )
             preset_token = RUN_PRESET.set(chosen)
             try:
@@ -1549,6 +1569,7 @@ __all__ = [
     "isolation_problems",
     "judge_layer_for",
     "judge_preflight",
+    "kept",
     "not_applicable",
     "planned_cases",
     "run",

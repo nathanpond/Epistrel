@@ -48,6 +48,12 @@ No automated check spends money or calls a real model (the owner's decision, 202
    An unreachable endpoint exits 1 before anything is written. `--sample N` runs a seeded
    subset of each set (the same cases on every seed). `--suite <name>` reruns one suite and
    merges it into the same day's run of the same fingerprint, rewriting its report in place.
+   `--case <id>` (repeatable, exact case ids such as `scenarios-plain-0002`; #735) plays only
+   those cases, in every suite run; a suite holding none of them plays nothing. That run is
+   always new: its report says **Partial**, names the cases, never merges with another run,
+   and certifies nothing. A targeted rerun is
+   `run --preset full --suite e06 --suite e12 --suite e13 --case …`, with `--case` naming
+   E-06's cases as well when only some of them should run.
 4. The run writes `docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md` (a second run that
    day gets `-2`; reports written before #227 are named `<fingerprint[:12]>-<YYYY-MM-DD>.md`, and
    their INDEX row reads preset `structured`), regenerates [INDEX.md](INDEX.md), and keeps its JSON and the failed cases' inputs and

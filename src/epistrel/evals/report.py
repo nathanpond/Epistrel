@@ -300,6 +300,9 @@ class Report(BaseModel):
     dials: dict[str, Any] | None = None
     """The run's own settings merge patch over its preset (#913: ``run --dial``), which its
     fingerprint names; ``None``: the preset as it is (every report before #913)."""
+    only_cases: list[str] | None = None
+    """#735 (``run --case``): the only case ids the run played; ``None``: every selected case.
+    Such a report is partial: it never merges with another run and certifies nothing."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -702,6 +705,15 @@ def render_markdown(report: Report) -> str:
                 + " over the preset (a run-level settings patch; this run certifies nothing)"
             ]
             if report.dials
+            else []
+        ),
+        *(
+            [
+                f"- **Partial:** only {len(report.only_cases)} named cases ("
+                + ", ".join(f"`{c}`" for c in report.only_cases)
+                + "; `run --case`): this run certifies nothing"
+            ]
+            if report.only_cases
             else []
         ),
         f"- **Host:** {'; '.join(host_bits)}",

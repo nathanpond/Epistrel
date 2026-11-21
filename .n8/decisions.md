@@ -15440,3 +15440,48 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #735, #750, #970
 - **Owner decision (#735, 2026-11-21):** option 1. #735 is closed as completed and its `needs-owner-action` label removed. The truncation it tracked is fixed: responses cut off at max_tokens fell from 176 to 0, and e12/e13 parse errors fell from 39 to 0 (`docs/evals/full-c74a3d9da152-2026-11-21.md`). The prose-with-no-JSON answers, about 10% of first attempts, carry forward on #939. Closing comment: #735 issuecomment-7062217772.
   **Issue:** #735, #939
+
+## /n8-exec M11 run 10 (2026-11-21)
+
+- **Decision (#939, the temperature pre-check):** hosted Haiku is never sent `temperature: 0`. In #735's rerun trace, 1,554 of 1,555 E-06 generation calls carry no `temperature`. The one that did (0.7 with `top_p`) got a 400, and the adapter dropped sampling after it. That is why `e06.repeatable` is 0% on api.anthropic.com. Under the owner's option (b), it no longer counts toward the verdict there.
+  **Issue:** #939
+- **Decision (#939, repeatability, ADR-202):** the per-endpoint flag is `AdapterConfig.deterministic`, set with `--deterministic/--no-deterministic` on `evals run` and `evals certify`. `None` derives it: off for an endpoint `is_hosted` names, on otherwise (LM Studio, the stub).
+  - It is scored when the case is played, in `E06Suite.evaluate` (`conforms(...)`). The flag goes into the journal line as `detail.deterministic`. A journal is per configuration fingerprint, and a run's endpoint is fixed, so a reused line is scored under the same host.
+  - The report's host line shows "temperature 0 not honoured" and the E-06 section gets a note when the flag is off.
+  - The flag is not preset configuration and moves no fingerprint.
+  **Issue:** #939
+- **Decision (#939, the tally's inputs):** `detail.structure_code` is one of three things:
+  - `fallback:<cause>`, plus `:<kinds>`, the constraint kinds of the turn's `render_rejected` events;
+  - the first structure problem;
+  - absent for a model error, whose `model_error:<code>:<reason>` the tool builds.
+
+  The planner's "render validator's refusal code" exists only per attempt, in the call trace's retry corrections. So `tools/e06_tally.py` also tallies first-attempt refusal shapes from the trace (`--calls`, `--session`). `evals run` writes no journal, only `<run_id>-failures.jsonl` (misses), so the tool takes `--total` for the denominator.
+  **Issue:** #939
+- **Fix (#939, Rule 1, the E-06/E-07 harness):** `structured_turns.play` never placed its cast. The run's preset routes perception, and an unplaced character perceives nothing, so every E-06 and E-07 render was sent the bare user message `Wren:` without the player's line. That is 705 + 36 renders on E-06 and 540 + 29 on E-07 in the #818 Full trace, and all 721 first-attempt E-06 renders in #735's rerun. Haiku then answered an empty turn: it reasoned about it in prose ("The message is just a single "ö"…") or invented the scene.
+  - The fix places Wren and Maren at one place, `the common room` (`place_cast`), as #572 did for `scenario_play`.
+  - Regression test: `tests/eval/test_e_06.py::test_e_06__m11_render_hears_the_player`. Its complement, with no placement, still gets the bare `Wren:`.
+  - Every E-06/E-07 figure recorded before this fix measured a turn with no player input.
+  - The strict rule itself is the owner's decision on #579 (2026-10-26, option (a)), so no engine issue is filed. E-12's harness was fixed then, and E-06/E-07's was missed.
+  **Issue:** #939, #579
+- **Fix (#939, Rule 1, the effect-syntax example):** `core.states.effects.syntax` built its example over the first tracked State. In E-06's story that is the world clock, so the prompt showed `{"kind": "change", "state": "world_clock", …}`, which the render validator refuses ("the world clock moves only by a time advance"). That was the largest validator refusal in #735's rerun: 59 retries.
+  - The example now skips the clock. When the clock is listed, `CLOCK_LINE` follows, saying time moves only by a `time_advance`. With the clock alone, `CLOCK_LINE` replaces the example.
+  - This is core text, outside the planner's list (`structured_generation.j2`, `render.py`), but it is the text the template renders as `tracked_syntax`. `CLOCK_LINE` and `syntax` join the guarded set.
+  **Issue:** #939
+- **Decision (#939, the tally run, 1 of 5 paid runs):** Full, E-06, 3 seeds, at `0bdad2b`. Report: `docs/evals/full-9c73abc94c1f-2026-11-21-2.md`.
+  - Conformance 81.17%, length 100%, 0 model errors.
+  - All 113 misses are `fallback:repair:do_not_assert`.
+  - Refusal shapes: prose 66 and world clock 30. Both come from the harness bug, which this run exposed.
+  - Posted on #939 (comment 7063191306).
+  **Issue:** #939
+- **Decision (#939, iteration 1, 2 of 5 paid runs):** Full, E-06, 3 seeds, at `00ae51d`. Report: `docs/evals/full-bca1e50d0af4-2026-11-21.md`.
+  - Conformance 74.50%, length 100%, 0 model errors.
+  - All 153 misses are the safe fallback over a valid render: unsupported 20.83%, contradicted or undecided 11.83%, unpermitted (player character) 10.33%.
+  - Prose fell from 66 to 2, and the world clock from 30 to 0.
+  **Issue:** #939
+- **Decision (#939, no wording iteration 2):** the remaining misses are verifier and permission outcomes on ordinary beats, which template wording can't reach. Filed as #978 (an unnormalizable everyday-object claim is repaired under a constraint that names nothing) and #979 (an action toward the player's character is denied as `player_character`).
+  - The first-attempt validator shapes at ≥ 0.5% (`step` 1.67%, narrator `kind` 1.67%, two at 0.50%) all recover on retry and cost no case, so they get no wording change.
+  - The AC's 0.5% share is read over case-level outcomes, the planner's definition.
+  - The confirming 3-preset run is not spent until the owner picks an option.
+  **Issue:** #939, #978, #979
+- **Blocker (#939):** `blocked` and `needs-owner-action`. NFR-QUAL-7 ≥ 98% isn't reachable within the story's wording-only scope. Options on #939: (a) engine fixes first (#978, #979); (b) E-06 scores structure on the render, with the fallback as an informational row (an ADR); (c) both, which is my recommendation.
+  **Issue:** #939

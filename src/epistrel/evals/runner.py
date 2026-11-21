@@ -253,6 +253,10 @@ class AdapterConfig:
     (``is_hosted``, #757), else ``ci`` under CI, else ``local``. Never the machine's
     name: reports are committed to a public repository, so a host is described only by its
     kind and #54's hardware and server-version fields."""
+    deterministic: bool | None = None
+    """Whether the endpoint honours temperature 0 (#939, ADR-202): a ``repeat`` case's
+    repeatability counts toward E-06's conformance only on such a host. ``None``: not for a
+    hosted endpoint (api.anthropic.com is not), else yes (LM Studio and the stub are)."""
     judge_model: str | None = None
     """A second model for the harness's judge calls (#475); ``None``: the run model judges."""
     judge_base_url: str | None = None
@@ -517,6 +521,8 @@ class CaseContext:
     """The judge model's Model Access Layer (#475); ``None``: the run's own."""
     judge_model: str = ""
     """The model that judges (``AdapterConfig.judge_name``); empty: ``model``."""
+    deterministic: bool = True
+    """Whether the endpoint honours temperature 0 (``deterministic_of``, #939)."""
 
     @property
     def models(self) -> ModelAccessLayer:
@@ -653,11 +659,19 @@ def is_hosted(base_url: str | None) -> bool:
     return not (address.is_loopback or address.is_private or address.is_link_local)
 
 
+def deterministic_of(config: AdapterConfig) -> bool:
+    """Whether the run's endpoint honours temperature 0 (``AdapterConfig.deterministic``)."""
+    if config.deterministic is not None:
+        return config.deterministic
+    return not (config.adapter == "openai" and is_hosted(config.base_url))
+
+
 def host_of(config: AdapterConfig) -> Host:
     hosted = config.adapter == "openai" and is_hosted(config.base_url)
     kind = config.host or ("hosted" if hosted else "ci" if os.environ.get("CI") else "local")
     return Host(
         kind=kind,
+        deterministic=deterministic_of(config),
         hardware=config.hardware,
         server_version=config.server_version,
         endpoint=config.base_url if config.adapter == "openai" else None,
@@ -892,6 +906,7 @@ async def _play_case(
         job.config.model_name,
         judge_layer=job.judge_layer,
         judge_model=job.config.judge_name,
+        deterministic=deterministic_of(job.config),
     )
     started = time.perf_counter()
     outcome: Outcome | None = None

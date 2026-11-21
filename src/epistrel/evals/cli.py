@@ -372,6 +372,13 @@ def parser() -> argparse.ArgumentParser:
         "under CI, else local); never a machine name",
     )
     run.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="whether the endpoint honours temperature 0 (#939; default: not for an endpoint "
+        "off this network, else yes); E-06 counts repeatability only on such a host",
+    )
+    run.add_argument(
         "--fail-on-gate",
         action="store_true",
         help="exit 1 when a suite marked ci_gate fails (CI's stub run)",
@@ -450,6 +457,7 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         hardware=args.hardware,
         server_version=args.server_version,
         host=getattr(args, "host", None),
+        deterministic=getattr(args, "deterministic", None),
         judge_model=args.judge_model or None,
         judge_base_url=args.judge_base_url.rstrip("/") if args.judge_base_url else None,
         judge_api_key=args.judge_api_key,

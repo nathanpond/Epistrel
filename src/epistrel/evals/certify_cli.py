@@ -625,6 +625,13 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
         "under CI, else local); never a machine name",
     )
     command.add_argument(
+        "--deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="whether the endpoint honours temperature 0 (#939; default: not for an endpoint "
+        "off this network, else yes); E-06 counts repeatability only on such a host",
+    )
+    command.add_argument(
         "--reference",
         action="store_true",
         help="record host tier 'reference' (the reference model, full sets)",

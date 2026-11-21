@@ -11,7 +11,8 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   text or request shape without importing it). Input-truncation caps count. A literal is
   hashed as written; a computed value at run time, except a computed ``dict``, ``list`` or
   ``set``, which may be a registry other imports fill.
-- **Named constants elsewhere** (``EXTRA_NAMES``): core's token ceilings that a call sends.
+- **Named constants elsewhere** (``EXTRA_NAMES``): core's token ceilings that a call sends,
+  and core's effect-syntax clock line (#939).
 - **Schemas** (``schema:<purpose>``): each delivered purpose's input and response JSON Schema,
   its history field and its variant names. The response schema is sent on the wire, and the
   input schema shapes what the template renders.
@@ -79,6 +80,7 @@ EXTRA_NAMES = (
     "epistrel.core.settings_schema.LENGTH_TOKENS",
     "epistrel.core.settings_schema.MAX_LENGTH_TOKENS",
     "epistrel.core.settings_schema.DEFAULT_LITE_SUMMARY_MAX_TOKENS",
+    "epistrel.core.states.effects.CLOCK_LINE",
 )
 SOURCES = (
     "epistrel.orchestrator.models.provider_schema.is_anthropic",
@@ -90,6 +92,7 @@ SOURCES = (
     "epistrel.orchestrator.models.openai_compatible.sends_thinking",
     "epistrel.orchestrator.models.openai_compatible.sdk_args",
     "epistrel.orchestrator.models.structured.with_headroom",
+    "epistrel.core.states.effects.syntax",
 )
 
 

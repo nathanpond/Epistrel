@@ -15511,3 +15511,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The reports are committed: `docs/evals/standard-9571b4ca2e03-2026-11-21.md`, `full-bca1e50d0af4-2026-11-21-2.md` (`-2`, since run 10's report holds the name), and `max-9b6b43379c0f-2026-11-21.md`.
   - The run's certification records are not committed. They come from an E-06-only run, and committing them would mark the fingerprints certified (ADR-200). #819 certifies.
   **Issue:** #939, #978, #979
+- **Merge (/n8-exec M11 run 11):** PR #983 squash-merged as `13283d9` after CI passed on the first round. The linked set was exactly #939, which is now CLOSED, with no casualties. Paid runs used in run 11: 1 of 5 (the confirming certify).
+  **Issue:** #939

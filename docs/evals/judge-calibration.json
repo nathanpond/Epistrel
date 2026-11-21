@@ -1,14 +1,14 @@
 {
   "claude-haiku-5-5": {
-    "agreed": 208,
-    "agreement": 0.9454545454545454,
+    "agreed": 213,
+    "agreement": 0.9681818181818181,
     "by_label": {
       "a": {
-        "agreed": 87,
+        "agreed": 90,
         "pairs": 96
       },
       "b": {
-        "agreed": 81,
+        "agreed": 83,
         "pairs": 84
       },
       "tie": {
@@ -17,11 +17,11 @@
       }
     },
     "ci95": [
-      0.9070939994536631,
-      0.9685257406633978
+      0.9357907838347574,
+      0.9845034328188882
     ],
-    "date": "2026-11-05",
-    "engine_sha": "5a47486",
+    "date": "2026-11-19",
+    "engine_sha": "c6c918e-dirty",
     "excluded": 0,
     "floor": 0.75,
     "judge_model": "claude-haiku-5-5",

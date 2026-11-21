@@ -15489,3 +15489,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The first CI round was red. Traceability found that `test_e_06_m11__*` maps to the ID `E-06-M11`. E-06's M11 parts must share `tests/eval/test_e_06.py` with `test_e_06__structured`, because a part ID and milestone may come from one file only. `test_harness` also pinned the `Host` fields.
   - Paid runs used in run 10: 2 of 5. Fingerprints: Lite `bc995f908c5f`, Standard `9571b4ca2e03`, Full `bca1e50d0af4`, Max `9b6b43379c0f` (`MODEL_CALL_REVISION` 4), all uncertified.
   **Issue:** #939, #978, #979
+- **Owner decision (#939, 2026-11-21):** option (c). (b): E-06 judges structure on the model's render, and a verifier fallback becomes the report-only row `e06.released_fallback`. A new ADR amends E-06's structure rule, then comes the confirming 3-preset run. (a): #978 and #979 are fixed as ordinary engine bugs, with each one's fix option still the owner's call on its issue. `blocked` and `needs-owner-action` removed from #939.
+  **Issue:** #939, #978, #979

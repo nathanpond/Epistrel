@@ -25,9 +25,8 @@ from epistrel.evals.suites.e06_conformance import (
     structure_code,
 )
 
-pytestmark = pytest.mark.part("M11", "NFR-QUAL-7")
 
-
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__host_flag() -> None:
     """A hosted endpoint is not deterministic by default (api.anthropic.com), LM Studio and the
     stub are, and the flag overrides either way.
@@ -52,6 +51,7 @@ def test_e_06_m11__host_flag() -> None:
     )
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 @pytest.mark.parametrize(
     ("repeated", "deterministic", "expected"),
     [(False, False, True), (False, True, False), (True, True, True), (None, True, True)],
@@ -65,6 +65,7 @@ def test_e_06_m11__conforms(repeated: bool | None, deterministic: bool, expected
     )
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__conforms_needs_structure_and_length() -> None:
     """Off the repeat rule, a structure or length miss still fails the case on any host."""
     assert conforms(structure=False, length=True, repeated=None, deterministic=False) is False
@@ -114,6 +115,7 @@ async def _evaluate(monkeypatch: pytest.MonkeyPatch, *, deterministic: bool) -> 
     return await E06Suite().evaluate(ctx, _case(repeat=True))
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 async def test_e_06_m11__non_deterministic_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
     """On a host flagged non-deterministic a differing repeat render is counted in
     ``e06.repeatable`` but leaves ``nfr_qual_7.conformance`` passing, and the report gets the
@@ -132,6 +134,7 @@ async def test_e_06_m11__non_deterministic_repeat(monkeypatch: pytest.MonkeyPatc
     assert E06Suite().summarize([strict], "m").notes == ()
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__report_says_so() -> None:
     """The reading notes and the host model carry the rule; a host defaults to deterministic
     (an older record reads back unchanged)."""
@@ -140,6 +143,7 @@ def test_e_06_m11__report_says_so() -> None:
     assert Host(kind="hosted", deterministic=False).deterministic is False
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__structure_code() -> None:
     """A fallback names its cause and the rejected constraint kinds; otherwise the first
     problem; no code for a valid structure."""
@@ -156,6 +160,7 @@ def _line(observations: Mapping[str, bool | None], **detail: Any) -> dict[str, A
     return {"suite": "e06", "observations": observations, "detail": detail}
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__tally() -> None:
     """The tally counts misses by part and structure miss by code, reading an older line's
     fallback causes as its code, and a model error as ``model_error:<code>:<reason>``."""
@@ -193,6 +198,7 @@ def test_e_06_m11__tally() -> None:
     assert "`fallback:repair` | 1 | 20.00% | yes" in render(result, None)
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__refusal_shapes() -> None:
     """A retried render call's correction folds to a stable shape (numbers and parenthesised
     details folded); first attempts and other purposes are not counted."""
@@ -242,6 +248,7 @@ def test_e_06_m11__refusal_shapes() -> None:
     }
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__clock_example() -> None:
     """#939's largest refusal shape on Full: with the world clock as the only tracked value, the
     effect syntax's example was a ``change`` on it, which the render refuses. The syntax now
@@ -290,6 +297,7 @@ async def _render_user_lines(
     return seen
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 @pytest.mark.integration
 async def test_e_06_m11__render_hears_the_player(
     pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
@@ -315,6 +323,7 @@ async def test_e_06_m11__render_hears_the_player(
     assert all(line.strip() == "Wren:" for line in deaf), deaf
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__tally_failures_file() -> None:
     """An ``evals run``'s failures file holds misses only: with ``total`` the shares are over
     the run's outcomes, and the repeat part has no denominator."""
@@ -326,6 +335,7 @@ def test_e_06_m11__tally_failures_file() -> None:
     assert "`fallback:repair` | 3 | 0.50% | yes" in render(result, None)
 
 
+@pytest.mark.part("M11", "NFR-QUAL-7")
 def test_e_06_m11__constraint_class() -> None:
     """A rejected render's constraint is coded by the ladder's wording class, never its text:
     an unpermitted claim keeps only its denial reason."""

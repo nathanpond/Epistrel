@@ -272,7 +272,8 @@ def test_a_stale_row_keeps_its_model() -> None:
 
     Complements: a stale record that names no ``generation`` model, and a preset with no record,
     keep ``—`` in Model."""
-    (path,) = [p for p in committed_records() if p.name.startswith("standard-")]
+    # Any committed Standard record serves (history and current ones coexist, #818).
+    path = next(p for p in sorted(committed_records()) if p.name.startswith("standard-"))
     document = json.loads(path.read_text("utf-8"))
     document["fingerprint"] = "sha256:" + "0" * 64  # no preset ever hashes to this
 

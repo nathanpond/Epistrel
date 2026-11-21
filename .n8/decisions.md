@@ -15372,3 +15372,16 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #818
 - **Merged (#818's agent half):** PR #965 was squash-merged as `4832c12` on 2026-11-19 (CI all pass). #818 stays open, and the owner's baseline run is next. Evidence comment: #818 issuecomment-6999596107. The AC boxes ticked so far are ADR-179 amended and R1 (a). Paid runs this exec run: 0.
   **Issue:** #818
+
+## /n8-exec M11 run 8 (#818's baseline commit) — 2026-11-21
+
+- **Decision (#818):** the owner's baseline run is committed on `milestone/m11-run8-818-baseline` from `main` at `c6c918e`. It contains the three reports (`standard-775abe41184a-2026-11-19`, `full-4a6a6e02a0c4-2026-11-19`, `max-eb4d3335eb58-2026-11-21`), their records, `judge-calibration.json` (recalibrated, 220 pairs) and the regenerated `INDEX.md`. The run took three sessions, all resumed from the results journal. The first was stopped for #970 (q03 pin retype). The second was cut off after Max's last case by the same cause: the container's `/dev/shm` was exhausted by undropped partitions. The third replayed six Max cases. The plan's discretion allows resumed runs.
+  **Issue:** #818, #970
+- **Decision (#818):** Max's report is dated 2026-11-21, the date its last session started, not the run's start (2026-11-19). The plan said "report date = run start". `certify` names the report and record and hashes the report into the record (`report_sha256`), so renaming them would mean editing a generated record. Left as generated; Max's `Run:` line and its Resumed line give the history.
+  **Issue:** #818
+- **Decision (#818):** all three reports read engine `c6c918e-dirty`. The only differences from `c6c918e` were the untracked `.idea/.name` and the run's own outputs (`git status --porcelain` counts untracked files). No source file differed.
+  **Issue:** #818
+- **Rule 3 (#818):** `test_a_stale_row_keeps_its_model` unpacked exactly one committed Standard record. Committing the baseline next to the 2026-11-05 history record makes two, so it now takes the first one by name. Any Standard record serves as its fixture.
+  **Issue:** #818
+- **Finding (#818, run conditions; affects #735, #750, #939):** on api.anthropic.com, generation renders did **not** run strict. `CharacterRender`, `NarratorRender` and `RegeneratedBeat` went parse-validate-retry: Full had 6,583, 152 and 7,309 such requests, and 48,557 of its 62,601 traced structured requests were strict. Their schemas carry `PropositionSketch.qualifiers` (a free-form `dict[str, str]`), and `strict_wire_schema` returns `None` for that by design. #818's AC "structured calls ran strict (#761)" therefore holds for every purpose schema except the renders, and the reports say so. #735's and #750's premise ("#761 made the render strict-constrained") is wrong for Anthropic. This is posted on those issues for their planning; it is not fixed here.
+  **Issue:** #818, #735, #750, #939

@@ -15485,3 +15485,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939, #978, #979
 - **Blocker (#939):** `blocked` and `needs-owner-action`. NFR-QUAL-7 ≥ 98% isn't reachable within the story's wording-only scope. Options on #939: (a) engine fixes first (#978, #979); (b) E-06 scores structure on the render, with the fallback as an informational row (an ADR); (c) both, which is my recommendation.
   **Issue:** #939
+- **Merge (/n8-exec M11 run 10):** PR #980 squash-merged as `ba09410` after CI passed 27 of 27. The linked set was empty and the PR closed nothing: #939 stays open, `blocked` and `needs-owner-action`.
+  - The first CI round was red. Traceability found that `test_e_06_m11__*` maps to the ID `E-06-M11`. E-06's M11 parts must share `tests/eval/test_e_06.py` with `test_e_06__structured`, because a part ID and milestone may come from one file only. `test_harness` also pinned the `Host` fields.
+  - Paid runs used in run 10: 2 of 5. Fingerprints: Lite `bc995f908c5f`, Standard `9571b4ca2e03`, Full `bca1e50d0af4`, Max `9b6b43379c0f` (`MODEL_CALL_REVISION` 4), all uncertified.
+  **Issue:** #939, #978, #979

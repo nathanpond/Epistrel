@@ -15412,3 +15412,11 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #970
 - **Decision (#735, #970):** `evals/runner.py` carries both stories' changes (`--case` and the drain), so one commit carries `Refs #735` and `Refs #970`, as the skill allows.
   **Issue:** #735, #970
+- **Decision (#735, the live rerun, 1 of 5 paid runs):** one Full run on `claude-haiku-5-5`, 3 seeds, of E-06's 200 cases plus the 7 e12/e13 scenarios (`--case`, at `4c4be12`). Report: `docs/evals/full-c74a3d9da152-2026-11-21.md`.
+  - `length` finishes on generation calls fell from 176 to **0**.
+  - `thinking` was sent on all 1,865 generation calls.
+  - Output tokens per render: p50 429 → 158. Call latency: p50 2,543 → 1,587 ms.
+  - `e06.length_honoured`: 78.50% → 99.67%. `e06.structure_valid`: 65.33% → 70.50%. e12/e13 parse errors: 39 → 0.
+  - **New shape:** with thinking off, Haiku answers some renders in prose with no JSON (94 first attempts, against none in the baseline). The structured retry recovers almost all of them: 160 of 163 second attempts and 23 of 26 third attempts are valid JSON. A few still end `parse_error`, so the AC "no `parse_error`" is not strictly met.
+  - **Why:** #735 stays out of the PR's `Closes`. Its mechanism, ADR and stub ACs are met. The prose shape is a structure-error shape, which #939 owns; at more than 0.5% it is in #939's tally. The evidence is posted on #735 for the owner, with a recommendation to close it and carry the prose shape in #939.
+  **Issue:** #735, #939

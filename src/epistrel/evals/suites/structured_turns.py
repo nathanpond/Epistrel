@@ -13,6 +13,12 @@ rendered beat, every beat on a known channel with text, at least one ``say`` or 
 non-empty message, and no safe fallback (a render the output gate replaced is not the
 model's structure).
 
+``render_problems(result, originals)`` is the same check on what the model rendered (#939,
+ADR-203, the owner's option (c)): each repaired beat read by its original text
+(``render_originals``), so a render the safe fallback replaced is judged as the model wrote it.
+A beat the ladder dropped was a ``think`` or ``latent`` beat (only those are dropped:
+``repair.ladder.DETERMINISTIC_KINDS``), so it counts as one, never as a ``say`` or ``do``.
+
 ``render_output(ctx, result)`` is what the turn's render call answered (#464): each rendered
 beat's text by beat, a beat #151's ladder repaired by its original text (its
 ``render_rejected`` event, attempt 0), never the composed message.
@@ -117,6 +123,32 @@ def structure_problems(result: RespondResult) -> list[str]:
     return found
 
 
+DROPPED = "think or latent"
+"""A dropped beat's channel in ``render_problems``: the ladder drops only those two."""
+
+
+def render_problems(result: RespondResult, originals: Mapping[int, str]) -> list[str]:
+    """Why the model's render is not a valid say/think/do/latent structure (empty: it is),
+    judged on each repaired beat's original text (see the module docstring)."""
+    found: list[str] = []
+    beats = {
+        int(b.beat): (str(b.channel), b.text or "") for b in rendered(result) if b.beat is not None
+    }
+    for beat, text in originals.items():
+        beats[beat] = (beats.get(beat, (DROPPED, ""))[0], text)
+    if not beats:
+        found.append("no rendered beat")
+    if any(channel not in CHANNELS | {DROPPED} for channel, _ in beats.values()):
+        found.append("a beat on an unknown channel")
+    if any(not text.strip() for _, text in beats.values()):
+        found.append("a beat without text")
+    if not any(channel in {"say", "do"} for channel, _ in beats.values()):
+        found.append("no say or do beat")
+    if not result.message.text.strip():
+        found.append("an empty message")
+    return found
+
+
 RenderKey = tuple[tuple[int, str, str], ...]
 
 
@@ -133,7 +165,11 @@ def render_key(beats: Sequence[Any], originals: Mapping[int, str]) -> RenderKey:
 
 async def render_output(ctx: CaseContext, result: RespondResult) -> RenderKey:
     """What the turn's render call answered (see the module docstring)."""
-    beats = rendered(result)
+    return render_key(rendered(result), await render_originals(ctx, result))
+
+
+async def render_originals(ctx: CaseContext, result: RespondResult) -> dict[int, str]:
+    """Each repaired beat's original text (its ``render_rejected`` event, attempt 0), by beat."""
     operation = next((b.operation_id for b in result.beats), None)
     originals: dict[int, str] = {}
     if operation is not None:
@@ -146,11 +182,12 @@ async def render_output(ctx: CaseContext, result: RespondResult) -> RenderKey:
             for (payload,) in rows:
                 if isinstance(payload, dict) and payload.get("attempt") == 0:
                     originals[int(payload["beat"])] = str(payload.get("text") or "")
-    return render_key(beats, originals)
+    return originals
 
 
 __all__ = [
     "CAST",
+    "DROPPED",
     "INNKEEPER",
     "PLACE",
     "PLAYER",
@@ -158,7 +195,9 @@ __all__ = [
     "place_cast",
     "play",
     "render_key",
+    "render_originals",
     "render_output",
+    "render_problems",
     "rendered",
     "structure_problems",
 ]

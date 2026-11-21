@@ -15438,3 +15438,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #750
 - **Merge (/n8-exec M11 run 9):** PR #974 squash-merged as `140c032` after CI passed 27 of 27. It closed #750 and #970 (linked set `[750, 970]`, closes settled, no casualties). #735 stays open with `needs-owner-action`: its prose-answer shape is the owner's call (recommendation on #735: close it and carry the shape in #939). Paid runs used in run 9: 2 of 5. Fingerprints are now Lite `c3f38fd00ba2`, Standard `7ee8bc44b8b1`, Full `9c73abc94c1f` and Max `6cf00825b56a` (`MODEL_CALL_REVISION` 3), all uncertified, so the release gate fails until #819.
   **Issue:** #735, #750, #970
+- **Owner decision (#735, 2026-11-21):** option 1. #735 is closed as completed and its `needs-owner-action` label removed. The truncation it tracked is fixed: responses cut off at max_tokens fell from 176 to 0, and e12/e13 parse errors fell from 39 to 0 (`docs/evals/full-c74a3d9da152-2026-11-21.md`). The prose-with-no-JSON answers, about 10% of first attempts, carry forward on #939. Closing comment: #735 issuecomment-7062217772.
+  **Issue:** #735, #939

@@ -103,7 +103,7 @@ You are the narrator. Never speak, think or act for {{ player_input.name }} or f
 {% if present_benched %}
 Present but not taking part: {{ present_benched | join(", ") }}; never give them dialogue.
 {% endif %}
-Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown, with who may know it).
+Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown; who may know it goes in its `visibility`, by cast id, and its `holder` is left out: a latent's truth is the world's, not a character's).
 Declare each factual claim as a proposition (subject, relation, object). Name every new character the narration introduces in `introduces`, with an age in whole years.
 {% if illustrate_instruction %}
 {{ illustrate_instruction }}

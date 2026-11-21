@@ -424,6 +424,7 @@ from epistrel.orchestrator.structured import time_estimation as skipping
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
+    LATENT_HOLDER_REPAIRED,
     STRUCTURED,
     BeatDecl,
     IntroductionDecl,
@@ -1181,6 +1182,8 @@ class Rendered:
     structure_retries: int = 0
     age_repairs: int = 0
     denied_introductions: int = 0
+    latent_holder_repairs: int = 0
+    """#750: the renders' latents whose named holder was repaired to ``canon``."""
     narrator: bool = False
     model: str | None = None
     prompt_hash: str | None = None
@@ -2561,6 +2564,7 @@ async def _follow_up(
                     actor_id=None,
                     player_id=read.player_id,
                     cast_ids=list(read.names),
+                    cast_names=read.names,
                     max_beats=settings.render.max_beats,
                     states=None if book is None else book.tracked(),
                     states_level=None if book is None else book.level,
@@ -2609,6 +2613,8 @@ async def _follow_up(
     checked.latent += extra.latent
     checked.mentions.update(extra.mentions)
     checked.degradation += extra.degradation
+    if narr.latent_holder_repairs and (LATENT_HOLDER_REPAIRED, "latent") not in checked.degradation:
+        checked.degradation.append((LATENT_HOLDER_REPAIRED, "latent"))  # #750
     checked.staged = extra.staged
     checked.follow_up_beats = frozenset(b.beat for b in extra.beats)
     checked.follow_up_verifier = extra.verifier
@@ -4355,6 +4361,7 @@ def _merged_rendered(renders: Sequence[Rendered]) -> Rendered:
         structure_retries=sum(r.structure_retries for r in renders),
         age_repairs=sum(r.age_repairs for r in renders),
         denied_introductions=sum(r.denied_introductions for r in renders),
+        latent_holder_repairs=sum(r.latent_holder_repairs for r in renders),
         narrator=any(r.narrator for r in renders),
         model=renders[-1].model or first.model,
         prompt_hash=renders[-1].prompt_hash or first.prompt_hash,
@@ -5468,6 +5475,7 @@ async def play(
                                 actor_id=None,
                                 player_id=read.player_id,
                                 cast_ids=cast_ids,
+                                cast_names=read.names,
                                 max_beats=max_beats,
                                 states=book.tracked(),
                                 states_level=book.level,
@@ -5525,6 +5533,7 @@ async def play(
                         actor_id=read_k.character.id,
                         player_id=read.player_id if read.player_id != read_k.character.id else None,
                         cast_ids=cast_ids,
+                        cast_names=read.names,
                         max_beats=max_beats,
                         states=book.tracked(),
                         states_level=book.level,
@@ -5560,6 +5569,7 @@ async def play(
                     structure_retries=retries,
                     age_repairs=repairs,
                     denied_introductions=denied,
+                    latent_holder_repairs=sum(r.latent_holder_repairs for r, _ in renders),
                     narrator=narrate and first,
                     model=calls.calls[-1].model if calls.calls else None,
                     prompt_hash=prompt_hash(messages),
@@ -7229,6 +7239,7 @@ async def play(
                     actor_id=None,
                     player_id=read_.player_id,
                     cast_ids=ctx.cast_ids,
+                    cast_names=read_.names,
                     max_beats=ctx.max_beats,
                     states=book.tracked(),
                     states_level=book.level,
@@ -7267,6 +7278,7 @@ async def play(
             retrievals=[],
             attempts=1,
             structure_retries=retries,
+            latent_holder_repairs=narr.latent_holder_repairs,
             narrator=True,
             model=calls.calls[-1].model if calls.calls else None,
             prompt_hash=prompt_hash(messages),
@@ -7790,6 +7802,8 @@ def _degradation(
             extra += [(d, "retrieval") for d in retrieval.degradation]
         if rendered.denied_introductions:
             extra.append((INTRODUCTION_DENIED, "allow_new_arrivals"))
+        if rendered.latent_holder_repairs:
+            extra.append((LATENT_HOLDER_REPAIRED, "latent"))
     if checked is not None:
         extra += checked.degradation
     for step, cause in extra:

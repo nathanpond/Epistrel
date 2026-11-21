@@ -392,6 +392,7 @@
   "const:epistrel.orchestrator.structured.render.HHMM": "910c99aa62deee55c78bf8661b45d6fed1136ef6f568540af6be4872c621d3aa",
   "const:epistrel.orchestrator.structured.render.INVALID_STRUCTURE": "7454be885c3f53e26a4ad269d9c3604c143a9177a123fee52a879d9556abba9b",
   "const:epistrel.orchestrator.structured.render.LANGUAGE_MAX": "e29c9c180c6279b0b02abd6a1801c7c04082cf486ec027aa13515e4f3884bb6b",
+  "const:epistrel.orchestrator.structured.render.LATENT_HOLDER_REPAIRED": "4229197373966ec1eed7d4025cd5be6ee585d17647ca9d92537e67c74920c301",
   "const:epistrel.orchestrator.structured.render.MAX_CITES": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
   "const:epistrel.orchestrator.structured.render.MAX_EFFECTS": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
   "const:epistrel.orchestrator.structured.render.MAX_INTRODUCTIONS": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
@@ -503,5 +504,5 @@
   "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "063c69c6770a8b9769701fa0901fbb4716ee6f02d5c8c12548af2f3f110a0155",
   "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd"
  },
- "revision": 2
+ "revision": 3
 }

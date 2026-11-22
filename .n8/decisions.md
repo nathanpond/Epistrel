@@ -15779,3 +15779,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - M11 has 0 open and 33 closed issues.
   - Paid runs in this invocation: 4. #749 used 3 (run 14) and run 15's Full certify used 1. The Max certify was stopped by the owner partway through, and it wrote no report.
   **Issue:** #528, #540, #602, #972
+
+## /n8-verify M11 — 2026-11-22
+
+- **Verified** at `b162dda4bee89d3d1ede8c8cb15188b777a30def` with 8 independent verifiers and no paid calls: 24 of 32 stories ALL-VERIFIED. Records are on epic #935 and PR #995.
+- **Waivers (owner):**
+  - Outcomes 1/2/3/8, part of outcome 6, the coverage rows that depend on #819/#474, and the definition of done's certified-model line. The owner's words are on PR #995.
+  - Four `sev:high` test gaps (#998, #999, #1000, #1005), relabelled `sev:medium` with the owner's words.
+- **Closed:** M11. The full suite's evidence is CI run 45062908499 at the verify commit (5,474 passed, 0 failed).
+
+## Ad-hoc — 2026-11-22 (a real-use fixes milestone; ADR-207)
+
+- **Change:** the owner created **M12: Real-use fixes** right after M11, and the audit moved from M12 to **M13**.
+  - The owner's words: *"can I waive these missing tests and add another milestone right after to add them and other bugs too? Epistrel is goign to be put into real use, so any bugs will also get added to this new milestone"*.
+  - M12 holds the M11 verify gaps #998, #999, #1000 and #1005, the carries #1001–#1004, the exec follow-ups #994 and #996, and every bug found in real use.
+  - The carried bugs moved out of M11 rather than staying in it.
+  - Applied in docs/03 §21/§22 and ADR-207 (which amends ADR-184), and `current_milestone` is now 11.
+  **Why:** Epistrel is going into real use with a consuming application; the owner wants its bugs and M11's test gaps fixed in one place, before the audit.
+  **Affects:** M13 (Audit; renumbered, still unplanned) and v2 (unchanged). M12 needs `/n8-plan M12`.

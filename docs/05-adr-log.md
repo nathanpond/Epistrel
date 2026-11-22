@@ -247,7 +247,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 181 | Image limits are deployment- and entry-scoped; per-story limits belong to the consumer | Current | — |
 | 182 | Image minors-policy certification uses external evidence; Epistrel holds no violating images | Current | — |
 | 183 | Certification runs are listed, canaries included, each with its outcome | Current | — |
-| 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
+| 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Partly superseded | 207 |
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
 | 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
@@ -270,6 +270,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Current | — |
 | 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
 | 206 | A structured turn's deadline is checked up front against per-model latency estimates | Current | — |
+| 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Current | — |
 
 ---
 
@@ -1971,12 +1972,13 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-184 — Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12
 **Status:** Accepted. Amends ADR-139 (the milestone sequence after M8), ADR-164 (performance tuning's number and place), ADR-166 (NFR-QUAL-7's milestone) and ADR-179 (the milestone whose exit evidence it sets).
+**Amended by:** ADR-207 — a real-use fixes milestone is M12, and the audit moves to M13.
 **Context:** ADR-164 placed **M9 — Performance tuning** directly after M8, with bug fixes and testing as M10 and the audit as M11. Performance tuning ends in an exit certification of the presets at their final fingerprints (ADR-179). Any later capability or fix that moves a preset fingerprint or a prompt un-certifies the presets again. #760 did exactly that to M7's certification: its story-scoped template edits moved every preset fingerprint, so Standard, Full and Max read as uncertified on main until they are re-certified. The Survivor consumer app has since asked for new capabilities (#805–#808): benching a character while it keeps its memories, safety-checked entity images outside a story, raising the 20-character cast cap, and plugins or custom model purposes. Several of these change what the tuning measures, and M10's bug fixes may change prompts too. 03 §22 lets an ADR change the sequence, provided the dependency order holds.
 **Decision:** The owner's decision of 2026-11-09. The milestones after M8 are resequenced:
 - **M9 — Consumer requests** (#805–#808), depending on M8. Not yet planned; no requirements are assigned to it yet.
 - **M10 — Bug fixes and testing**, depending on M9. Its number is unchanged. Not yet planned; no requirements.
 - **M11 — Performance tuning**, depending on M10. It takes everything ADR-164, ADR-166 and ADR-179 gave M9, with scope, floors, labeled sets, scorers, gate rule and exit evidence unchanged. NFR-QUAL-2..4, 7 and 14 gate from M11.
-- **M12 — Audit**, depending on M11. Not yet planned; no requirements.
+- **M12 — Audit**, depending on M11. Not yet planned; no requirements. *[superseded by ADR-207: the audit is M13, depending on M12 — Real-use fixes]*
 
 Tuning and its exit certification come after every milestone that may change a preset fingerprint or a prompt, and before the audit. A requirement that later misses in the way ADR-164 describes moves to M11 by ADR-164's route.
 **Alternatives considered:** Keeping tuning at M9 and re-certifying after each later milestone repeats the exit run (hours per preset on a hosted model, days on the local tier) for every fingerprint move, and leaves a tuning verdict that later work can silently invalidate. Folding the consumer requests into M10 mixes new capability with bug fixing and still leaves tuning measuring configurations that later work changes.
@@ -2351,6 +2353,26 @@ Tuning and its exit certification come after every milestone that may change a p
 - The estimates are only as good as their seeds. An operator on another model sets its entry; nothing measures it automatically.
 - OpenAPI (`deadline_below_safety_minimum` on `respond`; the warning's new optional fields), the error catalog, `docs/02` §4.4's budget paragraph and NFR-PERF-6 state the contract. The Console shows the 422 and the warning (nathanpond/Epistrel-Console, filed by #602).
 - Tests: `tests/integration/test_deadline_precheck.py`.
+
+### ADR-207 — A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13
+**Status:** Accepted. Amends ADR-184 (the audit's number and place).
+**Context:** `/n8-verify M11` (2026-11-22, at `b162dda`) verified 24 of M11's 32 stories outright. It filed four confirmed test gaps that blocked closure (#998, #999, #1000, #1005: missing complement or promised tests, each proved by a mutant) and four carries (#1001–#1004). The owner is putting Epistrel into real use with a consuming application, and expects real use to surface more bugs. The owner's words: *"can I waive these missing tests and add another milestone right after to add them and other bugs too? Epistrel is goign to be put into real use, so any bugs will also get added to this new milestone"*.
+**Decision:** The owner's decision of 2026-11-22.
+- **M12 — Real-use fixes**, depending on M11. No new capability and no requirements. It holds:
+  - the four deferred test gaps (relabelled `sev:medium` so M11's gate reads the deferral);
+  - M11's verify carries #1001–#1004;
+  - the M11 exec follow-ups #994 and #996;
+  - every bug found once the engine is in real use.
+- **M13 — Audit**, depending on M12. Not yet planned; no requirements. It is the former M12, unchanged.
+- M11 closes without the four test gaps. They move out of M11 instead of being carried in it.
+**Alternatives considered:**
+- A fix pass before closing M11: the gaps are test-only, but the owner preferred to ship and collect real-use bugs in one place.
+- Filing real-use bugs into the audit milestone: the audit is a separate, planned review, and mixing intake into it would blur its scope.
+- Filing them into v2: v2 holds deferred capability and certification, not fixes for what ships now.
+**Consequences:**
+- No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected.
+- `current_milestone` becomes 11 with M11's closure.
+- M12 is planned by `/n8-plan M12`. Until then, it is an intake bucket.
 
 ---
 

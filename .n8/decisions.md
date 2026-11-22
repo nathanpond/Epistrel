@@ -15550,8 +15550,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Merge (/n8-exec M11 run 12):** PR #985 squash-merged as `5e92e9c` after CI passed 27 of 27. The linked set was exactly #747, which is now CLOSED, with no casualties. Paid runs used in run 12: 3 of 5 (the re-judge, the confirming certify, and iteration 1's rerun).
   **Issue:** #747
 
-## Ad-hoc — 2026-11-21 (an eval judge for `entailment` stays out of the fingerprint; ADR-204)
+## Ad-hoc — 2026-11-21 (an eval judge for `entailment` stays out of the fingerprint; ADR-204) — reconciled by /n8-replan 2026-11-21
 
 - **Change:** #747 added per-purpose eval judges (`--judge-model-for entailment=claude-sonnet-5-5`). Unlike the planner's shape, the entailment judge does **not** enter the configuration fingerprint. The report (`Report.judges`), the certification record (`CertificationRecord.judges`, `schema_version` 3) and the journal scope name it instead. NFR-QUAL-3 now counts only with judge agreement ≥ 75% (per pair). `consolidation.j2` gained a wording rule, which moved every preset fingerprint (Standard `0eb007d36bfb`, Full `064728ca3391`, Max `acf72d616451`).
   **Why:** a deployment computes its fingerprint with no eval judge, so a judged certification would never match it. And with the self-judge at 61.78% agreement, NFR-QUAL-3 is only trustworthy with Sonnet judging.
   **Affects:** M11 #819 (the exit certification must pass `--judge-model-for entailment=claude-sonnet-5-5`, and it runs on the new fingerprints); #474 and #748/#749 reruns run on the new fingerprints. Plans may be stale: run `/n8-replan M11`.
+
+## /n8-replan M11 — 2026-11-21
+
+- **Cause:** the Ad-hoc entry of 2026-11-21 (ADR-204, #747). An `entailment` judge (`claude-sonnet-5-5`) is part of certification but not of the fingerprint. NFR-QUAL-3 counts only at ≥ 75% judge agreement. `consolidation.j2` moved every preset fingerprint.
+- **Evidence:** the ledger, `git log` since the 2026-11-16 plan (only M11 run merges), and a spot-check of every open M11 story's file, library and command claims. Only #819 names the judge.
+- **Applied (owner approved "Apply all"):**
+  - **#819, stale how:** the exit command names `--judge-model-for entailment=claude-sonnet-5-5`; `--recalibrate` only if `quality_judge` changes; the freeze check covers the entailment judge; budget about $20 more. No AC change. Comment added.
+  - **M11 milestone description:** outcome 2 gains the ADR-204 line.
+  - **Epic #935:** comment only, no AC change.
+- **Unchanged:** #748, #749, #528, #529, #540, #474, #952, #972, #602, #603, #588 and #685. Each re-measures on the current fingerprints first, and none reads E-03 or the judge routing.

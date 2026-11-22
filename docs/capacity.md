@@ -8,7 +8,7 @@ P-06's vector-scale curve (NFR-SCALE-1). Capacity is claimed **only for the meas
 
 | Memories | HNSW build (s) | Index size (MiB) | p50 (ms) | p95 (ms) | p99 (ms) | Gated | Within 150 ms |
 |---|---|---|---|---|---|---|---|
-| 1,000 | 0.4 | 3.9 | 50.4 | 71.9 | 176.1 | no (reported) | yes |
-| 10,000 | 6.6 | 39.1 | 68.2 | 87.7 | 189.5 | no (reported) | yes |
-| 50,000 | 49.7 | 195.3 | 95.9 | 124.2 | 220.0 | no (reported) | yes |
-| 100,000 | 116.8 | 390.6 | 126.1 | 256.7 | 327.0 | no (reported) | **no** |
+| 1,000 | 0.3 | 3.9 | 48.4 | 70.4 | 194.0 | no (reported) | yes |
+| 10,000 | 6.6 | 39.1 | 65.0 | 83.4 | 194.6 | no (reported) | yes |
+| 50,000 | 50.3 | 195.3 | 96.4 | 125.5 | 213.3 | no (reported) | yes |
+| 100,000 | 115.8 | 390.6 | 124.3 | 219.6 | 315.3 | no (reported) | **no** |

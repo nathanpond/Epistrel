@@ -6,12 +6,15 @@ reported."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.evals import SUITES, Verdict
+from epistrel.evals import SUITES, AdapterConfig, Verdict, run
 from epistrel.evals.suites.e05_salience import PRECISION, RECALL, SalienceCase, score
 from tests.eval.suite_support import (
+    SEEDS,
     SETS,
     assert_floors_pass,
     by_id,
@@ -20,6 +23,7 @@ from tests.eval.suite_support import (
     strict_verdict,
     stub_run,
 )
+from tests.evals.support import stub_engine
 
 pytestmark = pytest.mark.integration
 
@@ -50,3 +54,56 @@ async def test_e_05(pg_url: str, engine: AsyncEngine) -> None:
     wrong = flipped(cases, target.id, expected=[])
     complement = await stub_run(pg_url, engine, frozen(suite, cases), cases=wrong)
     assert strict_verdict(complement, PRECISION) is Verdict.failed
+
+
+async def _played_bias(
+    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, preset: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """E-05 on the stub under ``preset`` for one salient case: the ``(bias, routes)`` each
+    ``detect_salience`` call was played with."""
+    from epistrel.evals.suites import e05_salience
+    from epistrel.orchestrator.commit.salience import detect_salience as original
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append((kwargs.get("bias", "balanced"), dict(kwargs.get("routes") or {})))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(e05_salience, "detect_salience", spy)
+    suite = SUITES["e05"]
+    cases = [c for c in suite.load(SETS) if isinstance(c, SalienceCase) and c.expected][:1]
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(preset=preset),  # type: ignore[arg-type]
+            SEEDS[:1],
+            engine=lib,
+            sets_dir=SETS,
+            cases={suite.name: cases},
+        )
+    assert report.errors == [], report.errors
+    return seen
+
+
+@pytest.mark.part("M11", "NFR-QUAL-4")
+async def test_e_05__m11_plays_the_presets_salience(
+    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#748: E-05 plays salience as the run's preset configures it: Max's cases are read with
+    ``salience_bias = recall`` and the route Max's profile gives ``salience_detection``.
+
+    Complement asserted: Full's are read with ``balanced`` (before #748 every preset was)."""
+    from epistrel.evals.presets import PRESETS
+    from epistrel.orchestrator.models.config import routes_of
+    from epistrel.orchestrator.models.registry import SALIENCE_DETECTION
+
+    played = await _played_bias(pg_url, engine, monkeypatch, "max")
+    assert played
+    want = routes_of(PRESETS["max"].effective()).get(SALIENCE_DETECTION.name)
+    assert all(bias == "recall" for bias, _ in played), played
+    assert all(routes.get(SALIENCE_DETECTION.name) == want for _, routes in played), played
+
+    full = await _played_bias(pg_url, engine, monkeypatch, "full")
+    assert full
+    assert all(bias == "balanced" for bias, _ in full), full

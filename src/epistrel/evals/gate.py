@@ -27,7 +27,12 @@ share of bad ones for an ``at_most`` floor (false support ≤ 1 %); values are f
   ``composition_fallback``). It has no floor. It passes when at least ``IDENTITY_MIN_CASES`` (50)
   fired cases, summed over at least two seeds, all released the draft unchanged; one that
   differed fails it; fewer is ``insufficient_evidence``.
-- **Informational** (``informational``): no floor; the verdict is ``report_only``.
+- **Informational** (``informational``): no floor; the verdict is ``report_only``. An
+  informational metric may carry an owner's ``target`` (#528, #529): a fraction its mean across
+  seeds is compared with (``target_status``: ``meets target`` when the mean is on the good side
+  of it or on it, ``misses target`` otherwise, ``no data`` with no observations). A target is
+  shown beside the value and carried into certification records; it is never a ``Verdict``, so
+  it never enters a requirement's floors or the run's verdict.
 
 Each floored rule is ``insufficient_evidence`` with no observations or fewer than two seeds
 (no standard deviation), unless the run already fails (a violation is evidence enough).
@@ -95,6 +100,9 @@ class Metric:
     floor: float | None = None
     direction: Direction = Direction.at_least
     description: str = ""
+    target: float | None = None
+    """An informational metric's owner target (#528), a fraction compared on ``direction``'s side
+    (``target_status``); ``None``: no target. Never a floor."""
 
     @property
     def requirement(self) -> str | None:
@@ -110,6 +118,10 @@ def metric_problems(metric: Metric) -> list[str]:
     found: list[str] = []
     if not METRIC_ID_PATTERN.match(metric.id):
         found.append(f"{metric.id!r}: not a lower-case dotted metric id")
+    if metric.target is not None and (
+        metric.rule is not Rule.informational or not 0.0 <= metric.target <= 1.0
+    ):
+        found.append(f"{metric.id}: a target is a fraction 0-1 on an informational metric only")
     if metric.rule in (Rule.informational, Rule.identity):
         if metric.floor is not None:
             found.append(f"{metric.id}: an {metric.rule} metric has no floor")
@@ -224,6 +236,22 @@ def judge(metric: Metric, tallies: Sequence[SeedTally], *, lost: Sequence[int] =
     return Judgement(verdict, mean, stdev, sample, seeds, values, violations, bound, total)
 
 
+class TargetStatus(StrEnum):
+    """How an informational metric's mean compares with its owner target (#528)."""
+
+    meets = "meets target"
+    misses = "misses target"
+    no_data = "no data"
+
+
+def target_status(direction: Direction, target: float, mean: float | None) -> TargetStatus:
+    """``mean`` against ``target`` on ``direction``'s side (on the target meets it)."""
+    if mean is None:
+        return TargetStatus.no_data
+    good = mean <= target if direction is Direction.at_most else mean >= target
+    return TargetStatus.meets if good else TargetStatus.misses
+
+
 def _zero_verdict(violations: int, sample: int, seeds: int) -> Verdict:
     if violations:
         return Verdict.failed
@@ -274,10 +302,12 @@ __all__ = [
     "Metric",
     "Rule",
     "SeedTally",
+    "TargetStatus",
     "Verdict",
     "gate",
     "judge",
     "metric_problems",
     "strict",
+    "target_status",
     "upper_bound_95",
 ]

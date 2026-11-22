@@ -77,6 +77,7 @@ from epistrel.orchestrator.models.adapter import (
     UnknownPurpose,
 )
 from epistrel.orchestrator.models.call_trace import (
+    CALL_PROMPTS,
     CALL_TRACE,
     EXCHANGES,
     STRUCTURED_SCHEMA,
@@ -521,7 +522,11 @@ class ModelAccessLayer:
         attempt: int,
     ) -> ModelResult:
         """The adapter's answer; under an eval run's call trace (#737, ``call_trace``) the HTTP
-        requests it made are handed to the trace's sink, whether it answered or raised."""
+        requests it made are handed to the trace's sink, whether it answered or raised. Under a
+        case's prompt recorder (#540, ``call_trace.CALL_PROMPTS``) the messages are kept too."""
+        prompts = CALL_PROMPTS.get()
+        if prompts is not None:
+            prompts.append((purpose, tuple(messages)))
         sink = CALL_TRACE.get()
         if sink is None:
             return await self.adapter.complete(purpose, messages, params, response_schema)

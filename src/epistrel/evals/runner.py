@@ -66,8 +66,9 @@ it) reports its own fingerprint of that configuration in its result (``SuiteResu
 and ``profile``).
 
 **Failures.** A ``ModelError`` during a case is a failed case, never a silent exclusion. A
-suite with a model-error row (``Suite.model_error_metric``: NFR-QUAL-1's zero-leak suites, #179)
-reports it there, and the case observes nothing else: an error is not a disclosure, a missed
+suite with a model-error row (``Suite.model_error_metric``: NFR-QUAL-1's zero-leak suites, #179;
+#528's ``*.render_error_rate``, over the withheld cases, a guardrail refusal left out) reports it
+there, and the case observes nothing else: an error is not a disclosure, a missed
 control or a repair, and the suite's floors are judged on its completed cases (the observed-zero
 rule's 300 cases are completed ones: a seed short of them because of model errors is
 ``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
@@ -1014,7 +1015,8 @@ async def _play_case(
         outcome = replace(outcome, detail={**outcome.detail, "story_busy_retries": budget.retries})
     errored = suite.model_error_metric
     if outcome is not None and errored is not None and errored not in outcome.observations:
-        outcome = replace(outcome, observations={**outcome.observations, errored: True})
+        counted = True if suite.model_error_counted(case) else None
+        outcome = replace(outcome, observations={**outcome.observations, errored: counted})
     return _Played(case, seed, outcome, error, latency)
 
 
@@ -1037,7 +1039,10 @@ def model_error_outcome(
     observations: dict[str, bool | None]
     if errored is not None:
         observations = {metric.id: None for metric in suite.metrics}
-        observations[errored] = False
+        # #528: the row counts a model error on a case in its denominator; a guardrail refusal
+        # is the policy's verdict, not a render failure, and is left out of it.
+        counted = isinstance(exc, ModelError) and (case is None or suite.model_error_counted(case))
+        observations[errored] = False if counted else None
     elif declared is None:
         observations = {metric.id: False for metric in suite.metrics}
     else:

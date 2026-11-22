@@ -20,6 +20,8 @@ certify``) and the preset constants (#227, ``evals.presets.PRESETS``):
   own metric for its suite): failed when any sub-metric failed, passed when every one that was
   decided passed, insufficient when none was decided.
 - **Interventions** covered and insufficient (E-12, NFR-QUAL-14), or ``judge uncalibrated``.
+- **Targets** (#528): the record's informational rows with an owner target, each with how its
+  mean compared (``meets target``, a miss in bold, ``no data``); never a floor.
 - The record's model (``generation``'s), seeds, date (UTC) and a relative link to its report.
   An ``uncertified`` row has only its model (``—`` with no record, or a record that names no
   ``generation`` model) and ``—`` in every other cell.
@@ -89,6 +91,7 @@ PRESETS_HEADER = (
     "Insufficient",
     "Interventions covered",
     "Interventions insufficient",
+    "Targets",
     "Model",
     "Seeds",
     "Date (UTC)",
@@ -192,6 +195,19 @@ def floor_cells(record: CertificationRecord) -> tuple[str, str, str]:
     return _ids(passed), _ids(failed), _ids(insufficient)
 
 
+def target_cell(record: CertificationRecord) -> str:
+    """The Targets cell (#528): each owner-target row the record carries and how it compared
+    (a miss in bold), or ``—``. Reported, never a floor."""
+    if not record.targets:
+        return EM_DASH
+    return ", ".join(
+        f"**`{t.metric_id}` {t.status}**"
+        if t.status == "misses target"
+        else f"`{t.metric_id}` {t.status}"
+        for t in record.targets
+    )
+
+
 def _key(item: str) -> tuple[int, str]:
     tail = item.rsplit("-", 1)[-1]
     return (int(tail), item) if item.startswith("NFR-QUAL-") and tail.isdigit() else (10**6, item)
@@ -241,7 +257,7 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
             )
             model = _model(newest.record)
         return _row(
-            [PRESETS[preset].label, digest, status, *([EM_DASH] * 5), model, *([EM_DASH] * 3)]
+            [PRESETS[preset].label, digest, status, *([EM_DASH] * 6), model, *([EM_DASH] * 3)]
         )
     record = matching.record
     passed, failed, insufficient = floor_cells(record)
@@ -260,6 +276,7 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
             insufficient,
             covered,
             lacking,
+            target_cell(record),
             _model(record),
             str(record.seed_count),
             (

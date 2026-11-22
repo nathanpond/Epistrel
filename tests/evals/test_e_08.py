@@ -151,12 +151,13 @@ def _failures(path: Path) -> dict[tuple[str, int], dict[str, object]]:
     return {(x["case"]["id"], x["seed"]): x for x in lines}
 
 
-def _assert_model_error(record: dict[str, object], row: str) -> None:
-    """A model error's failure record: its row bad and nothing else observed, no output, and
-    the error's code, reason and structural codes in ``detail`` (never story content)."""
+def _assert_model_error(record: dict[str, object], row: str, *, counted: bool = True) -> None:
+    """A model error's failure record: its row bad (a control's left out of the row, #528) and
+    nothing else observed, no output, and the error's code, reason and structural codes in
+    ``detail`` (never story content)."""
     observations = record["observations"]
     assert isinstance(observations, dict)
-    assert observations.pop(row) is False
+    assert observations.pop(row) is (False if counted else None)
     assert set(observations.values()) == {None}
     assert record["output"] == ""
     detail = record["detail"]
@@ -178,14 +179,15 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
     """#179's Rule 1 fix (the owner's live run scored 413 model errors as disclosures): on a
     Q-04 slice of four withheld cases and two controls, two seeds, a model error injected on one
     withheld case and one control (an answer that never validates: ``invalid_structure``)
-    scores neither as a disclosure, a missed control or a repair. ``q04.model_error`` reports
-    both (report-only), the zero rule counts only the completed cases, and the suite's verdict
-    is decided by them (a slice this short fails by the observed-zero rule, as a clean one
-    does). Each error's failure record names the error's reason and structural codes, with no
-    output. The private-thought suite alike: an errored withheld case observes no category row.
+    scores neither as a disclosure, a missed control or a repair. ``q04.render_error_rate``
+    reports the withheld one (report-only; a control is left out, #528), the zero rule counts
+    only the completed cases, and the suite's verdict is decided by them (a slice this short
+    fails by the observed-zero rule, as a clean one does). Each error's failure record names the
+    error's reason and structural codes, with no output. The private-thought suite alike: an
+    errored withheld case observes no category row.
 
     Complement asserted: the same slice played clean has the same verdicts, every case observed,
-    no failure record and a ``model_error`` row of 0."""
+    no failure record and a ``render_error_rate`` row of 0."""
     suite = SUITES["q04"]
     cases = [c for c in suite.load(SETS) if isinstance(c, AsymmetryCase)]
     withheld = [c for c in cases if not c.control][:4]
@@ -210,7 +212,7 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
         ASYMMETRY: ((4, 0.0), (3, 0.0)),
         q04.CONTROL: ((2, 1.0), (1, 1.0)),
         q04.REPAIRED: ((6, 0.0), (4, 0.0)),
-        q04.MODEL_ERROR: ((6, 0.0), (6, 2 / 6)),
+        q04.MODEL_ERROR: ((4, 0.0), (4, 1 / 4)),  # withheld cases only (#528)
     }
     for metric_id, (calm, hit) in expected.items():
         for report, (n, mean) in ((clean, calm), (broken, hit)):
@@ -226,8 +228,8 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
     assert _failures(clean_log) == {}
     records = _failures(broken_log)
     assert set(records) == {(c.id, seed) for c in (withheld[0], controls[0]) for seed in SEEDS}
-    for record in records.values():
-        _assert_model_error(record, q04.MODEL_ERROR)
+    for (case_id, _), record in records.items():
+        _assert_model_error(record, q04.MODEL_ERROR, counted=case_id == withheld[0].id)
 
     leak_suite = SUITES["priv_think_leak"]
     pool = [c for c in leak_suite.load(SETS) if isinstance(c, ThinkLeakCase)]
@@ -253,7 +255,7 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
         (THINK_LEAK, 1, 0.0),
         (category, 1, 0.0),
         (think_leak.CONTROL, 0, None),
-        (think_leak.MODEL_ERROR, 3, 2 / 3),
+        (think_leak.MODEL_ERROR, 2, 1 / 2),  # the control left out (#528)
     ]
     for metric_id, n, want in rows:
         found = _metric(thought, metric_id)
@@ -262,8 +264,8 @@ async def test_e_08__m5_model_errors(pg_url: str, engine: AsyncEngine, tmp_path:
     assert _metric(thought, THINK_LEAK).violations == 0
     leaked = {k: v for k, v in _failures(broken_log).items() if v["suite"] == leak_suite.name}
     assert set(leaked) == {(failing.id, one_seed[0]), (control.id, one_seed[0])}
-    for record in leaked.values():
-        _assert_model_error(record, think_leak.MODEL_ERROR)
+    for (case_id, _), record in leaked.items():
+        _assert_model_error(record, think_leak.MODEL_ERROR, counted=case_id == failing.id)
 
 
 # -- #562: every case is checked against every category's forms -----------------------------
@@ -410,6 +412,19 @@ NEUTRAL = (
     ("nested", "lottery", "The hall is cold tonight."),
     ("phone", "burner", "Elias left a message for Owen."),
     ("phone", "sober", "Owen made tea for everyone in the kitchen."),
+    # #972 (the #818 baseline's one Full think leak): Bobby's own act, not Marcus's fact. A form
+    # of a cast name and one word ("watching bobby") is an exact phrase, not a stem bag.
+    (
+        "whisper",
+        "agency",
+        "Bobby glances over at Marcus, then rolls a loose coin across his knuckles, "
+        "pretending not to watch him too closely.",
+    ),
+)
+NAMED_FORMS = (
+    # #972's complement: the exact phrase is still a disclosure.
+    ("whisper", "agency", "Marcus has been watching Bobby all night."),
+    ("whisper", "brooch", "That's Clara's brooch in his coat."),
 )
 
 
@@ -447,6 +462,8 @@ def test_e_08__m5_think_leak_reworded_neutral() -> None:
     paraphrase and a narrated feeling, #562) is detected by the oracle."""
     for fixture_id, fact_key, line in NEUTRAL:
         assert think_leak.oracle(line, _inputs_for(fixture_id, fact_key)) == ([], False), line
+    for fixture_id, fact_key, line in NAMED_FORMS:
+        assert think_leak.oracle(line, _inputs_for(fixture_id, fact_key))[0], line
     cases = [c for c in SUITES["priv_think_leak"].load(SETS) if isinstance(c, ThinkLeakCase)]
     controls: dict[str, int] = {}
     for case in cases:

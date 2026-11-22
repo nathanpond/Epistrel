@@ -107,6 +107,7 @@ from pydantic import (
     ModelWrapValidatorHandler,
     PrivateAttr,
     create_model,
+    field_validator,
     model_validator,
 )
 
@@ -653,6 +654,22 @@ class BeatDecl(_Strict):
     """A ``think``'s citations (#166, FR-TURN-8): the ids of the records (an event, a fact) a
     new belief it reasons from rests on. Checked, never trusted: a citation is confirmed only
     when it names the antecedent the engine's own search finds."""
+
+    @field_validator("cites", mode="before")
+    @classmethod
+    def _cites_are_text(cls, value: Any) -> Any:
+        """#528: a step number in a ``think``'s ``cites`` (the shape most of hosted Haiku's
+        think-cite failures took) is named in the correction the retry sends, not left to the
+        bare type error."""
+        if isinstance(value, list) and any(
+            isinstance(c, int) and not isinstance(c, bool) for c in value
+        ):
+            raise ValueError(
+                "a think cites the text entries its steps cite, never a step number"
+                " (copy those entries, or leave `cites` out)"
+            )
+        return value
+
     step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
     """The ``act`` (or #194's ``time``) step that owns this ``say`` or ``do`` (#168,
     FR-TURN-12; ``None``: none)."""
@@ -838,7 +855,8 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         if beat.kind == "think" and beat.cites and not set(beat.cites) <= records:
             raise ValueError(
                 f"beats.{n}.cites: disagrees with the steps' citations"
-                " (a think cites only the record ids its steps cite)"
+                " (a think cites only the record ids its steps cite: copy those text entries,"
+                " never a step number, or leave `cites` out)"
             )
 
 

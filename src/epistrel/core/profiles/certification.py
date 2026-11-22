@@ -1,9 +1,9 @@
 """Certification records and the quality status they produce (FR-PROF-15..17, NFR-QUAL-8,11;
 #233).
 
-**A record** (``CertificationRecord``, ``schema_version`` 3; #937 added ``identity_types`` in
-version 2 and #747 added ``judges`` in version 3, both kept in the record only, and an earlier
-record is read as recorded) is what an eval run against one
+**A record** (``CertificationRecord``, ``schema_version`` 4; #937 added ``identity_types`` in
+version 2, #747 added ``judges`` in version 3 and #528 added ``targets`` in version 4, all kept
+in the record only, and an earlier record is read as recorded) is what an eval run against one
 configuration fingerprint certifies: the floors it passed, each with its rule, mean, standard
 deviation, sample size, seeds and bound (``FloorResult``), the floors it failed or could not
 decide (recorded, never hidden), the intervention types NFR-QUAL-14's floor covers and those it
@@ -88,9 +88,9 @@ from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 3
-"""#937: version 2 adds ``identity_types``; #747: version 3 adds ``judges``. An earlier record
-keeps its verdicts as recorded."""
+SCHEMA_VERSION = 4
+"""#937: version 2 adds ``identity_types``; #747: version 3 adds ``judges``; #528: version 4
+adds ``targets``. An earlier record keeps its verdicts as recorded."""
 SEEDS_DIR = Path(__file__).resolve().parent.parent / "seeds" / "certifications"
 """The committed certification records the start-up loader imports (#235 writes them)."""
 VALID = "valid"
@@ -118,6 +118,24 @@ class FloorResult(BaseModel):
     upper_bound_95: float | None = None
     verdict: str = Field(min_length=1, max_length=40)
     intervention_type: str | None = None
+
+
+class TargetResult(BaseModel):
+    """An informational row's owner target (#528, #529): the metric, its target and side, the
+    mean and standard deviation across seeds, the cases and seeds, and how the mean compares
+    (``meets target``, ``misses target``, ``no data``). Reported and checked at the exit run,
+    never a floor: it does not decide whether a fingerprint is certified."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    metric_id: str = Field(min_length=1, max_length=200)
+    target: float = Field(ge=0.0, le=1.0)
+    direction: Literal["at_least", "at_most"]
+    mean: float | None = None
+    sd: float | None = None
+    n: int = Field(ge=0)
+    seeds: int = Field(ge=0)
+    status: Literal["meets target", "misses target", "no data"]
 
 
 class CertificationRecord(BaseModel):
@@ -153,7 +171,7 @@ class CertificationRecord(BaseModel):
         },
     )
 
-    schema_version: Literal[1, 2, 3]
+    schema_version: Literal[1, 2, 3, 4]
     certification_id: str = Field(pattern=ULID_PATTERN)
     fingerprint: str = Field(pattern=FINGERPRINT_PATTERN)
     profile_id: str | None = Field(default=None, pattern=ULID_PATTERN)
@@ -174,6 +192,9 @@ class CertificationRecord(BaseModel):
     """#747: per judge purpose of the eval harness (``entailment``, ``quality_judge``), the
     model that judged it when it was not the run model (kept in the record only, not
     stored)."""
+    targets: list[TargetResult] = Field(default_factory=list)
+    """#528: the run's informational rows with an owner target and how each compared (kept in
+    the record only, not stored; never a floor)."""
     sample_sizes: dict[str, int] = Field(default_factory=dict)
     seed_count: int = Field(ge=1)
     model_tier: Literal["reference", "other"] = "other"
@@ -273,7 +294,7 @@ def check_report(record: CertificationRecord, report_md: str | None) -> None:
 
 def _values(record: CertificationRecord, via: str) -> dict[str, Any]:
     dumped = record.model_dump(
-        mode="json", exclude={"schema_version", "report_md", "identity_types", "judges"}
+        mode="json", exclude={"schema_version", "report_md", "identity_types", "judges", "targets"}
     )
     dumped["id"] = dumped.pop("certification_id")
     dumped["run_at"] = record.run_at
@@ -1426,6 +1447,7 @@ __all__ = [
     "QuotedFigure",
     "RateEvidence",
     "RunEstimate",
+    "TargetResult",
     "canary_outcome",
     "canary_verdicts",
     "certified",

@@ -50,10 +50,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204, 205 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
+| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176, 205 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151, 191 |
 | NFR-MAINT | §20 | 148 |
@@ -268,6 +268,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 | 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
 | 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Current | — |
+| 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
 
 ---
 
@@ -2301,6 +2302,23 @@ Tuning and its exit certification come after every milestone that may change a p
 - An untrusted judge's NFR-QUAL-3 is in none of a record's passed, failed or insufficient lists: the floor is not evidenced.
 - docs/03 NFR-QUAL-3, docs/04 §8's E-03 entry, E-03's `reading_notes` and `docs/evals/README.md` state the rule.
 - Tests: `tests/eval/test_e_03.py` (`test_e_03`: per-pair counts and a trusted verdict; `test_e_03__untrusted_judge`: a judge at 50% agreement makes faithfulness report only) and `tests/evals/test_judge_for.py` (the flags, routing with zero entailment calls on the run adapter, the journal scope, the trust rule at 75%, and the re-judge's cause rule).
+
+### ADR-205 — Q-04 counts a disclosure only when the asked character's context held the fact
+**Status:** Accepted.
+**Context:** #540. Q-04 (NFR-QUAL-1's knowledge-asymmetry metric) counted any forbidden form in a non-holder's player-facing answer as a violation. Some questions make the withheld fact easy to guess. Asked how George gets in so late, a character answers "a spare key", and live runs on `cydonia-24b-v4.3` (2026-10-24/25) and the #818 baseline on `claude-haiku-5-5` (2026-11-19/21: 5, 6 and 9 hits on Standard, Full and Max) scored such guesses as leaks. `test_q_04__guessed_cases_context` (#179) showed that for five of them the asked character's generation context held neither a form of the fact nor its root word: the model guessed from the question. NFR-PRIV-4 makes privacy structural first: what NFR-QUAL-1 is meant to catch is a fact reaching a character it should not, and a guess the character could not have read is not that. The owner's decision for M11 (option (c), 2026-11-09; the #540 plan of 2026-11-16) is to score disclosures against the character's context.
+**Decision:** Applied by #540 (NFR-QUAL-1, NFR-QUAL-8). Amends NFR-QUAL-1 and NFR-QUAL-8 (docs/03) and docs/04 §8's Q-04 entry.
+- On Q-04, a forbidden form in the answer counts toward `nfr_qual_1.asymmetry` only when the asked character's **generation context** held the fact. That means one of the case's forms or one of the fact's authored `roots` (`fixtures.PrivateFact.roots`), matched by the same folded whole-word matcher (#148), so a paraphrased form in context still makes a hit a leak. The context is every `generation` or `regeneration` call that rendered that character (`## You are <name>`) during the measured turn, rejected attempts included, with the player's own question taken out. A root the question names is dropped for that case.
+- Capture is a harness-side recorder, independent of the call trace (#737) and `--no-trace`: `call_trace.CALL_PROMPTS`, a context variable set only for the measured turn of a Q-04 case, appends each adapter call's purpose and messages, on any adapter (a stub run's too). Outside an eval case it is unset and nothing is kept (invariant 3).
+- No recorded render call for the asked character counts as **grounded** (conservative). A `think` or `latent` beat in the player-facing result is always a disclosure. Controls are not grounded: they are the oracle's check. E-08's injected leak stands for the fact reaching the context and stays a violation.
+- A hit the context never held is reported in a new report-only row, `q04.ungrounded_guess`, over the completed withheld cases. The journal detail adds `grounded`.
+- Scope: Q-04 only. `priv_think_leak` is unchanged: its fact is the thinker's own thought, which a reply can only learn from the context.
+**Alternatives considered:** Rewording the guessable questions (the set's answer, #540's title): it removes today's five cases, not the class of guess, and a question that does not invite a guess about a fact it is about is hard to write. A judge deciding guess against leak: a model's ruling on a zero-tolerance metric, with no labelled calibration. An owner ruling per hit (the M5 practice): it does not scale to a certification run.
+**Consequences:**
+- A model that guesses well no longer fails NFR-QUAL-1 on Q-04. A real leak, where the fact reached the asked character's context, still fails the zero rule. The reports keep "0 observed in n cases" with the upper bound, and never say "leak-free".
+- The measurement is as strong as the roots: a fact whose roots miss a word that let the model infer it would score a context-informed answer as a guess. The roots are authored per fact and reviewed with the fixtures.
+- The #818 baseline's reports are not rewritten. New runs apply the rule.
+- docs/03 NFR-QUAL-1 and NFR-QUAL-8, docs/04 §8's Q-04 entry, Q-04's module docstring and `docs/evals/README.md` state the rule.
+- Tests: `tests/eval/test_q_04.py`. `test_q_04__m5_context_grounded`: the five guessed cases are scored `q04.ungrounded_guess`, the injected leak is still one violation, and `grounded` counts a form, a paraphrase, a root and no context. `test_q_04__m5_character_context`: what the context holds and what it leaves out.
 
 ---
 

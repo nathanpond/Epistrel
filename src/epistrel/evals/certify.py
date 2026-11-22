@@ -50,6 +50,7 @@ from epistrel.core.profiles.certification import (
     HarnessOutcome,
     HarnessRequest,
     RunEstimate,
+    TargetResult,
     install_harness,
     report_hash,
 )
@@ -166,6 +167,25 @@ def floors_of(
     return passed, failed, insufficient, covered, lacking, calibrated
 
 
+def targets_of(report: Report) -> list[TargetResult]:
+    """The report's informational rows that carry an owner target (#528), in report order."""
+    return [
+        TargetResult(
+            metric_id=m.id,
+            target=m.target,
+            direction=m.direction.value,
+            mean=m.mean,
+            sd=m.stdev,
+            n=m.sample_size,
+            seeds=m.seed_count,
+            status=m.target_status.value,
+        )
+        for suite in report.suites
+        for m in suite.metrics
+        if m.target is not None and m.target_status is not None
+    ]
+
+
 def record_from(
     report: Report,
     report_md: str,
@@ -198,6 +218,7 @@ def record_from(
         identity_types=[kind for kind in covered if kind in IDENTITY_TYPES],
         judge_calibrated=calibrated,
         judges={purpose: judge.model for purpose, judge in sorted(report.judges.items())},
+        targets=targets_of(report),
         sample_sizes={f.metric_id: f.n for f in (*passed, *failed, *insufficient)},
         seed_count=len(report.seeds),
         model_tier=tier,

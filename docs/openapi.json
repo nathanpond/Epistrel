@@ -3688,7 +3688,8 @@
             "enum": [
               1,
               2,
-              3
+              3,
+              4
             ],
             "title": "Schema Version",
             "type": "integer"
@@ -3697,6 +3698,13 @@
             "minimum": 1,
             "title": "Seed Count",
             "type": "integer"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetResult"
+            },
+            "title": "Targets",
+            "type": "array"
           }
         },
         "required": [
@@ -56802,6 +56810,85 @@
         ],
         "title": "Target",
         "type": "string"
+      },
+      "TargetResult": {
+        "additionalProperties": false,
+        "description": "An informational row's owner target (#528, #529): the metric, its target and side, the\nmean and standard deviation across seeds, the cases and seeds, and how the mean compares\n(``meets target``, ``misses target``, ``no data``). Reported and checked at the exit run,\nnever a floor: it does not decide whether a fingerprint is certified.",
+        "properties": {
+          "direction": {
+            "enum": [
+              "at_least",
+              "at_most"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mean"
+          },
+          "metric_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "n": {
+            "minimum": 0,
+            "title": "N",
+            "type": "integer"
+          },
+          "sd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sd"
+          },
+          "seeds": {
+            "minimum": 0,
+            "title": "Seeds",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "meets target",
+              "misses target",
+              "no data"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Target",
+            "type": "number"
+          }
+        },
+        "required": [
+          "metric_id",
+          "target",
+          "direction",
+          "n",
+          "seeds",
+          "status"
+        ],
+        "title": "TargetResult",
+        "type": "object"
       },
       "ThreatResponse": {
         "description": "How the character responds to being threatened or challenged.",

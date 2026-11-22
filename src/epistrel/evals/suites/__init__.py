@@ -131,7 +131,8 @@ class Suite:
     """The suite's model-error row (#179; an informational metric of ``metrics``): a case a
     ``ModelError`` ended observes it as bad and nothing else, so an error is never scored as a
     disclosure, and every completed case observes it as good (the runner fills it in). ``None``
-    (M4's suites): a model error is bad on every metric (#134)."""
+    (M4's suites): a model error is bad on every metric (#134). Its denominator is the cases
+    ``model_error_counted`` admits (#528); a guardrail refusal is never counted there."""
     standalone: ClassVar[bool] = False
     """A suite that certifies something other than an engine configuration (#270's E-11: an
     image checker) runs only on its own (``run --suite <name>``, its own runner): ``run --all``,
@@ -218,6 +219,11 @@ class Suite:
         error never inflates a rate it could not have affected. ``None`` (the default) keeps
         #134's rule: the error is bad on every metric, so an undeclared suite is conservative."""
         return None
+
+    def model_error_counted(self, case: CaseModel) -> bool:
+        """Whether ``case`` is in the model-error row's denominator (#528): every case by
+        default; a zero-leak suite counts its withheld cases only."""
+        return True
 
     def error_detail(self, case: CaseModel) -> Mapping[str, Any]:
         """What an errored case adds to its outcome's ``detail`` for ``aggregate`` (#530): a

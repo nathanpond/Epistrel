@@ -172,7 +172,7 @@ def test_trusted_keeps_or_demotes_the_floored_rows() -> None:
 
 def test_a_record_names_its_judges_and_is_version_3() -> None:
     """The certification record keeps the judges (record only, never stored)."""
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION >= 3  # 4 since #528's targets (test_targets.py)
     assert "judges" in CertificationRecord.model_fields
 
 

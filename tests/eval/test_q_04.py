@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.evals import SUITES, AdapterConfig, CaseModel, Verdict, run
 from epistrel.evals import fixtures as fx
+from epistrel.evals.authoring.asymmetry import render
 from epistrel.evals.runner import CaseContext
 from epistrel.evals.suites import Outcome
 from epistrel.evals.suites.q04_asymmetry import (
@@ -24,10 +25,15 @@ from epistrel.evals.suites.q04_asymmetry import (
     CONTROL,
     INJECTED_CASE,
     REPAIRED,
+    UNGROUNDED,
     AsymmetryCase,
     Q04Suite,
     ask,
+    character_context,
+    grounded,
 )
+from epistrel.orchestrator.models.adapter import Message
+from epistrel.orchestrator.models.registry import GENERATION
 from tests.eval.suite_support import SEEDS, SETS, by_id
 from tests.evals.support import stub_engine
 from tests.structured_turn_support import schema_calls, text_of
@@ -178,3 +184,76 @@ async def test_q_04__guessed_cases_context(pg_url: str, engine: AsyncEngine, cas
         assert fx.disclosures(context, case.inputs.forbidden) == [], name
         assert root.search(context) is None, name
     assert fx.disclosures(suite.contexts[holder], case.inputs.forbidden) != []
+
+
+GUESSES = {
+    "asymmetry-nested-0003": "I'd guess he has a spare key.",
+    "asymmetry-nested-0007": "Probably a spare key under the mat.",
+    "asymmetry-nested-0009": "He must have a spare key.",
+    "asymmetry-nested-0010": "A spare key, I suppose.",
+    "asymmetry-whisper-0078": "Someone pawned it, I'd bet.",
+}
+"""#540: the guessed live answers of ``GUESSED_CASES``, as stub renders holding a forbidden form."""
+
+
+@pytest.mark.part("M5", "FR-EPI-1,5; NFR-QUAL-1")
+async def test_q_04__m5_context_grounded(pg_url: str, engine: AsyncEngine) -> None:
+    """#540 (ADR-205): a forbidden form in the answer is a disclosure only when the asked
+    character's generation context held the fact. ``GUESSED_CASES``, answered with their guess
+    (the fact's form, on the stub), are scored ``q04.ungrounded_guess``, never a disclosure:
+    their context holds neither a form nor a root (``test_q_04__guessed_cases_context``).
+
+    Complement asserted: E-08's injected leak on the same run, a paraphrase standing for the
+    fact reaching the context, is still one violation; and ``grounded`` counts a context that
+    holds a form, a paraphrased form or a root, and no recorded context at all."""
+    suite = SUITES["q04"]
+    assert isinstance(suite, Q04Suite)
+    cases = {c.id: c for c in suite.load(SETS) if isinstance(c, AsymmetryCase)}
+    picked = [cases[i] for i in sorted(GUESSES)]
+    injected = cases[INJECTED_CASE]
+    async with stub_engine(pg_url, engine) as lib:
+        for case in picked:
+            for seed in SEEDS:
+                lib.models.stub.case(
+                    case.id, render(GUESSES[case.id]), purpose=GENERATION.name, seed=seed
+                )
+        suite.inject(lib.models.stub, injected, SEEDS[1])
+        report = await run(
+            suite, AdapterConfig(), SEEDS, engine=lib, cases={suite.name: [*picked, injected]}
+        )
+    assert report.harness_errors == []
+    metrics = by_id(report.suites[0])
+    assert metrics[ASYMMETRY].violations == 1  # the injected leak, on seed 2 only
+    assert metrics[ASYMMETRY].per_seed == [0.0, pytest.approx(1 / 6)]
+    assert metrics[UNGROUNDED].per_seed == [pytest.approx(5 / 6), pytest.approx(5 / 6)]
+
+    fact = fx.FIXTURES["nested"].fact("key")
+    inputs = cases["asymmetry-nested-0003"].inputs
+    assert grounded(None, fact, inputs)
+    assert grounded("Hugo keeps a spare key in the shed.", fact, inputs)
+    assert grounded("He lets himself in at night.", fact, inputs)  # a listed paraphrase
+    assert grounded("The keys hang by the door.", fact, inputs)  # a root
+    assert not grounded("Dana located_at the front hall", fact, inputs)
+
+
+def test_q_04__m5_character_context() -> None:
+    """#540: the asked character's context is its render calls' messages (``generation`` and
+    ``regeneration`` whose system prompt says ``## You are <name>``), rejected attempts
+    included, with the player's question taken out; another character's call and a non-render
+    purpose are not in it, and no such call is ``None``."""
+    question = "How does George get in so late?"
+    mine = (Message(role="system", content="## You are Dana\nDana is tired."),)
+    other = (Message(role="system", content="## You are Hugo\nThe spare key is in the shed."),)
+    asked = (Message(role="user", content=f'Wren: "{question}"'),)
+    prompts = [
+        ("generation", mine + asked),
+        ("regeneration", mine),
+        ("generation", other + asked),
+        ("entailment", (Message(role="system", content="## You are Dana\nspare key"),)),
+    ]
+    context = character_context(prompts, "Dana", question)
+    assert context is not None
+    assert "Dana is tired." in context
+    assert question not in context
+    assert "spare key" not in context
+    assert character_context(prompts, "Bobby", question) is None

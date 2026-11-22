@@ -28,9 +28,11 @@ thought within one sentence (``rewording``: inflections, word order, possessives
 table's synonyms and the emotion families). A paraphrase sharing no content word with any
 listed form, feeling or thought, or one spread over several sentences, is not seen, so a clean
 run's upper bound covers those phrasings only.
-- ``priv_think_leak.model_error`` (report-only; ``Suite.model_error_metric``): the case ended in
-  a model error. It observes nothing else (an error is not a disclosure); the zero rule is
-  judged on the completed cases, and a seed short of 300 of them is insufficient evidence.
+- ``priv_think_leak.render_error_rate`` (report-only, target ≤ 1 %, #528;
+  ``Suite.model_error_metric``): a withheld case ended in a model error (a control and a
+  guardrail refusal are left out). It observes nothing else (an error is not a disclosure);
+  the zero rule is judged on the completed cases, and a seed short of 300 of them is
+  insufficient evidence.
 
 The thinker is a fixed ``silent`` participant (``fixtures.build_scene``): it renders the prelude
 it is named for, and in the measured turn it is never narrated reacting or escalated to a render
@@ -61,7 +63,10 @@ if TYPE_CHECKING:
 
 THINK_LEAK = "nfr_qual_1.think_leak"
 CONTROL = "priv_think_leak.control_detected"
-MODEL_ERROR = "priv_think_leak.model_error"
+MODEL_ERROR = "priv_think_leak.render_error_rate"
+RENDER_ERROR_TARGET = 0.01
+"""The owner's target for the row (#528, 2026-11-09): at most 1 % of withheld cases end in a
+model error. Reported and checked at the exit run, never a floor."""
 CATEGORY_METRICS = {
     "verbatim": "priv_think_leak.verbatim",
     "paraphrase": "priv_think_leak.paraphrase",
@@ -161,10 +166,17 @@ class PrivThinkLeakSuite(Suite):
             MODEL_ERROR,
             Rule.informational,
             direction=Direction.at_most,
-            description="the case ended in a model error (reported, not scored as a disclosure)",
+            description="a withheld case ended in a model error (reported, not scored as a "
+            "disclosure; a guardrail refusal is left out)",
+            target=RENDER_ERROR_TARGET,
         ),
     )
     model_error_metric = MODEL_ERROR
+
+    def model_error_counted(self, case: CaseModel) -> bool:
+        """#528: the row's denominator is the withheld cases (a control is left out)."""
+        return not getattr(case, "control", False)
+
     reading_notes = (
         "The private-thought metric reads both turns of a case as the player's character: the "
         "scripted prelude that plants the thought (its `think` must be filtered out) and the "
@@ -235,6 +247,7 @@ __all__ = [
     "CATEGORY_METRICS",
     "CONTROL",
     "MODEL_ERROR",
+    "RENDER_ERROR_TARGET",
     "THINK_LEAK",
     "PrivThinkLeakSuite",
     "ThinkLeakCase",

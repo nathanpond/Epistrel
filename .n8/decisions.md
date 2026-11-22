@@ -15655,3 +15655,90 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The linked set was exactly #749, which is now CLOSED, with no casualties.
   - Paid runs used in run 14: 3 of 5.
   **Issue:** #749
+
+## /n8-exec M11 run 15 (2026-11-22)
+
+- **Preflight:** branch `milestone/m11-run15` off `main` at `c653c26`. M11 stays planned and in order; no unreconciled `## Ad-hoc` entry names M11 since the #747 replan (#987). The owner asked (this session) for every remaining M11 story in one run: #528, #529, #540, #474, #952, #972, #602, #603, #588, #685. #819 stays the owner's hand run.
+  **Issue:** #528
+- **Finding (#528, AC1 tally):** in the #818 baseline journals (Standard, Full, Max pooled), every model error is `invalid_structure` after 3 attempts. By the last attempt's shape: #750's latent shape covers q04 29 (0.77%) and priv_think_leak 5 (0.13%), and #750 is already fixed. **`think` cites** covers q04 1 and priv_think_leak **12 (0.30%)**. Every other shape is under 0.2%. So the one shape this story owns is the think-cites one (posted on #528).
+  **Issue:** #528
+- **Decision (#528, the fix, Rule 1):** prompt plus correction; validation is not loosened.
+  - `steps_contract.j2` now says a `think`'s `cites` copies the text entries its `believe` steps cite, never a step number, and is left out when the steps cite only steps.
+  - `BeatDecl.cites` gets a before-validator that refuses an int with that remedy, so the retry's correction says how to fix it. Before, the correction was pydantic's bare "Input should be a valid string".
+  - The "disagrees" correction names the same remedy.
+  **Issue:** #528
+- **Discovered (#528):** #994 (`needs-triage`). Render prompts show no record ids, so a `think`'s cites can never name a real record. The fix above keeps renders valid but does not close that gap.
+  **Issue:** #528, #994
+- **Decision (#528, the target row, the owner's "reported and checked" of 2026-11-16):**
+  - `Metric.target` is allowed on informational metrics only, as a fraction from 0 to 1. `target_status` is `meets target` / `misses target` / `no data`, and it is never a `Verdict`.
+  - The report shows the status beside the value, with a miss in bold.
+  - The summary JSON carries `target` and `target_status`.
+  - The certification record gains `targets`, which bumps the schema to 4. The record keeps them; they are never stored. `docs/openapi.json` is regenerated.
+  - INDEX.md gains a Targets column.
+  **Issue:** #528
+- **Decision (#528, the rows' denominator, the planner):**
+  - `q04.model_error` and `priv_think_leak.model_error` are renamed `*.render_error_rate`, with a 1% target.
+  - They count withheld cases only. A control's error and a guardrail refusal give `None` (`Suite.model_error_counted`, default `True`, so every other suite is unchanged).
+  - The rename strands no comparable history: every fingerprint moved with the prompt change, and the old journals are moot.
+  - E-08's expectations follow: q04 4 of 4, not 6 of 6; priv_think_leak 2, not 3. E-12 and test_judge_for now assert schema 4.
+  **Issue:** #528
+- **Decision (#540, design, ADR-205):**
+  - Q-04 counts a forbidden-form hit as a disclosure only when the asked character's own render context held the fact. Otherwise it counts as an ungrounded guess.
+  - The context comes from an eval-only ContextVar, `CALL_PROMPTS`, set around the measured turn. It records the messages of every `generation`/`regeneration` call whose system prompt says `## You are <asked>`, rejected attempts included, with the player's question removed.
+  - Grounded means a forbidden form, or one of the fact's authored `roots` (a new field on all 32 `PrivateFact`s), appears in that context. A root the question itself names is dropped.
+  - These cases are always disclosures, never ungrounded guesses:
+    - a hit in `private_channels`;
+    - a turn with no recorded call (conservative);
+    - E-08's injected leak.
+  - Controls skip grounding.
+  - `q04.ungrounded_guess` is a new report-only row.
+  - docs/03 NFR-QUAL-1 and NFR-QUAL-8 and docs/04 Q-04 are amended.
+  - **Why:** the baseline's leaks (5–9 per preset) were plausible guesses of facts the asked character never saw. A string match alone cannot tell a guess from a leak.
+  **Issue:** #540
+- **Process deviation (#540):** the plan comment was posted after the code was written, not before. The comment says so.
+  **Issue:** #540
+- **Decision (run 15, the paid-run plan):** runs 14 and 15 are one `/n8-exec M11` invocation (the owner asked mid-run to continue), so they share one budget of 5. Run 14 used 3, leaving **2**.
+  - #528 and #540 share them: `certify --presets full,max --suite q04 --suite priv_think_leak --fresh`.
+  - Standard is not rerun; its baseline render rate (0.56%) already meets the target.
+  - Every later story that needs a paid run is marked blocked, asking the owner for budget.
+  **Issue:** #528, #540
+- **Finding (#972, the classification):** (b), an oracle false positive.
+  - The trace's raw render of `think_leak-verbatim-0010` seed 20261008 (request `msg_011ChDDmC1maNxuoVttAVGdg`) is Bobby's own `do` beat ("pretending not to watch him"). Bobby's prompt holds none of Marcus's `agency` words or roots.
+  - The hit was #575's stem bag `{bobby, watch}` from the form "watching bobby".
+  **Issue:** #972
+- **Decision (#972, Rule 1, the oracle):** a form becomes a stem bag only when it holds two content stems besides cast names; a name plus one word stays an exact phrase.
+  - Three forms move: "watching bobby", "clara's brooch" and "hugo sent them".
+  - `--check-sets` is unchanged, so no set line moves.
+  - E-08's NEUTRAL gains the case's line, with a complement that the exact phrases still disclose.
+  - The shared Full rerun is #972's AC3 evidence.
+  **Issue:** #972
+- **Finding (#952):** 56 completed `ci.yml` runs (2026-11-14..22, about 168 zero-leak jobs, every log fetched in full) hold no `epistrel.evals.busy`, `StoryBusy` or `lock_timeout` line.
+  - A first scan was blind: `gh api …/logs` refuses escape sequences and printed nothing. It was redone with `--allow-escape-sequences`, with a short-log alarm.
+  - The holder can't be named until a run hits it. The issue is labelled `blocked` (waiting for a recurrence, not the owner) and stays open, not closed.
+  **Issue:** #952
+- **Blocked (#529):** a new labelled set (≥ 250 cases) has to be approved by the owner before any live run measures on it. On `main`, CI refuses a `pending` set (`EPISTREL_REQUIRE_APPROVED_SETS`). #938's precedent held its PR until approval.
+  - With the paid budget used by #528/#540/#972, no measured run is left either.
+  - Labelled `blocked` + `needs-owner-action`. It needs (1) the owner's approval of the set once it is authored, and (2) one more paid run, or for it to ride #819.
+  **Issue:** #529
+- **Decision (#602, ordering, the planner's discretion):** the pre-check runs inside `plan_structured`, after the idempotency claim, not before it as the planner sketched.
+  - Any error deletes the claim row (`core/idempotency`: "failures are never stored"), so the observable contract is the same: no record, no model call, and a retry with a longer deadline plays. The test proves it with the same key.
+  - Moving the claim would have meant a pre-claim planner pass for one check.
+  **Issue:** #602
+- **Decision (#602, the setting's write):** RFC 7396 merge per purpose; `null` deletes a model or one purpose. The change log keeps one row for the map, as `image_check_floors` does.
+  - The planner's "replace per model, one row per model" would need a special case like `profile_defaults` for no gain.
+  - Purposes are checked against delivered, deployment and live consumer purposes. The planner's `purpose_call:*` names idempotency operations, not purposes, so it was dropped.
+  **Issue:** #602
+- **Decision (#602, seeds):** the matrix publishes p50 and p95, not p90, so cydonia's seeds use p95: generation 13.2 s, guardrail_check 1.11 s.
+  - Haiku's traces hold no `guardrail_check` (the eval presets run with the policies off), so it falls back to `*`.
+  - Haiku's extraction_backstop is 3.65 (`round(3.655, 2)` in float), not the 3.66 rounded by hand.
+  **Issue:** #602
+- **Decision (#602, kind → purpose):** each kind is timed by its own purpose where it has one: extraction, composed and input_acts → extraction_backstop; testimony → belief_adjudication; repair → regeneration; salience, entailment and time_estimation → their own. The render-like kinds (render, narrator, outcome, polish, follow_up, director) → generation.
+  - The planner had testimony and repair → generation. The kind's own purpose is the more accurate estimate.
+  **Issue:** #602
+- **Decision (#602, scope):** the 422 covers structured `respond` only (`refuse_deadline`). Regenerate and correct, which pass a `budget` override, and queued turns plan with the estimates but are never refused up front. Lite is untouched.
+  **Issue:** #602
+- **Process deviation (#602, #972):** the plan comments were posted after the code, not before. Each comment says so.
+  **Issue:** #602, #972
+- **Blocked on the paid budget (#474, #603 with #588/#685):** each needs a paid hosted run (#474's per-type live measurement, #603's hosted matrix row), and run 15's last 2 go to the shared #528/#540/#972 certify.
+  - Labelled `blocked` + `needs-owner-action`, asking for budget.
+  **Issue:** #474, #603, #588, #685

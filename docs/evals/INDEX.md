@@ -14,12 +14,12 @@ preset edited after its certification reads `uncertified` here until it is certi
 `epistrel evals certify` writes the reports and records; [README.md](README.md) has the
 procedure.
 
-| Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `f392781c7f5f` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `ebc8df736fc3` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Full | `b5bf45b1b5e4` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Max | `ae6202349765` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Targets | Model | Seeds | Date (UTC) | Report |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Lite | `bd53515f4b02` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — | — |
+| Standard | `ecd146671d28` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `ed45ff045f96` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `78cd46ea4b6f` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 

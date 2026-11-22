@@ -8,6 +8,13 @@ counted as ``unlocated`` in the case's detail). A predicted salient span **hits*
 one when both are on the same beat and share at least half of the shorter span
 (``metrics.hits``).
 
+Salience runs as the run's preset configures it (#748): the suite's ``setup`` reads one scratch
+story's effective configuration on the preset (as E-09 does for its route) and plays every case
+with that configuration's ``salience_detection`` route (model and params) and its
+``commitment.salience_bias`` (Max: ``recall``, which counts an uncertain answer's spans salient).
+Before #748 every preset was played with no route and ``balanced``, so no preset difference
+reached E-05.
+
 - ``nfr_qual_4.recall`` (rate, ≥ 95 %): over the labeled salient spans (one per salient case),
   the share some predicted salient span hits.
 - ``nfr_qual_4.precision`` (rate, ≥ 70 %): over the predicted salient spans, the share that hit
@@ -29,6 +36,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from epistrel.core.profiles.effective import effective_configuration
+from epistrel.core.stories import CharacterSpec, StorySpec
+from epistrel.evals import scenes
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.metrics import f_beta, hits
 from epistrel.evals.suites import (
@@ -41,11 +51,19 @@ from epistrel.evals.suites import (
     register,
 )
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.commit.salience import Beat, detect_salience
+from epistrel.orchestrator.commit.salience import (
+    Beat,
+    SalienceBias,
+    detect_salience,
+    salience_bias,
+)
+from epistrel.orchestrator.models.config import Route, routes_of
 from epistrel.orchestrator.models.registry import SALIENCE_DETECTION, SceneContext
 
 if TYPE_CHECKING:
-    from epistrel.evals.runner import CaseContext
+    from epistrel.core.context import RequestContext
+    from epistrel.engine import Engine
+    from epistrel.evals.runner import CaseContext, Scratch
 
 RECALL = "nfr_qual_4.recall"
 PRECISION = "nfr_qual_4.precision"
@@ -141,6 +159,40 @@ class E05Suite(Suite):
         "false one.",
     )
 
+    def __init__(self) -> None:
+        self.scratch: Scratch | None = None
+        self.routes: dict[str, Route] = {}
+        self.bias: SalienceBias = "balanced"
+
+    async def setup(self, engine: Engine, ctx: RequestContext) -> None:
+        """#748: the run's preset's ``salience_detection`` route and salience bias, read from a
+        scratch story on the preset (``scenes.structured``)."""
+        from epistrel.evals.runner import Scratch
+
+        self.scratch = Scratch(engine, "e05-salience")
+        created = await self.scratch.create(
+            StorySpec(
+                characters=[
+                    CharacterSpec(
+                        name="Cal", definition="A traveller.", true_age=30, is_player=True
+                    )
+                ]
+            )
+        )
+        await scenes.structured(engine, ctx, created.story_id)
+        async with engine.db.connect() as conn:
+            profile = await effective_configuration(conn, created.story_id)
+        route = routes_of(profile.settings).get(SALIENCE_DETECTION.name)
+        self.routes = {} if route is None else {SALIENCE_DETECTION.name: route}
+        self.bias = salience_bias(profile.settings)
+
+    async def teardown(self, engine: Engine, ctx: RequestContext) -> None:
+        try:
+            if self.scratch is not None:
+                await self.scratch.delete_all()
+        finally:
+            self.scratch, self.routes, self.bias = None, {}, "balanced"
+
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
         assert isinstance(case, SalienceCase)  # noqa: S101 - load() validated it as case_model
         verdict = await detect_salience(
@@ -149,6 +201,8 @@ class E05Suite(Suite):
             mode="rules_and_model",
             models=ctx.models,
             budget=TurnBudget(deadline_s=CALL_DEADLINE_S),
+            routes=self.routes,
+            bias=self.bias,
         )
         predicted = [(s.span.beat, s.span.start, s.span.end) for s in verdict.salient]
         found, missed, right, wrong = score(case.expected, predicted)
@@ -169,6 +223,7 @@ class E05Suite(Suite):
                 "wrong": wrong,
                 "unlocated": len(verdict.unlocated),
                 "degradation": list(verdict.degradation),
+                "promoted": verdict.promoted,
             },
         )
 

@@ -1,9 +1,12 @@
 """The smoke suite's instruction scorer and labeled set (#437; the owner's decision of
 2026-10-18, made before the re-run): an inflected form of the requested word follows the
-instruction, and the set holds 60 cases per seed. Harness smoke, no NFR-QUAL floor."""
+instruction, and the set holds 200 cases per seed (#749, the owner's option (a)). Harness smoke,
+no NFR-QUAL floor."""
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -66,18 +69,29 @@ def test_an_unrelated_word_or_no_use_of_the_word_still_fails(reply: str, word: s
     assert not contains_word(reply, word)
 
 
-def test_the_set_holds_sixty_cases_and_the_floors_are_unchanged() -> None:
-    """60 cases per seed (the SD term reflects the model, not a small n), every keyword
-    distinct and named in its case's request. The floors and the rate rule are unchanged:
-    95 % completed, 80 % followed."""
+def phrasing(case: SmokeCase) -> str:
+    """The case's phrasing template (#749): its request with the word as ``X``, up to the end
+    of that sentence, with the question that follows it dropped."""
+    before, after = case.say.split(f'"{case.keyword}"', 1)
+    end = re.match(r"[^.?]*[.?]", after)
+    return f"{before}X{end.group(0) if end else after}"
+
+
+def test_the_set_holds_two_hundred_cases_and_the_floors_are_unchanged() -> None:
+    """200 cases per seed (#749: the owner's option (a), so one seed's luck no longer decides
+    the floor), ids smoke-001..smoke-200, every keyword distinct and named in its case's
+    request, and every phrasing template at least 10 times. The floors and the rate rule are
+    unchanged: 95 % completed, 80 % followed."""
     suite = SUITES["smoke"]
     assert isinstance(suite, SmokeSuite)
-    cases = suite.load(SETS)
-    assert len(cases) == 60
-    assert all(isinstance(case, SmokeCase) for case in cases)
-    keywords = [case.keyword for case in cases if isinstance(case, SmokeCase)]
-    assert len(set(keywords)) == 60
-    assert all(f'"{case.keyword}"' in case.say for case in cases if isinstance(case, SmokeCase))
+    cases = [case for case in suite.load(SETS) if isinstance(case, SmokeCase)]
+    assert len(cases) == 200
+    assert [case.id for case in cases] == [f"smoke-{n:03d}" for n in range(1, 201)]
+    assert len({case.keyword for case in cases}) == 200
+    assert all(f'"{case.keyword}"' in case.say for case in cases)
+    templates = Counter(phrasing(case) for case in cases)
+    assert len(templates) == 10
+    assert min(templates.values()) >= 10
     floors = {m.id: (m.rule, m.floor, m.direction) for m in suite.metrics}
     assert floors == {
         TURN_COMPLETED: (Rule.rate, 0.95, Direction.at_least),

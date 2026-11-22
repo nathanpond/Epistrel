@@ -15603,3 +15603,50 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #748, #988
 - **Merge (/n8-exec M11 run 13):** PR #989 squash-merged as `fab879c` after CI passed 27 of 27 on the first round. The linked set was exactly #748, which is now CLOSED, with no casualties. #988 stays open (`needs-triage`). Paid runs used in run 13: 1 of 5.
   **Issue:** #748, #988
+
+## /n8-exec M11 run 14 (2026-11-22)
+
+- **Decision:** run 14 takes #749 (the smoke `instruction_followed` floor). It is next in the M11 order after #748. Branch `milestone/m11-run14-smoke`, cut from `main` at `0bb1d03`.
+  - Preflight: M1–M10 are closed, and M11 has open stories.
+  - Drift check: every `## Ad-hoc` entry is reconciled; the last was reconciled by `/n8-replan M11`, 2026-11-21.
+  - #749's file claims match the code (`evals/sets/smoke/cases.jsonl`, `tests/evals/test_smoke_suite.py`'s `== 60`, smoke in `HAND_WRITTEN`).
+  **Issue:** #749
+- **Finding (#749, AC1, the tally):** the source is the #818 baseline journals and traces. Misses were 43, 41 and 43 of 180 (Standard, Full, Max). By template:
+  - "Work the word X into what you say" (weather): 26–30 of 45.
+  - "Please use the word X somewhere in your answer" (food): 10–13.
+  - "Could you mention": 1–4.
+  - "Say the word": 0–1.
+
+  **All 127 misses end with `finish_reason: length`** at `max_completion_tokens: 150` (`length: short`), and no reply that ended on its own (`stop`) missed. The cap cuts off a long descriptive answer before the word appears. In the 60-case set each template always came with the same question, so phrasing and question could not be told apart. Posted on #749 (comment 7075898153).
+  **Issue:** #749
+- **Decision (#749, the set, the planner's discretion):** smoke-061..200 add six phrasings, ten templates in all:
+  - "Use the word X while you answer me."
+  - "I'd like to hear the word X from you."
+  - "Slip the word X into your answer."
+  - "Include X in what you tell me."
+  - "Before you answer, say X."
+  - "Can you say X for me?"
+
+  They also add six questions, ten in all, some long-answer (things to do, the road north, the village's people) and some short-answer (supper time, a free room, stabling). Every template meets every question.
+  - The mix is weighted toward the failing templates: 40 "work into", 40 "somewhere", 25 each for the other two old templates, and 11–12 for each new one.
+  - The 140 new keywords are distinct from the old 60. They include inflection-prone endings (-y, -f/-fe, -e, consonant-vowel-consonant) and rare words (quoin, firkin, cresset). Words a menu or weather answer would use anyway were avoided.
+  - The test derives the template from `say` (no new field) and checks ≥ 10 per template.
+  **Issue:** #749
+- **Decision (#749, the paid-run plan):** the owner's budget is five targeted runs per exec run. Here one preset counts as one run (the planner's count), stricter than run 13, which counted a two-preset invocation as one.
+  - The untuned grown set runs on Standard and Full only (2 runs). That is enough to decide AC3: if either misses, the prompt is tuned.
+  - The tuned set then runs on all three presets (3 runs), so the worst case is exactly 5.
+  **Issue:** #749
+- **Decision (#749, the untuned rerun, 3 of 5 paid runs):** `certify --suite smoke --fresh` on hosted `claude-haiku-5-5`, 3 seeds, at `ef59960`. Standard and Full ran in one invocation, then Max.
+  - Fingerprints: Standard `ebc8df736fc3`, Full `b5bf45b1b5e4`, Max `ae6202349765`.
+  - The reports read `ef59960-dirty`. Only `.n8/decisions.md` was uncommitted, with no code change.
+  - `smoke.instruction_followed` (n = 200): Standard 91.83% ± 2.75%, Full 91.67% ± 1.76% and Max 90.50% ± 1.00%. All pass (mean − SD ≥ 89.08%). At the #818 baseline they were 76.11%, 77.22% and 76.11%, all failing. `smoke.turn_completed` is 100% on every preset.
+  - The original 60 cases alone are 95% (171 of 180) on Standard and Full. The new 140 are about 90%.
+  - **No tuning (AC3 not triggered):** per the planner, a passing grown set closes the story untuned. Max ran because AC4 names all three presets. That is 3 of the 5 runs, with no fourth.
+  - The three reports are committed and the INDEX regenerated. The three certification records are **not** committed (a smoke-only run; ADR-200).
+  **Issue:** #749
+- **Finding (#749, why the baseline failed):** the cause is the Anthropic thinking budget, which #735 (run 9) turned off.
+  - In the #818 baseline trace, 47 of 186 smoke generation calls spent most of their 150-token cap off the text (under 2 characters per completion token, some with an empty reply). Those calls have no `thinking` parameter.
+  - Today's calls carry the parameter, and the minimum is 2.49 characters per token. The median is unchanged (2.85 against 2.84).
+  - The only Lite-path commit between the baseline's engine (`c6c918e`) and now is `140c032` (#735).
+  - So most of the baseline's misses were a reply the cap cut after thinking had used most of it. The phrasing was not the cause. The templates that come with the most descriptive questions still miss most: "Slip the word X into your answer", 9–10 of 36, and "Please use the word X somewhere in your answer", 14–18 of 120. All but four of the misses still end with `length`.
+  **Issue:** #749

@@ -47,13 +47,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 017, 129, 158, 162 |
-| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199 |
+| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199, 206 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204, 205 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
+| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176, 205 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151, 191 |
 | NFR-MAINT | §20 | 148 |
@@ -268,6 +268,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 | 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
 | 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Current | — |
+| 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
+| 206 | A structured turn's deadline is checked up front against per-model latency estimates | Current | — |
 
 ---
 
@@ -2301,6 +2303,54 @@ Tuning and its exit certification come after every milestone that may change a p
 - An untrusted judge's NFR-QUAL-3 is in none of a record's passed, failed or insufficient lists: the floor is not evidenced.
 - docs/03 NFR-QUAL-3, docs/04 §8's E-03 entry, E-03's `reading_notes` and `docs/evals/README.md` state the rule.
 - Tests: `tests/eval/test_e_03.py` (`test_e_03`: per-pair counts and a trusted verdict; `test_e_03__untrusted_judge`: a judge at 50% agreement makes faithfulness report only) and `tests/evals/test_judge_for.py` (the flags, routing with zero entailment calls on the run adapter, the journal scope, the trust rule at 75%, and the re-judge's cause rule).
+
+### ADR-205 — Q-04 counts a disclosure only when the asked character's context held the fact
+**Status:** Accepted.
+**Context:** #540. Q-04 (NFR-QUAL-1's knowledge-asymmetry metric) counted any forbidden form in a non-holder's player-facing answer as a violation. Some questions make the withheld fact easy to guess. Asked how George gets in so late, a character answers "a spare key", and live runs on `cydonia-24b-v4.3` (2026-10-24/25) and the #818 baseline on `claude-haiku-5-5` (2026-11-19/21: 5, 6 and 9 hits on Standard, Full and Max) scored such guesses as leaks. `test_q_04__guessed_cases_context` (#179) showed that for five of them the asked character's generation context held neither a form of the fact nor its root word: the model guessed from the question. NFR-PRIV-4 makes privacy structural first: what NFR-QUAL-1 is meant to catch is a fact reaching a character it should not, and a guess the character could not have read is not that. The owner's decision for M11 (option (c), 2026-11-09; the #540 plan of 2026-11-16) is to score disclosures against the character's context.
+**Decision:** Applied by #540 (NFR-QUAL-1, NFR-QUAL-8). Amends NFR-QUAL-1 and NFR-QUAL-8 (docs/03) and docs/04 §8's Q-04 entry.
+- On Q-04, a forbidden form in the answer counts toward `nfr_qual_1.asymmetry` only when the asked character's **generation context** held the fact. That means one of the case's forms or one of the fact's authored `roots` (`fixtures.PrivateFact.roots`), matched by the same folded whole-word matcher (#148), so a paraphrased form in context still makes a hit a leak. The context is the system and user messages of every `generation` or `regeneration` call that rendered that character (`## You are <name>`) during the measured turn, rejected attempts included, with the player's own question taken out. The response's JSON Schema and a retry's `assistant` turns (the model's own earlier answers) are left out: in run 15's Full rerun the root `key` matched only the schema's `scope_key`. A root the question names is dropped for that case.
+- Capture is a harness-side recorder, independent of the call trace (#737) and `--no-trace`: `call_trace.CALL_PROMPTS`, a context variable set only for the measured turn of a Q-04 case, appends each adapter call's purpose and messages, on any adapter (a stub run's too). Outside an eval case it is unset and nothing is kept (invariant 3).
+- No recorded render call for the asked character counts as **grounded** (conservative). A `think` or `latent` beat in the player-facing result is always a disclosure. Controls are not grounded: they are the oracle's check. E-08's injected leak stands for the fact reaching the context and stays a violation.
+- A hit the context never held is reported in a new report-only row, `q04.ungrounded_guess`, over the completed withheld cases. The journal detail adds `grounded`.
+- Scope: Q-04 only. `priv_think_leak` is unchanged: its fact is the thinker's own thought, which a reply can only learn from the context.
+**Alternatives considered:** Rewording the guessable questions (the set's answer, #540's title): it removes today's five cases, not the class of guess, and a question that does not invite a guess about a fact it is about is hard to write. A judge deciding guess against leak: a model's ruling on a zero-tolerance metric, with no labelled calibration. An owner ruling per hit (the M5 practice): it does not scale to a certification run.
+**Consequences:**
+- A model that guesses well no longer fails NFR-QUAL-1 on Q-04. A real leak, where the fact reached the asked character's context, still fails the zero rule. The reports keep "0 observed in n cases" with the upper bound, and never say "leak-free".
+- The measurement is as strong as the roots: a fact whose roots miss a word that let the model infer it would score a context-informed answer as a guess. The roots are authored per fact and reviewed with the fixtures.
+- The #818 baseline's reports are not rewritten. New runs apply the rule.
+- docs/03 NFR-QUAL-1 and NFR-QUAL-8, docs/04 §8's Q-04 entry, Q-04's module docstring and `docs/evals/README.md` state the rule.
+- Tests: `tests/eval/test_q_04.py`. `test_q_04__m5_context_grounded`: the five guessed cases are scored `q04.ungrounded_guess`, the injected leak is still one violation, and `grounded` counts a form, a paraphrase, a root and no context. `test_q_04__m5_character_context`: what the context holds and what it leaves out.
+
+### ADR-206 — A structured turn's deadline is checked up front against per-model latency estimates
+**Status:** Accepted.
+**Context:** #602, from #456 (items 1–2). NFR-PERF-6 rejects a call budget below the single-primary safety minimum before any model call, but a deadline had no such check. A caller who sent `budget.deadline_s: 2` to a story on a slow model got no warning. Its turn planned, spent its first calls, and ended in the safe fallback with cause `deadline`. The in-turn gates (`TurnBudget.can_start`: may an optional call, a beat's reserved extraction or the outcome step still start?) assumed a flat 2 s per call (`DEFAULT_LATENCY_ESTIMATE_S`). That is roughly right for hosted `claude-haiku-5-5` (generation p90 3.88 s in #818's traces) and far off for the local reference tier (`cydonia-24b-v4.3`, about 13 s per generation in the model matrix). The owner chose option (a) on 2026-11-16: refuse up front with a new 422, and use per-model latency estimates. Their round-two R5 (a) added that only an explicit request deadline is refused.
+**Decision:** Applied by #602 (NFR-PERF-6, NFR-PERF-7). Amends NFR-PERF-6 (docs/03).
+- **The estimates:** a deployment setting, `purpose_latency_estimates`: model name (the bare resolved model string) → purpose (or `*`) → seconds, above 0 and at most 600.
+  - A lookup falls through model + purpose → model + `*` → `*` + purpose → `*` + `*` → 2 s.
+  - The shipped map is `{"*": {"*": 2.0}}` plus measured p90s for `claude-haiku-5-5` and `cydonia-24b-v4.3`. `tools/latency_seeds.py` recomputes them from #818's traces and the model matrix; #785's first-use compile is left out.
+  - A write merges (RFC 7396: `null` deletes a model or one of its purposes). A purpose that is not a model purpose is 422.
+  - Prospective, deployment-wide: no preset fingerprint moves.
+- **The time minimum:** the single-primary safety minimum's calls in sequence, each timed for the model its purpose resolves to under the story's routes:
+  - the render as `generation`;
+  - B and C as `extraction_backstop`;
+  - G as `guardrail_check`;
+  - O as its `generation`, `extraction_backstop` and G_out `guardrail_check` calls.
+- **The pre-check:** a structured `respond` whose request sends `budget.deadline_s` is refused 422 `deadline_below_safety_minimum` when that deadline, less the time already spent since the request arrived, is below the time minimum. The details carry `estimated_minimum_s`, `deadline_s`, `spent_s` and `slots` (`[{purpose, model, seconds}]`), rounded to 0.1 s. The check runs after the call-count minimum and before any model call. Like any error, it releases the idempotency claim, so a retry with a longer deadline plays. A deadline at the estimate passes.
+- **A story's own deadline is never refused** (R5 (a)): `POST /engine-profiles/{id}/validate`, profile writes and impact reports warn `below_safety_minimum` with `setting: budgets.deadline_ms` and the same figures.
+- **The in-turn gates:** each call is timed by its own kind's estimate (`TurnBudget.estimates`: the kind's purpose on its resolved model), and a call that just fits may start (`>=`).
+- `epistrel_budget_rejected_total` gains a `reason` label: the error code.
+**Alternatives considered:**
+- Refusing a profile's own short deadline too: rejected by the owner (R5 (b)). A story whose deadline the estimates say is too short still plays and degrades, and the validator says why.
+- One flat estimate per deployment: it cannot be right for a hosted and a local model at once.
+- Measuring latency live and adapting: unbounded state on the hot path, and a first turn would have nothing to go on.
+- Per-model rows in the change log (the planner's sketch): the setting is one map, recorded like `image_check_floors`.
+**Consequences:**
+- A caller learns at once that a deadline cannot work, with the figures, and no model is called. A workable deadline behaves as before; a call that runs long still ends in the safe fallback with cause `deadline`.
+- The pre-check covers `respond` only. A regeneration, a correction and a queued turn plan with the estimates but are not refused up front. Lite turns are not checked.
+- Slow models degrade more accurately: optional work that cannot finish is skipped rather than started. A model with no entry behaves as before (2 s).
+- The estimates are only as good as their seeds. An operator on another model sets its entry; nothing measures it automatically.
+- OpenAPI (`deadline_below_safety_minimum` on `respond`; the warning's new optional fields), the error catalog, `docs/02` §4.4's budget paragraph and NFR-PERF-6 state the contract. The Console shows the 422 and the warning (nathanpond/Epistrel-Console, filed by #602).
+- Tests: `tests/integration/test_deadline_precheck.py`.
 
 ---
 

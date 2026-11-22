@@ -147,7 +147,12 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
-from epistrel.core.profiles.reservation import SafetyFacts, outcome_calls, safety_minimum
+from epistrel.core.profiles.reservation import (
+    MINIMUM_PURPOSES,
+    SafetyFacts,
+    outcome_calls,
+    safety_minimum,
+)
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
@@ -7793,13 +7798,18 @@ class Engine:
         result when valid, else 422 ``invalid_profile`` naming the missing dependencies and
         undelivered settings. A valid result warns (``below_safety_minimum``, #156) when the
         profile's call cap is below a turn's safety minimum with the deployment's global
-        model-assisted policies. 404 for an unknown profile."""
+        model-assisted policies, and (#602) when a structured profile's ``budgets.deadline_ms``
+        is below its safety minimum's calls at the deployment's latency estimates. 404 for an
+        unknown profile."""
+        estimates, models = await self._deployment_timing()
         return await profiles.validate_stored(
             self.db,
             profile_id,
             request,
             purposes=self.purposes,
             guardrail_calls=await policy_store.deployment_guardrail_calls(self.db),
+            estimates=estimates,
+            models=models,
         )
 
     async def delete_profile(self, ctx: RequestContext, profile_id: str) -> profiles.DeletedProfile:
@@ -7843,7 +7853,23 @@ class Engine:
         if story_id is not None:
             async with self.db.connect() as conn:
                 synchronous = await core_providers.synchronous_bound(conn, story_id)
-        return SafetyFacts(guardrail_input=gi, guardrail_output=go, synchronous=synchronous)
+        estimates, models = await self._deployment_timing()
+        return SafetyFacts(
+            guardrail_input=gi,
+            guardrail_output=go,
+            synchronous=synchronous,
+            estimates=estimates,
+            models=models,
+        )
+
+    async def _deployment_timing(
+        self,
+    ) -> tuple[dict[str, dict[str, float]], dict[str, str | None]]:
+        """#602: the deployment's ``purpose_latency_estimates`` and the model each of the time
+        minimum's purposes resolves to without a story's routes (a profile's own routes are
+        laid over them by ``reservation.profile_models``)."""
+        models = {purpose: await self.models.model_for(purpose) for purpose in MINIMUM_PURPOSES}
+        return await self.models.latency_estimates(), models
 
     async def _runtime_facts(self) -> RuntimeFacts:
         """The model each delivered purpose resolves to and the prompt templates' hashes: what

@@ -270,6 +270,15 @@ session's requests only and says how many cases came from the journal. A stub ru
   seed and passes when the mean + SD is at most the floor; fewer pairs is *insufficient
   evidence*, never a pass. A judge-based row also states the judge calibration it ran under.
 - One seed, or no observations, is *insufficient evidence*. Timings are informational.
+- A report-only row may carry an **owner target** (#528): its verdict reads `report only;
+  meets target ≤ 1.00%` (or `**misses target**`, or `no data`), comparing the mean across seeds.
+  A target is checked at the exit run (#819), and it is never a floor. It decides no
+  requirement, suite or run verdict, and it does not decide whether a fingerprint is certified.
+  The embedded summary, the certification record (`targets`, schema 4) and INDEX.md's
+  **Targets** column carry it. The zero-leak suites' `q04.render_error_rate` and
+  `priv_think_leak.render_error_rate` (target ≤ 1%) were `*.model_error` before #528. They
+  count a model error over the withheld cases only, leaving out the controls and guardrail
+  refusals.
 - A **model error** is a failed case. It counts against the metrics whose denominator the
   case's label puts it in, and against no others (#530, ADR-194). For example, an E-01 claim
   labelled `supported` that errors counts as a false contradiction, never as a false support.
@@ -374,7 +383,7 @@ miss that is the model's own may move to M9 by ADR-164's route.
 
 ## NFR-QUAL-1's zero-leak run (#179)
 
-`q04` and `priv_think_leak` measure NFR-QUAL-1 on the final player-facing output. Their stories
+`q04` and `priv_think_leak` measure NFR-QUAL-1 on the final player-facing output. On `q04` a forbidden form counts only when it is **context-grounded** (#540, ADR-205). The asked character's render calls for the measured turn must have held the fact, as a form or one of its authored roots (`fixtures.PrivateFact.roots`), with the player's question taken out. A guess they never held is reported as `q04.ungrounded_guess`, and the journal's `detail.grounded` says which. Their stories
 run the seeded profile with M5's per-character partitions and `full` perception (each result
 names that configuration and its own fingerprint). Until #181 delivers those modules, the two
 suites deliver them for their own run. A disclosure the pipeline repaired before the output is
@@ -397,7 +406,9 @@ feeling as a phrase (#148's whole-word folded matcher), or an echo of the though
 (#152's shingle detector). (2) A rewording within one sentence, by lemma and stem matching
 (`src/epistrel/evals/rewording.py`; in-repo tables, no model or NLP library): every content word
 of a multi-word form in any order and inflection ("Frank has sold the farm", "the farm's been
-sold"); an emotion word of the same family as a listed feeling (fear, shame, pleasure, distress,
+sold"), when the form holds two content words besides a cast name (#972: "watching Bobby" stays
+an exact phrase, so "Bobby pretends not to watch him" is not read as Marcus watching Bobby); an
+emotion word of the same family as a listed feeling (fear, shame, pleasure, distress,
 intent) beside a word of the fact's topic ("Frank feels guilty about the farm"); or at least 60%
 of the thought's content words ("Frank signed the contract on Tuesday"). (3) A `think` or
 `latent` beat in the player-facing result. A clean run's "0 observed in n" and its upper bound

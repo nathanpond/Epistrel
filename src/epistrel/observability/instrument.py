@@ -34,7 +34,7 @@ from opentelemetry.trace import SpanKind
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from epistrel.core.context import SYSTEM_PRINCIPAL
-from epistrel.core.errors import BudgetBelowSafetyMinimum
+from epistrel.core.errors import BudgetBelowSafetyMinimum, DeadlineBelowSafetyMinimum
 from epistrel.core.idempotency import ReferenceReplay
 from epistrel.core.turn_gate import TurnAccepted
 from epistrel.observability import context, tracing
@@ -112,8 +112,9 @@ def _unit(scope: context.Scope, *, root: bool, line: str) -> Iterator[_Run]:
         finally:
             outcome = run.outcome or outcome_of(run.error)
             OPERATIONS.labels(scope.kind, outcome).inc()
-            if isinstance(run.error, BudgetBelowSafetyMinimum):
-                count_budget_rejected()  # #456: once per unit, whichever planner refused it
+            if isinstance(run.error, BudgetBelowSafetyMinimum | DeadlineBelowSafetyMinimum):
+                # #456: once per unit, whichever planner refused it; #602: by its code
+                count_budget_rejected(run.error.code)
             level = "warning" if outcome == "error" else "debug" if run.quiet else "info"
             getattr(log, level)(
                 line,

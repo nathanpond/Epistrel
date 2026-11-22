@@ -230,3 +230,29 @@ def test_render_steps__oracle() -> None:
     assert oracle.staged_beat({"operation_id": "op"}) is None
     assert positions[1].before(positions[2])
     assert positions[3].before(Position(4, 0, 0, 3, 0))
+
+
+def test_render_steps__think_cites_correction() -> None:
+    """#528: hosted Haiku's most common think-cite failure put step numbers in a ``think``'s
+    ``cites`` (``[1, 2]``), refused by the bare type error with no remedy, three attempts
+    running. The refusal now names the remedy the retry carries, and a think that cites text
+    entries its steps don't is still refused, now saying to copy them. The validation is not
+    loosened: the step contract tells the model the same up front."""
+    schema = render_schema(actor_id="jenni", player_id="cal", cast_ids=["jenni"], max_beats=6)
+    cited = [GOOD[0], {**GOOD[1], "cites": [1, "Dana says: I'm fine."]}, GOOD[2]]
+    numbered = {"kind": "think", "text": "She's not just tired.", "cites": [1, 2]}
+    failure = parse(json.dumps({"beats": [DO, numbered], "steps": cited}), schema)
+    assert not isinstance(failure, BaseModel)
+    assert "beats.1.cites" in failure.problem
+    assert "never a step number (copy those entries, or leave `cites` out)" in failure.problem
+    stray = {**numbered, "cites": ["Dana located_at the front hall"]}
+    failure = parse(json.dumps({"beats": [DO, stray], "steps": cited}), schema)
+    assert not isinstance(failure, BaseModel)
+    assert "copy those text entries, never a step number, or leave `cites` out" in failure.problem
+    copied = {**numbered, "cites": ["Dana says: I'm fine."]}
+    assert isinstance(parse(json.dumps({"beats": [DO, copied], "steps": cited}), schema), BaseModel)
+    bare = {kind: v for kind, v in numbered.items() if kind != "cites"}
+    assert isinstance(parse(json.dumps({"beats": [DO, bare], "steps": cited}), schema), BaseModel)
+    contract = make_environment().get_template("steps_contract.j2").render(belief_steps=True)
+    assert "never a step number" in contract
+    assert "when its steps cite only other steps, the `think` has no `cites`" in contract

@@ -51,9 +51,10 @@ The registry holds:
 - ``epistrel_turn_degradation_total{step}`` (#456): each degradation step a committed turn took
   (NFR-PERF-7's and every other stage's, the names its ``degradation`` lists), counted at the
   turn's commit (``count_degradation``); a name outside the identifier grammar is ``other``;
-- ``epistrel_budget_rejected_total`` (#456): calls and queued turns refused 422
-  ``budget_below_safety_minimum`` before any model call (counted once per unit of work by
-  ``observability.instrument``).
+- ``epistrel_budget_rejected_total{reason}`` (#456): calls and queued turns refused 422
+  before any model call, by the error code: ``budget_below_safety_minimum`` (the call budget)
+  or (#602) ``deadline_below_safety_minimum`` (the deadline at the latency estimates); counted
+  once per unit of work by ``observability.instrument``.
 - ``epistrel_image_counter_drift_total{scope}`` (#262): per ``image_counter_reconcile`` run, one
   per image limit counter whose stored sums differ from its reservation records' (``deployment``
   or ``entry``) and one per ``held`` record whose job is terminal or missing (``stuck_held``).
@@ -330,8 +331,10 @@ TURN_DEGRADATION = Counter(
 )
 BUDGET_REJECTED = Counter(
     "epistrel_budget_rejected",
-    "Calls and queued turns refused with budget_below_safety_minimum before any model call "
-    "(the budget could not cover the calls the safety reservation needs).",
+    "Calls and queued turns refused before any model call because the budget could not cover "
+    "the calls the safety reservation needs (reason budget_below_safety_minimum) or the deadline "
+    "could not fit them at the latency estimates (reason deadline_below_safety_minimum).",
+    ("reason",),
 )
 IMAGE_COUNTER_DRIFT = Counter(
     "epistrel_image_counter_drift",
@@ -449,10 +452,10 @@ def count_degradation(steps: Iterable[str]) -> None:
         TURN_DEGRADATION.labels(step=step_label(step)).inc()
 
 
-def count_budget_rejected() -> None:
-    """Count one call or queued turn refused ``budget_below_safety_minimum``
-    (``epistrel_budget_rejected_total``; #456)."""
-    BUDGET_REJECTED.inc()
+def count_budget_rejected(reason: str = "budget_below_safety_minimum") -> None:
+    """Count one call or queued turn refused before any model call
+    (``epistrel_budget_rejected_total{reason}``; #456; #602's ``reason``: the error code)."""
+    BUDGET_REJECTED.labels(reason).inc()
 
 
 HOT_SCOPES = ("character", "story")

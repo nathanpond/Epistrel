@@ -278,7 +278,7 @@ def test_e_12__m7() -> None:
     list, NFR-QUAL-14 is not passed and the record says ``judge_calibrated: false``."""
     record = _record(_e12_report("calibrated", _all_seven()))
     assert record is not None
-    assert record.schema_version == 3  # #747 added `judges`
+    assert record.schema_version == 4  # #747 added `judges`, #528 `targets`
     assert sorted(record.intervention_types_covered) == sorted(INTERVENTION_TYPES)
     assert record.intervention_types_insufficient == []
     assert sorted(record.identity_types) == sorted(IDENTITY_TYPES)

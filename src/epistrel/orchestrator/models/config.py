@@ -76,6 +76,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import latency
 from epistrel.core.config_changes import (
     bump_config_revision,
     lock_deployment,
@@ -85,7 +86,7 @@ from epistrel.core.errors import ConfigConflict, InvalidRequest, PurposeNotFound
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.tiers import STRONGEST
 from epistrel.core.purposes import store as purpose_store
-from epistrel.core.settings_schema import ConfigClass, StructuredSettings
+from epistrel.core.settings_schema import ConfigClass, LatencyEstimateSettings, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.trimmed import trim_as_sent
@@ -502,6 +503,28 @@ async def read_structured_settings(conn: AsyncConnection) -> StructuredSettings:
     return structured_settings(document)
 
 
+def latency_estimates(document: Mapping[str, Any] | None) -> dict[str, dict[str, float]]:
+    """``purpose_latency_estimates`` from ``deployment_state.settings`` (#602); an invalid
+    stored value falls back to the seeded map with a warning naming the setting only."""
+    try:
+        return dict(
+            LatencyEstimateSettings.model_validate(dict(document or {})).purpose_latency_estimates
+        )
+    except ValidationError:
+        log.warning("invalid %s; using the seeded estimates", latency.SETTING)
+        return latency.seeded()
+
+
+async def read_settings_views(
+    conn: AsyncConnection,
+) -> tuple[StructuredSettings, dict[str, dict[str, float]]]:
+    """The structured-output settings and the latency estimates, from one read."""
+    document = await conn.scalar(
+        select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    )
+    return structured_settings(document), latency_estimates(document)
+
+
 class ConfigCache:
     """The rows (and the structured-output settings) as of one ``config_revision``. Every
     lookup reads the revision first, on its own short connection, and re-reads the rows only
@@ -511,10 +534,12 @@ class ConfigCache:
         self._revision: int | None = None
         self._rows: dict[str, ConfigRow] = {}
         self._structured = StructuredSettings()
+        self._estimates: dict[str, dict[str, float]] = latency.seeded()
 
     def clear(self) -> None:
         self._revision, self._rows = None, {}
         self._structured = StructuredSettings()
+        self._estimates = latency.seeded()
 
     async def _refresh(self, db: AsyncEngine) -> int:
         async with db.connect() as conn:
@@ -524,8 +549,9 @@ class ConfigCache:
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
                 revision = await current_revision(conn)
                 rows = await read_rows(conn)
-                structured = await read_structured_settings(conn)
+                structured, estimates = await read_settings_views(conn)
             self._revision, self._rows, self._structured = revision, rows, structured
+            self._estimates = estimates
         return revision
 
     async def rows(self, db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
@@ -535,6 +561,11 @@ class ConfigCache:
     async def structured(self, db: AsyncEngine) -> tuple[int, StructuredSettings]:
         revision = await self._refresh(db)
         return revision, self._structured
+
+    async def estimates(self, db: AsyncEngine) -> dict[str, dict[str, float]]:
+        """``purpose_latency_estimates`` as of the current revision (#602)."""
+        await self._refresh(db)
+        return self._estimates
 
     async def effective(self, db: AsyncEngine, purpose: str) -> EffectiveConfig:
         revision, rows = await self.rows(db)

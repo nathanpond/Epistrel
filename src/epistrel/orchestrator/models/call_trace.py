@@ -53,6 +53,13 @@ class CallTraceSink(Protocol):
 CALL_TRACE: ContextVar[CallTraceSink | None] = ContextVar("CALL_TRACE", default=None)
 EXCHANGES: ContextVar[list[Exchange] | None] = ContextVar("EXCHANGES", default=None)
 STRUCTURED_SCHEMA: ContextVar[str | None] = ContextVar("STRUCTURED_SCHEMA", default=None)
+CALL_PROMPTS: ContextVar[list[tuple[str, tuple[Any, ...]]] | None] = ContextVar(
+    "CALL_PROMPTS", default=None
+)
+"""The eval harness's prompt recorder (#540; Q-04's context-grounded scoring): when a case sets
+it to a list, every adapter call made in that context appends ``(purpose, messages)``, a
+rejected attempt's too, on any adapter (a stub run's included) and with or without the call
+trace. Outside an eval case it is ``None`` and nothing is kept (invariant 3)."""
 STRUCTURED_MODEL: ContextVar[type[Any] | None] = ContextVar("STRUCTURED_MODEL", default=None)
 """The schema class a structured call is for (``structured_messages`` sets it with
 ``STRUCTURED_SCHEMA``): an adapter that routes by schema (the eval harness's render pin, #938)
@@ -86,6 +93,7 @@ def error_of(exc: BaseException) -> dict[str, Any]:
 
 
 __all__ = [
+    "CALL_PROMPTS",
     "CALL_TRACE",
     "EXCHANGES",
     "STRUCTURED_MODEL",

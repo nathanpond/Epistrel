@@ -331,6 +331,7 @@ ERROR_STATUS: dict[str, int] = {
     "range_not_satisfiable": 416,
     "budget_below_safety_minimum": 422,
     "cannot_relax": 422,
+    "deadline_below_safety_minimum": 422,
     "cast_limit_exceeded": 422,
     "checksum_mismatch": 422,
     "companion_follows_character": 422,
@@ -586,6 +587,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "respond": (
         *_GATED,
         *_TURN,
+        "deadline_below_safety_minimum",  # #602: an explicit deadline below the timed minimum
         "provider_unbound",
         # #251: a provider an imported story names that this deployment has not registered.
         "provider_unregistered",

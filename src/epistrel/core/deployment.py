@@ -68,7 +68,7 @@ from pydantic import (
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock, feedback
+from epistrel.core import clock, feedback, latency
 from epistrel.core.catalog import listing
 from epistrel.core.config_changes import (
     DeploymentState,
@@ -88,6 +88,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.certification import require_image_check_floors
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDocument
 from epistrel.core.profiles.tiers import STRONGEST_SETTING
+from epistrel.core.purposes import store as purpose_store
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
     DEFAULT_CANARY_INTERVAL_S,
@@ -222,6 +223,9 @@ class SettingsPatch(BaseModel):
     image_status_poll_s: StrictInt | None = None
     image_confirm_wait_max_s: StrictInt | None = None
     image_check_floors: dict[str, dict[str, StrictFloat | StrictInt | None] | None] | None = None
+    purpose_latency_estimates: (
+        dict[str, dict[str, StrictFloat | StrictInt | None] | None] | None
+    ) = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None
@@ -327,6 +331,25 @@ def _validated(document: Mapping[str, Any]) -> DeploymentSettings:
         return DeploymentSettings.model_validate(document)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+
+
+async def _require_estimate_purposes(
+    conn: AsyncConnection, estimates: Mapping[str, Mapping[str, float]], purposes: Purposes | None
+) -> None:
+    """#602: every purpose ``purpose_latency_estimates`` names is ``*``, a delivered purpose
+    (story or deployment) or a live consumer purpose (#824); else 422 ``validation_error``.
+    Without the registry (a library caller passing no ``purposes``) only the names' shape is
+    checked."""
+    named = {p for by_purpose in estimates.values() for p in by_purpose if p != latency.WILDCARD}
+    if purposes is None or not named:
+        return
+    known = purposes.delivered | purposes.deployment | set(await purpose_store.live_names(conn))
+    unknown = sorted(named - known)
+    if unknown:
+        raise InvalidRequest(
+            f"{latency.SETTING} names a purpose that is not a model purpose: {unknown[0]}",
+            {"field": f"body.{latency.SETTING}", "unknown_purposes": unknown},
+        )
 
 
 def _profile_defaults(
@@ -438,6 +461,8 @@ async def apply_settings(
             )
         if STRONGEST_SETTING in changed and wanted.model_tiers.strongest is not None:
             await _require_listed_model(conn, wanted.model_tiers.strongest)
+        if latency.SETTING in changed:
+            await _require_estimate_purposes(conn, wanted.purpose_latency_estimates, purposes)
         revision = await bump_config_revision(conn, current)
         document = await raw_document(conn)
         await conn.execute(

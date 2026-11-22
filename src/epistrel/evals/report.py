@@ -48,8 +48,10 @@ from epistrel.evals.gate import (
     Judgement,
     Metric,
     Rule,
+    TargetStatus,
     Verdict,
     gate,
+    target_status,
 )
 
 if TYPE_CHECKING:
@@ -114,6 +116,10 @@ class MetricResult(BaseModel):
     note: str | None = None
     """A short note on the row (#937: an identity row's "identity (n cases)"; #938: a polished
     row's words-kept count)."""
+    target: float | None = None
+    """An informational row's owner target (#528; ``gate.Metric.target``); ``None``: none."""
+    target_status: TargetStatus | None = None
+    """The mean across seeds against ``target`` (``gate.target_status``); never a verdict."""
 
     @classmethod
     def of(cls, metric: Metric, judgement: Judgement) -> MetricResult:
@@ -134,6 +140,10 @@ class MetricResult(BaseModel):
             violations=judgement.violations,
             upper_bound_95=judgement.upper_bound_95,
             verdict=judgement.verdict,
+            target=metric.target,
+            target_status=None
+            if metric.target is None
+            else target_status(metric.direction, metric.target, judgement.mean),
         )
 
     @property
@@ -473,10 +483,25 @@ def _metric_row(metric: MetricResult) -> str:
         _measured_text(metric),
         str(metric.sample_size),
         str(metric.seed_count),
-        VERDICT_TEXT[metric.verdict],
+        _verdict_text(metric),
         _bound_text(metric),
     ]
     return "| " + " | ".join(cells) + " |"
+
+
+def _verdict_text(metric: MetricResult) -> str:
+    """The row's verdict; an informational row with an owner target (#528) adds how its mean
+    compares with the target ("report only; meets target ≤ 1.00%"), which is never a verdict."""
+    text = VERDICT_TEXT[metric.verdict]
+    if metric.target is None or metric.target_status is None:
+        return text
+    sign = "≤" if metric.direction is Direction.at_most else "≥"
+    status = (
+        f"**{metric.target_status.value}**"
+        if metric.target_status is TargetStatus.misses
+        else metric.target_status.value
+    )
+    return f"{text}; {status} {sign} {percent(metric.target)}"
 
 
 def summary(report: Report) -> dict[str, Any]:
@@ -514,6 +539,12 @@ def summary(report: Report) -> dict[str, Any]:
                 "floor": m.floor,
                 "sample_size": m.sample_size,
                 "verdict": m.verdict.value,
+                # #528: an owner target, only on a row that has one (report-only).
+                **(
+                    {"target": m.target, "target_status": m.target_status.value}
+                    if m.target is not None and m.target_status is not None
+                    else {}
+                ),
             }
             for s in report.suites
             for m in s.metrics

@@ -296,7 +296,7 @@ def test_a_stale_row_keeps_its_model() -> None:
     for row, model in zip(rows, ("model-a", "model-b"), strict=True):
         assert row[2].startswith("uncertified (preset changed since certification")
         assert row[header.index("Model")] == f"`{model}`"
-        assert [c for i, c in enumerate(row[3:], 3) if header[i] != "Model"] == [EM_DASH] * 8
+        assert [c for i, c in enumerate(row[3:], 3) if header[i] != "Model"] == [EM_DASH] * 9
 
     nameless = {k: v for k, v in document["models"].items() if k != "generation"}
     row = cells([Committed(path, parse_record({**document, "models": nameless}))])

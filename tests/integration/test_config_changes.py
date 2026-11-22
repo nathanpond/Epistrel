@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import latency
 from epistrel.core.config_changes import (
     SECTIONS,
     ConfigScope,
@@ -150,6 +151,8 @@ STORED: dict[str, Any] = {
     "certification_canary_sample_size": 51,
     "rewrite_max_open_sessions": 6,
     "image_retry_budget": 1,
+    # #602: a merged map reads back whole, so the stored value is the seeded map, one leaf moved.
+    "purpose_latency_estimates": {**latency.seeded(), "*": {"*": 2.5}},
 }
 """A non-default value of one setting or more in every section of the settings document
 (all of #315's three missing sections' settings among them)."""

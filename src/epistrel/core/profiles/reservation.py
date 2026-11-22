@@ -25,6 +25,14 @@ story-aware ones (the turn's plan, a story's impact report, a provider binding) 
 O (owner decision 13, 2026-10-30). Pure: the Orchestrator's planner and the profile validator
 share it.
 
+**The time minimum** (#602; ADR-206): the single-primary minimum's calls in sequence, each timed
+by ``core.latency`` for the model its purpose resolves to (``minimum_slots``,
+``estimated_minimum_s``): the render as ``generation``, B and C as ``extraction_backstop``, G as
+``guardrail_check``, and O as its ``generation``, ``extraction_backstop`` and G_out
+``guardrail_check`` calls. ``respond`` refuses an explicit ``budget.deadline_s`` below it
+(``deadline_below_safety_minimum``), and ``budget_warnings`` warns ``below_safety_minimum`` with
+``setting: budgets.deadline_ms`` when a structured profile's own deadline is below it.
+
 ``SafetyFacts`` (#456) carries what the minimum needs beside the settings (the deployment's
 model-assisted policies, G; #214: whether the story in view has a synchronous provider) to
 every surface that warns: profile create, copy and update responses and the impact reports of a
@@ -35,9 +43,11 @@ call sites do not change.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
+from epistrel.core import latency
 from epistrel.core.profiles.schema import ProfileSettings, is_delivered, level_of
 
 EXTRACTION_LEVELS = frozenset({"extraction", "entailment"})
@@ -46,6 +56,12 @@ BELOW_SAFETY_MINIMUM = "below_safety_minimum"
 """The profile validator's warning code (FR-PROF-7)."""
 STATES_MODULE = "states"
 """The module a staged turn's State effects run under (``core.states.MODULE``)."""
+GENERATION = "generation"
+EXTRACTION_BACKSTOP = "extraction_backstop"
+GUARDRAIL_CHECK = "guardrail_check"
+"""The purposes the time minimum's slots are timed as (#602)."""
+MINIMUM_PURPOSES = (GENERATION, EXTRACTION_BACKSTOP, GUARDRAIL_CHECK)
+DEADLINE_SETTING = "budgets.deadline_ms"
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,12 +162,85 @@ def safety_minimum(
     )
 
 
+def minimum_slots(found: Reservation) -> list[str]:
+    """The purposes of a single-primary reservation's calls, in the order a turn makes them
+    (#602): the render, B and C, G, then O's render, extraction and output checks."""
+    slots = [GENERATION]
+    slots += [EXTRACTION_BACKSTOP] * (found.extraction + found.composed)
+    slots += [GUARDRAIL_CHECK] * found.guardrail
+    if found.outcome:
+        g_out = min(found.guardrail_output, found.outcome - 1)
+        slots += [GENERATION]
+        slots += [EXTRACTION_BACKSTOP] * (found.outcome - 1 - g_out)
+        slots += [GUARDRAIL_CHECK] * g_out
+    return slots
+
+
+@dataclass(frozen=True, slots=True)
+class TimedMinimum:
+    """The time minimum (#602): its slots, each ``{purpose, model, seconds}``, and their sum."""
+
+    slots: tuple[dict[str, Any], ...]
+
+    @property
+    def seconds(self) -> float:
+        return sum(float(slot["seconds"]) for slot in self.slots)
+
+    def payload(self) -> dict[str, Any]:
+        """``estimated_minimum_s`` and ``slots``, rounded to 0.1 s."""
+        return {
+            "estimated_minimum_s": round(self.seconds, 1),
+            "slots": [{**slot, "seconds": round(float(slot["seconds"]), 1)} for slot in self.slots],
+        }
+
+
+def estimated_minimum(
+    found: Reservation,
+    *,
+    estimates: latency.Estimates | None,
+    models: Mapping[str, str | None],
+) -> TimedMinimum:
+    """``found``'s calls timed by ``estimates`` for ``models`` (each purpose's resolved model;
+    a purpose missing from it reads the ``*`` entries)."""
+    return TimedMinimum(
+        tuple(
+            {
+                "purpose": purpose,
+                "model": models.get(purpose),
+                "seconds": latency.estimate(estimates, models.get(purpose), purpose),
+            }
+            for purpose in minimum_slots(found)
+        )
+    )
+
+
+def profile_models(
+    settings: ProfileSettings, deployment: Mapping[str, str | None]
+) -> dict[str, str | None]:
+    """The model each of the time minimum's purposes resolves to under ``settings``: the
+    profile's route when it names a model, else the deployment's (``deployment``)."""
+    found: dict[str, str | None] = {}
+    for purpose in MINIMUM_PURPOSES:
+        route = settings.models.purposes.get(purpose)
+        routed = route.model if route is not None else None
+        found[purpose] = routed if routed is not None else deployment.get(purpose)
+    return found
+
+
 def budget_warnings(
-    settings: ProfileSettings, *, guardrail_input: int, guardrail_output: int, outcome: int = 0
+    settings: ProfileSettings,
+    *,
+    guardrail_input: int,
+    guardrail_output: int,
+    outcome: int = 0,
+    estimates: latency.Estimates | None = None,
+    models: Mapping[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """``[{code: below_safety_minimum, …}]`` when the profile's explicit call cap is below its
-    single-primary minimum (every turn would be refused), else ``[]``. ``outcome``: O on a
-    story-aware surface, 0 on a profile's own (#214)."""
+    single-primary minimum (every turn would be refused), and (#602) when a structured
+    profile's ``budgets.deadline_ms`` is below its time minimum at ``estimates`` for ``models``
+    (the deployment's per-purpose models; given, the time check runs), else ``[]``.
+    ``outcome``: O on a story-aware surface, 0 on a profile's own (#214)."""
     cap = settings.budgets.model_calls
     found = reservation(
         settings,
@@ -160,17 +249,35 @@ def budget_warnings(
         outcome=outcome,
     )
     minimum = 1 + found.total
-    if cap is None or cap >= minimum:
-        return []
-    return [
-        {
-            "code": BELOW_SAFETY_MINIMUM,
-            "setting": "budgets.model_calls",
-            "model_calls": cap,
-            "minimum_required": minimum,
-            "reservation": found.payload(),
-        }
-    ]
+    warnings: list[dict[str, Any]] = []
+    if cap is not None and cap < minimum:
+        warnings.append(
+            {
+                "code": BELOW_SAFETY_MINIMUM,
+                "setting": "budgets.model_calls",
+                "model_calls": cap,
+                "minimum_required": minimum,
+                "reservation": found.payload(),
+            }
+        )
+    if models is not None and structured(settings):
+        timed = estimated_minimum(
+            found, estimates=estimates, models=profile_models(settings, models)
+        )
+        deadline_s = settings.budgets.deadline_ms / 1000
+        if deadline_s < timed.seconds:
+            warnings.append(
+                {
+                    "code": BELOW_SAFETY_MINIMUM,
+                    "setting": DEADLINE_SETTING,
+                    "model_calls": cap,
+                    "minimum_required": minimum,
+                    "reservation": found.payload(),
+                    "deadline_s": deadline_s,
+                    **timed.payload(),
+                }
+            )
+    return warnings
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +291,11 @@ class SafetyFacts:
     guardrail_input: int = 0
     guardrail_output: int = 0
     synchronous: bool = False
+    estimates: latency.Estimates | None = None
+    """#602: the deployment's ``purpose_latency_estimates`` (``None`` with ``models``: the
+    seeded map)."""
+    models: Mapping[str, str | None] | None = field(default=None)
+    """#602: the deployment's model per purpose; ``None``: no time warning."""
 
     def outcome(self, settings: ProfileSettings) -> int:
         """O under ``settings`` with these facts (``outcome_calls``)."""
@@ -207,18 +319,26 @@ class SafetyFacts:
             guardrail_input=self.guardrail_input,
             guardrail_output=self.guardrail_output,
             outcome=self.outcome(settings),
+            estimates=self.estimates,
+            models=self.models,
         )
 
 
 __all__ = [
     "BELOW_SAFETY_MINIMUM",
+    "DEADLINE_SETTING",
     "EXTRACTION_LEVELS",
+    "MINIMUM_PURPOSES",
     "STATES_MODULE",
     "Reservation",
     "SafetyFacts",
+    "TimedMinimum",
     "budget_warnings",
+    "estimated_minimum",
     "extraction_on",
+    "minimum_slots",
     "outcome_calls",
+    "profile_models",
     "reservation",
     "safety_minimum",
     "states_on",

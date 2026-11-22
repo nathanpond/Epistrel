@@ -11,7 +11,10 @@ dropped. A sentence (text split at ``.``, ``!``, ``?``, ``;``, ``:`` and line br
 
 - **the fact** when it holds every content stem of one of the fact's forms that has two or more
   ("selling the farm" → ``sell`` + ``farm``: "Frank has sold the farm.", "The farm's been sold,
-  Frank told me."). A one-word form ("poker", "on the market") stays an exact phrase.
+  Frank told me."). A one-word form ("poker", "on the market") stays an exact phrase, and so
+  does a form whose stems are a cast name and one word ("watching bobby", "clara's brooch",
+  #972): "Bobby glances at Marcus, pretending not to watch him" is Bobby's own act, not
+  Marcus's fact.
 - **the feeling** when it holds an emotion word of the same family as one of the fact's
   narrated feelings (fear, shame, pleasure, distress, intent: "dreading" and "worried" are
   both fear) and one of the fact's topic stems (the content stems of its feelings and the head,
@@ -224,7 +227,7 @@ def profile(fixture: Fixture, fact: PrivateFact) -> Profile:
         stems = content(form)
         if stems:
             heads.add(stems[-1])
-        if len(set(stems)) >= 2:
+        if len(set(stems) - names) >= 2:  # #972: a name and one word stays an exact phrase
             bags.append((form, frozenset(stems)))
     families: set[str] = set()
     for feeling in fact.feelings:

@@ -58,6 +58,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import latency
 from epistrel.core.errors import NUL
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
@@ -77,6 +78,7 @@ from epistrel.orchestrator.models.adapter import (
     UnknownPurpose,
 )
 from epistrel.orchestrator.models.call_trace import (
+    CALL_PROMPTS,
     CALL_TRACE,
     EXCHANGES,
     STRUCTURED_SCHEMA,
@@ -394,6 +396,18 @@ class ModelAccessLayer:
         config = await self.resolve(purpose)
         return config.base_url or self.adapter.name, config.model or "", config.revision
 
+    async def latency_estimates(self) -> dict[str, dict[str, float]]:
+        """``purpose_latency_estimates`` as of the current revision (#602; the seeded map
+        with no database)."""
+        if self._db is None:
+            return latency.seeded()
+        return await self.cache.estimates(self.db)
+
+    async def model_for(self, purpose: str) -> str | None:
+        """The model a ``purpose`` call would be sent to now, under the current story's route
+        (``None``: none configured, or no database)."""
+        return await self._configured_model(purpose) or None
+
     async def structured_settings(self) -> StructuredSettings:
         """``structured_retry_budget`` and ``uncertain_below`` as of the current revision."""
         if self._db is None:
@@ -521,7 +535,11 @@ class ModelAccessLayer:
         attempt: int,
     ) -> ModelResult:
         """The adapter's answer; under an eval run's call trace (#737, ``call_trace``) the HTTP
-        requests it made are handed to the trace's sink, whether it answered or raised."""
+        requests it made are handed to the trace's sink, whether it answered or raised. Under a
+        case's prompt recorder (#540, ``call_trace.CALL_PROMPTS``) the messages are kept too."""
+        prompts = CALL_PROMPTS.get()
+        if prompts is not None:
+            prompts.append((purpose, tuple(messages)))
         sink = CALL_TRACE.get()
         if sink is None:
             return await self.adapter.complete(purpose, messages, params, response_schema)

@@ -129,6 +129,27 @@ estimation)."""
 ADAPTER_GATED = frozenset({SALIENCE, ENTAILMENT})
 """The optional kinds no ``try_optional`` grant precedes: the Model Access Layer's
 ``affordable`` check is their only gate, so it keeps them off every reserved slot (#182)."""
+KIND_PURPOSES = {
+    EXTRACTION: "extraction_backstop",
+    COMPOSED: "extraction_backstop",
+    INPUT_ACTS: "extraction_backstop",
+    ENTAILMENT: "entailment",
+    TESTIMONY: "belief_adjudication",
+    SALIENCE: "salience_detection",
+    TIME_ESTIMATION: "time_estimation",
+    REPAIR: "regeneration",
+    "guardrail": "guardrail_check",
+    "render": "generation",
+    NARRATOR_RENDER: "generation",
+    OUTCOME: "generation",
+    POLISH: "generation",
+    FOLLOW_UP: "generation",
+    DIRECTOR_ORDER: "generation",
+    DIRECTOR_TIEBREAK: "generation",
+}
+"""#602: the purpose whose latency estimate times a call of each kind (a kind's own purpose;
+the render-like kinds ``generation``)."""
+
 PURPOSE_KINDS = {
     "extraction_backstop": EXTRACTION,
     "entailment": ENTAILMENT,
@@ -177,7 +198,11 @@ class TurnBudget:
     pending: dict[str, int] = field(default_factory=dict)
     """Optional work pre-allocated by priority (#156): calls no lower-priority kind may take."""
     latency_estimate_s: float = 0.0
-    """A call that could not start before ``deadline - this`` is unaffordable (#156)."""
+    """A call that could not start before ``deadline - this`` is unaffordable (#156); the
+    estimate of a call of no listed kind."""
+    estimates: dict[str, float] = field(default_factory=dict)
+    """#602: the estimate per kind (``KIND_PURPOSES``' purpose on the model it resolves to, at
+    ``purpose_latency_estimates``); a kind missing here uses ``latency_estimate_s``."""
     stage: str | None = None
     """The kind the current calls are charged to (``charging``), over ``PURPOSE_KINDS``."""
     used_by_kind: dict[str, int] = field(default_factory=dict)
@@ -258,11 +283,19 @@ class TurnBudget:
             self.denied.add(kind)
         return False
 
-    def can_start(self) -> bool:
-        """Whether a call could still start and answer before the deadline (the latency
-        estimate, #156); always while the turn has no deadline."""
+    def estimate_s(self, kind: str | None = None) -> float:
+        """The seconds a call of ``kind`` is expected to take (#602: per kind; #156's flat
+        estimate otherwise)."""
+        if kind is None:
+            return self.latency_estimate_s
+        return self.estimates.get(kind, self.latency_estimate_s)
+
+    def can_start(self, kind: str | None = None) -> bool:
+        """Whether a call of ``kind`` could still start and answer before the deadline (its
+        latency estimate, #156; #602: per kind, and a call that just fits may start); always
+        while the turn has no deadline."""
         left = self.remaining_s()
-        return left is None or left > self.latency_estimate_s
+        return left is None or left >= self.estimate_s(kind)
 
     def affordable(self, purpose: str | None, *, first: bool) -> bool:
         """Whether a call of ``purpose`` fits (the Model Access Layer asks before sending): a
@@ -275,7 +308,7 @@ class TurnBudget:
         remaining = self.remaining_calls
         if kind is not None and self.named.get(kind, 0) > 0:
             return remaining is None or remaining >= 1
-        if kind in OPTIONAL_PRIORITY and (self._denied_ahead(kind) or not self.can_start()):
+        if kind in OPTIONAL_PRIORITY and (self._denied_ahead(kind) or not self.can_start(kind)):
             return self._deny(kind)
         # #182 (Rule 1): the optional work the adapter gates itself (salience, entailment) never
         # spends a held slot either. A sequential turn's later renders and their output checks
@@ -360,7 +393,7 @@ class TurnBudget:
         the more important kinds' pre-allocation, covers it and it could start before the
         deadline, hold it and answer ``True`` (the caller releases what it leaves); else
         ``False`` and nothing is held."""
-        if self.expired() or not self.can_start() or self._denied_ahead(kind):
+        if self.expired() or not self.can_start(kind) or self._denied_ahead(kind):
             return self._deny(kind)
         if not self.can_afford_unreserved(cost + self._ahead_of(kind)):
             return self._deny(kind)
@@ -518,6 +551,7 @@ __all__ = [
     "GUARDRAIL_INPUT",
     "GUARDRAIL_OUTPUT",
     "INPUT_ACTS",
+    "KIND_PURPOSES",
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",

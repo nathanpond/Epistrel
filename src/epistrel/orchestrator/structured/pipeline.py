@@ -356,6 +356,7 @@ from epistrel.orchestrator.budget import (
     FOLLOW_UP,
     INPUT_ACTS,
     NARRATOR_RENDER,
+    OUTCOME,
     SALIENCE,
     STOP,
     TurnBudget,
@@ -657,6 +658,8 @@ async def _respond(
         )
     await check_expected_revision(db, story_id, ctx.expected_revision)
     viewpoint = resolution()
+    with lite._routed(concurrency):
+        estimated = await planner.timing_of(models)
     plan, budget = await planner.plan_structured(
         db,
         story_id,
@@ -669,6 +672,8 @@ async def _respond(
         started=started,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
         stored=roles_rt.stored_of(story.cast, story.settings),
+        timing=estimated,
+        refuse_deadline=True,
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -761,6 +766,8 @@ async def run_queued(
     planned = planned or {}
     front = time.monotonic()
     timing = lite.TurnTiming(front=front, queued_ms=await lite.queued_ms(db, operation_id))
+    with lite._routed(concurrency):
+        estimated = await planner.timing_of(models)
     plan, budget = await planner.plan_structured(
         db,
         story_id,
@@ -772,6 +779,7 @@ async def run_queued(
         started=front,
         director=multi.order_of(story.settings, request) == multi.DIRECTOR,
         stored=roles_rt.stored_of(story.cast, story.settings),
+        timing=estimated,
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     budget.release_to(planner.held_after_input(plan, budget))
@@ -842,6 +850,8 @@ async def regenerate(
         story_default=story.settings.default_output_viewpoint,
         cast_ids=story.ids,
     )
+    with lite._routed(concurrency):
+        estimated = await planner.timing_of(models)
     plan, budget = await planner.plan_structured(
         db,
         story_id,
@@ -854,6 +864,7 @@ async def regenerate(
         started=started,
         director=multi.order_of(story.settings, replay) == multi.DIRECTOR,
         stored=roles_rt.stored_of(story.cast, story.settings),
+        timing=estimated,
     )
     resolved_cast = _planned_cast(resolved_cast, plan)
     timing = lite.TurnTiming(front=started)
@@ -5635,7 +5646,7 @@ async def play(
                 plan is not None
                 and plan.reservation.extraction > 0
                 and rendered.finish_reason != "fallback"
-                and not budget.can_start()
+                and not budget.can_start(EXTRACTION)
             )
             if replaced:
                 # NFR-PERF-7 step 7 (#156): the renders' reserved extraction cannot start
@@ -7354,7 +7365,7 @@ async def play(
         places = await subject_places(answers)
         out: tuple[Rendered, Checked] | None = None
         cause: str | None = None
-        if budget.expired() or not budget.can_start():
+        if budget.expired() or not budget.can_start(OUTCOME):
             cause = "deadline"
         else:
             try:

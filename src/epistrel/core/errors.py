@@ -369,6 +369,21 @@ class BudgetBelowSafetyMinimum(EpistrelError):
     http_status = 422
 
 
+class DeadlineBelowSafetyMinimum(EpistrelError):
+    """The call's explicit ``budget.deadline_s``, less the time already spent on the request,
+    cannot fit the calls the turn must reserve at the deployment's latency estimates
+    (``purpose_latency_estimates``; NFR-PERF-6, #602, ADR-206): refused before any model call,
+    with nothing recorded. A structured turn only; a deadline at or above the estimate plays as
+    before (a call that runs long still ends in the safe fallback with cause ``deadline``).
+
+    ``details``: ``estimated_minimum_s``, ``deadline_s`` (as sent), ``spent_s`` (before the
+    check) and ``slots`` (``[{purpose, model, seconds}]``), rounded to 0.1 s.
+    """
+
+    code = "deadline_below_safety_minimum"
+    http_status = 422
+
+
 class NothingToUndo(EpistrelError):
     """``untruncate`` found no truncation to revert, or the one it named is not the most recent
     (undo is LIFO, FR-STORE-18; #65). Nothing is written. ``details``: ``story_id``, when the

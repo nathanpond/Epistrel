@@ -51,6 +51,7 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
+from epistrel.core import latency
 from epistrel.core.context import CONTROL_CHARACTERS as _CONTROLS
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
@@ -1296,6 +1297,35 @@ class ModelTierSettings(BaseModel):
     model_tiers: ModelTiers = Field(default_factory=ModelTiers)
 
 
+class LatencyEstimateSettings(BaseModel):
+    """``purpose_latency_estimates`` (#602; ADR-206), stored under ``deployment_state.settings``:
+    per model name, per purpose, the seconds one call is expected to take (``core.latency``).
+    ``*`` stands for any model or any purpose; a lookup with no entry is 2 s."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    purpose_latency_estimates: Annotated[dict[str, dict[str, float]], PROSPECTIVE] = Field(
+        default_factory=latency.seeded
+    )
+    """Per model (the bare resolved model string), per purpose (a model purpose, or ``*``), the
+    seconds one call takes: above 0 and at most 600 (#602; ADR-206). Seeded with the measured
+    p90s of hosted ``claude-haiku-5-5`` and local ``cydonia-24b-v4.3`` and ``{"*": {"*": 2.0}}``.
+    ``respond`` refuses an explicit ``budget.deadline_s`` below its turn's safety-minimum calls
+    at these estimates (422 ``deadline_below_safety_minimum``), and the in-turn gates skip an
+    optional call that could not answer before the deadline. A write merges (RFC 7396: ``null``
+    deletes a model, or one purpose of it); a purpose that is not a model purpose is 422
+    ``validation_error``. Prospective: a turn planned after a change reads the new map."""
+
+    @field_validator("purpose_latency_estimates", mode="before")
+    @classmethod
+    def _shape(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            found = latency.problems(value)
+            if found:
+                raise ValueError("; ".join(found))
+        return value
+
+
 class ErasureSettings(BaseModel):
     """What a catalog-scope erasure does with a media asset that depicts or names only the
     erased subject but that a record the erasure leaves untouched still references (a story's
@@ -1653,6 +1683,7 @@ class DeploymentSettings(
     ProviderSettings,
     DependencySettings,
     ModelTierSettings,
+    LatencyEstimateSettings,
     CertificationCanarySettings,
     RewriteSettings,
     ImageJobSettings,

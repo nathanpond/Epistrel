@@ -58,6 +58,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import latency
 from epistrel.core.errors import NUL
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
@@ -394,6 +395,18 @@ class ModelAccessLayer:
             return self.adapter.name, self.adapter.name, 0
         config = await self.resolve(purpose)
         return config.base_url or self.adapter.name, config.model or "", config.revision
+
+    async def latency_estimates(self) -> dict[str, dict[str, float]]:
+        """``purpose_latency_estimates`` as of the current revision (#602; the seeded map
+        with no database)."""
+        if self._db is None:
+            return latency.seeded()
+        return await self.cache.estimates(self.db)
+
+    async def model_for(self, purpose: str) -> str | None:
+        """The model a ``purpose`` call would be sent to now, under the current story's route
+        (``None``: none configured, or no database)."""
+        return await self._configured_model(purpose) or None
 
     async def structured_settings(self) -> StructuredSettings:
         """``structured_retry_budget`` and ``uncertain_below`` as of the current revision."""

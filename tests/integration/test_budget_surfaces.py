@@ -9,8 +9,9 @@
   overrides and the impact preview, computed as ``POST /engine-profiles/{id}/validate`` does.
   Complement: a cap at or above the minimum warns of nothing.
 - ``epistrel_turn_degradation_total{step}`` counts each step a committed turn reports, and
-  ``epistrel_budget_rejected_total`` each call refused ``budget_below_safety_minimum`` (REST
-  and library alike), with label values from the step names only (invariant 3).
+  ``epistrel_budget_rejected_total{reason}`` each call refused ``budget_below_safety_minimum``
+  (REST and library alike; #602's ``reason`` label is the error code), with label values from
+  the step names and codes only (invariant 3).
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ from tests.story_support import WRITE, override
 from tests.structured_turn_support import beat, render, structured_story, turn_report
 
 BELOW = "below_safety_minimum"
+CALLS = "budget_below_safety_minimum"
+"""#602: the counter's ``reason`` label for a call-count refusal."""
 LABEL = re.compile(r"^[a-z_]+$")
 
 
@@ -249,23 +252,23 @@ async def test_degradation_and_budget_rejection_counters(
             if step not in steps:
                 assert _sample("epistrel_turn_degradation_total", step=step) == value, step
 
-        rejected = _sample("epistrel_budget_rejected_total")
+        rejected = _sample("epistrel_budget_rejected_total", reason=CALLS)
         await override(client, story, {"budgets": {"model_calls": 2}})
         refused = await respond(client, story, body(ids["Wren"], "Hello."))
         assert refused.status_code == 422, refused.text
         assert refused.json()["error"]["code"] == "budget_below_safety_minimum"
-        assert _sample("epistrel_budget_rejected_total") == rejected + 1
+        assert _sample("epistrel_budget_rejected_total", reason=CALLS) == rejected + 1
         with pytest.raises(BudgetBelowSafetyMinimum):
             await lib.respond(
                 RequestContext(principal="p-author"),
                 story,
                 RespondRequest.model_validate(body(ids["Wren"], "Hello.")),
             )
-        assert _sample("epistrel_budget_rejected_total") == rejected + 2
+        assert _sample("epistrel_budget_rejected_total", reason=CALLS) == rejected + 2
         # Complement: an ordinary refusal of another kind does not count.
         unknown = await respond(client, story, body("00000000000000000000000000", "Hello."))
         assert unknown.status_code >= 400
-        assert _sample("epistrel_budget_rejected_total") == rejected + 2
+        assert _sample("epistrel_budget_rejected_total", reason=CALLS) == rejected + 2
 
         text = (await client.get("/metrics")).text
         assert "epistrel_budget_rejected_total" in text

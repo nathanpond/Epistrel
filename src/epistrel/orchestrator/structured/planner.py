@@ -35,7 +35,9 @@ the narrator is skipped (``narrator_skipped``).
 
 **Optional work** asks ``TurnBudget.try_optional`` (or the adapter refuses its first attempt):
 only what no reservation holds, never below the minimum, and only while it could start before
-the deadline (``latency_estimate_s``, ``DEFAULT_LATENCY_ESTIMATE_S``). The degradation on
+the deadline (#602: its kind's estimate, ``TurnBudget.estimates``, from the deployment's
+``purpose_latency_estimates`` for the model its purpose resolves to; ``DEFAULT_LATENCY_ESTIMATE_S``
+without one). The degradation on
 exhaustion follows NFR-PERF-7's order: ``skip_polish`` → ``repair_deterministic`` (or
 ``safe_fallback``) → ``testimony_defaulted`` → ``entailment_safe_disposition`` →
 ``primaries_reduced`` / ``primaries_deferred`` (#174, #176: the named primaries the cap could
@@ -46,6 +48,14 @@ whose reserved extraction cannot start before the deadline is replaced by the sa
 before anything it said is detected or committed). ``salience_skipped`` and
 ``narrator_skipped`` are reported beside them. A turn's ``degradation`` lists the ladder's steps
 first, in that order (``ladder_rank``), then every other step in the order it was taken.
+
+**The deadline pre-check** (#602; ADR-206): a request that sends ``budget.deadline_s`` is refused
+422 ``deadline_below_safety_minimum`` when that deadline, less the time already spent on the
+request, is below the single-primary safety minimum's calls timed at the estimates
+(``core.profiles.reservation.estimated_minimum``). It runs after the call-count minimum and
+before any model call; a profile's own ``budgets.deadline_ms`` is never refused (the profile
+validator warns instead). A refusal records nothing: the idempotency claim is released, as on
+any error, so a retry with a longer deadline plays.
 """
 
 from __future__ import annotations
@@ -57,13 +67,23 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import latency
 from epistrel.core import providers as core_providers
 from epistrel.core.epistemic import roles
 from epistrel.core.epistemic.roles import Participation
-from epistrel.core.errors import BudgetBelowSafetyMinimum, InvalidRequest
+from epistrel.core.errors import (
+    BudgetBelowSafetyMinimum,
+    DeadlineBelowSafetyMinimum,
+    InvalidRequest,
+)
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import StoryProfile
-from epistrel.core.profiles.reservation import Reservation, outcome_calls, reservation
+from epistrel.core.profiles.reservation import (
+    Reservation,
+    estimated_minimum,
+    outcome_calls,
+    reservation,
+)
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.orchestrator.budget import (
     COMPOSED,
@@ -73,6 +93,7 @@ from epistrel.orchestrator.budget import (
     FOLLOW_UP,
     GUARDRAIL_INPUT,
     GUARDRAIL_OUTPUT,
+    KIND_PURPOSES,
     OPTIONAL_PRIORITY,
     OUTCOME,
     POLISH,
@@ -90,9 +111,57 @@ from epistrel.orchestrator.policies.store import guard_context
 PRIMARIES = 1
 """Primary renders a structured turn plans by default (one character renders; #174: a
 ``sequential`` turn plans one per named primary)."""
-DEFAULT_LATENCY_ESTIMATE_S = 2.0
-"""How long a reserved or optional call is assumed to take: one that could not start before
-``deadline - this`` is unaffordable (#156's default, per purpose)."""
+DEFAULT_LATENCY_ESTIMATE_S = latency.FALLBACK_S
+"""How long a reserved or optional call is assumed to take when no estimate applies: one that
+could not start before ``deadline - this`` is unaffordable (#156's default; #602: the fallback
+under ``purpose_latency_estimates``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Timing:
+    """#602: the turn's latency estimates: the model each purpose resolves to (the story's
+    routes over the deployment's) and ``purpose_latency_estimates``."""
+
+    models: Mapping[str, str | None]
+    estimates: latency.Estimates
+
+    def seconds(self, purpose: str) -> float:
+        return latency.estimate(self.estimates, self.models.get(purpose), purpose)
+
+    def by_kind(self) -> dict[str, float]:
+        """Each kind's estimate (``KIND_PURPOSES``)."""
+        return {kind: self.seconds(purpose) for kind, purpose in KIND_PURPOSES.items()}
+
+
+TIMED_PURPOSES = tuple(sorted(set(KIND_PURPOSES.values())))
+"""The purposes a turn's ``Timing`` resolves a model for."""
+
+
+async def timing_of(models: Any) -> Timing:
+    """The ``Timing`` of a turn routed now (call inside the turn's ``routing``): ``models`` is
+    the ``ModelAccessLayer``."""
+    resolved = {purpose: await models.model_for(purpose) for purpose in TIMED_PURPOSES}
+    return Timing(resolved, await models.latency_estimates())
+
+
+def check_deadline(
+    plan_one: TurnPlan, timing: Timing, *, deadline_s: float, started: float
+) -> None:
+    """#602: 422 ``deadline_below_safety_minimum`` when ``deadline_s`` (sent), less the time
+    spent since ``started``, is below ``plan_one``'s (a single-primary plan's) safety minimum
+    timed by ``timing``. A deadline at the estimate passes."""
+    spent = max(0.0, time.monotonic() - started)
+    timed = estimated_minimum(
+        plan_one.reservation, estimates=timing.estimates, models=timing.models
+    )
+    if deadline_s - spent >= timed.seconds:
+        return
+    raise DeadlineBelowSafetyMinimum(
+        f"the turn's deadline of {deadline_s:g} s cannot fit the {len(timed.slots)} calls it "
+        f"must reserve, estimated at {timed.seconds:.1f} s for the models in use",
+        {**timed.payload(), "deadline_s": deadline_s, "spent_s": round(spent, 1)},
+    )
+
 
 SKIP_POLISH = "skip_polish"
 REPAIR_DETERMINISTIC = "repair_deterministic"
@@ -282,9 +351,10 @@ def plan_budget(
     override_deadline_s: float | None = None,
     started: float | None = None,
     latency_estimate_s: float | None = None,
+    estimates: Mapping[str, float] | None = None,
 ) -> TurnBudget:
     """The budget a structured turn runs under (see the module docstring); raises before any
-    call."""
+    call. ``estimates``: #602's per-kind estimates (``Timing.by_kind``)."""
     found = plan.reservation
     cap = story_max_calls if story_max_calls is not None else default_calls(plan)
     max_calls = cap
@@ -325,6 +395,7 @@ def plan_budget(
         latency_estimate_s=(
             DEFAULT_LATENCY_ESTIMATE_S if latency_estimate_s is None else latency_estimate_s
         ),
+        estimates=dict(estimates or {}),
     )
     budget.held = plan.primaries + found.guardrail
     budget.reserve(EXTRACTION, found.extraction)
@@ -350,6 +421,8 @@ async def plan_structured(
     override: Any = None,
     director: bool = False,
     stored: Mapping[str, Participation] | None = None,
+    timing: Timing | None = None,
+    refuse_deadline: bool = False,
 ) -> tuple[TurnPlan, TurnBudget]:
     """The turn's plan and budget: G is one call per model-assisted input policy for the
     actor's input plus one per model-assisted output policy for each render's first output
@@ -358,7 +431,10 @@ async def plan_structured(
     plans as many as fit, in order (at least one), and defers the rest (``plan.deferred``).
     #176 (NFR-PERF-7 (6)): of the rest, those whose stored role (``stored``) is not a fixed
     ``primary`` render as reactive narration instead (``plan.reduced``), and a fixed one is
-    deferred with a notice (``plan.deferred_fixed``)."""
+    deferred with a notice (``plan.deferred_fixed``). #602: with ``timing``, the budget's gates
+    use its per-kind estimates, and (``refuse_deadline``: ``respond`` only) an explicit
+    ``override.deadline_s`` below the timed safety minimum is 422
+    ``deadline_below_safety_minimum`` (``check_deadline``), after the call-count check."""
     context = await guard_context(db, story_id)
     guardrail_input = len(model_assisted(input_policies(context, actor=cast.actor.id)))
     guardrail_output = output_reservation(context, cast.render_ids)
@@ -385,12 +461,28 @@ async def plan_structured(
                 override_max_calls=None if override is None else override.max_calls,
                 override_deadline_s=None if override is None else override.deadline_s,
                 started=started,
+                latency_estimate_s=None if timing is None else timing.seconds("generation"),
+                estimates=None if timing is None else timing.by_kind(),
             )
         except BudgetBelowSafetyMinimum:
             if count <= 1:
                 raise
             count -= 1
             continue
+        sent = None if override is None else override.deadline_s
+        if refuse_deadline and timing is not None and sent is not None:
+            single = plan
+            if count != 1:
+                single = plan_turn(
+                    request,
+                    configuration,
+                    guardrail_input=guardrail_input,
+                    guardrail_output=guardrail_output,
+                    primaries=1,
+                    director=director,
+                    outcome=outcome,
+                )
+            check_deadline(single, timing, deadline_s=sent, started=started)
         if count < len(ids):
             cut = roles.reduce(ids, count, stored or {})
             plan = replace(
@@ -496,10 +588,13 @@ __all__ = [
     "SALIENCE_SKIPPED",
     "SKIP_POLISH",
     "TESTIMONY_DEFAULTED",
+    "TIMED_PURPOSES",
     "UNESTIMATED_SKIP_REMOVED",
+    "Timing",
     "TurnPlan",
     "adjudicates",
     "budget_report",
+    "check_deadline",
     "default_calls",
     "held_after_input",
     "ladder_rank",
@@ -509,4 +604,5 @@ __all__ = [
     "plan_structured",
     "plan_turn",
     "reserve_narrator",
+    "timing_of",
 ]

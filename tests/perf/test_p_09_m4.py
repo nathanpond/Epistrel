@@ -19,11 +19,13 @@ from prometheus_client import REGISTRY
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import latency
 from epistrel.core.seeds.profiles import structured_m4_settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.structured import planner
 from epistrel.testing.profiles import structured_m4
 from tests.auth_support import auth_settings
+from tests.character_support import OPERATOR
 from tests.escalation_support import CAMP_LINE, camp_story, entailment, regenerated
 from tests.event_support import rows
 from tests.policy_support import AUTHOR, story_item
@@ -323,19 +325,26 @@ async def test_p_09__structured(
         _accounted(turn)
 
         # -- a slow stub: the render leaves no time for its reserved extraction ------------
-        monkeypatch.setattr(planner, "DEFAULT_LATENCY_ESTIMATE_S", 9.5)
+        # #602: every call is estimated at 9.5 s (``purpose_latency_estimates``), and the
+        # story's own deadline is 10 s: a profile deadline is never refused up front (an
+        # explicit ``budget.deadline_s`` this short would be 422 deadline_below_safety_minimum).
+        estimates = {latency.SETTING: {"*": {"*": 9.5}}}
+        slow = await client.put("/admin/settings", json=estimates, headers=OPERATOR)
+        assert slow.status_code == 200, slow.text
         story, ids = await structured_story(client, "Wren", "Ada")
+        await override(client, story, {"budgets": {"deadline_ms": 10_000}})
         stub.reset()
         stub.latency_s = 1.0
         stub.script(
             "generation", [render(beat("say", "The vault code is 1234."), beat("do", "Ada nods."))]
         )
         try:
-            answer = await respond(
-                client, story, body(ids["Wren"], "Hello.", budget={"deadline_s": 10})
-            )
+            answer = await respond(client, story, body(ids["Wren"], "Hello."))
         finally:
             stub.latency_s = 0.0
+            restored = {latency.SETTING: {"*": {"*": latency.FALLBACK_S}}}
+            reset = await client.put("/admin/settings", json=restored, headers=OPERATOR)
+            assert reset.status_code == 200, reset.text
         assert answer.status_code == 200, answer.text
         turn = answer.json()
         _accounted(turn)

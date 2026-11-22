@@ -63,17 +63,35 @@ class UndeliveredSetting(BaseModel):
     setting: str
 
 
+class TimedSlot(BaseModel):
+    """One call of the time minimum (#602): its purpose, the model it resolves to (``null``:
+    none configured) and its estimated seconds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    purpose: str
+    model: str | None
+    seconds: float
+
+
 class ProfileValidationWarning(BaseModel):
     """A warning of the profile validator (#156): ``below_safety_minimum`` names the setting,
-    its value, the minimum a turn needs and the reservation that makes it up."""
+    its value, the minimum a turn needs and the reservation that makes it up. #602: on
+    ``setting: budgets.deadline_ms`` (a structured profile whose deadline is below its time
+    minimum) it also carries ``deadline_s``, ``estimated_minimum_s`` and the timed ``slots``
+    (``{purpose, model, seconds}``), and ``model_calls`` is the profile's cap (``null``: the
+    formula)."""
 
     model_config = ConfigDict(frozen=True)
 
     code: str
     setting: str
-    model_calls: int
+    model_calls: int | None
     minimum_required: int
     reservation: dict[str, int]
+    deadline_s: float | None = None
+    estimated_minimum_s: float | None = None
+    slots: list[TimedSlot] | None = None
 
 
 class ProfileValidation(BaseModel):
@@ -202,17 +220,23 @@ def validate_profile(
     purposes: Purposes | None = None,
     field: tuple[str, ...] = ("body", "settings"),
     guardrail_calls: tuple[int, int] = (0, 0),
+    estimates: Mapping[str, Mapping[str, float]] | None = None,
+    models: Mapping[str, str | None] | None = None,
 ) -> ProfileValidation:
     """Validate a settings document (see the module docstring); a shape error raises 422
     ``validation_error`` under ``field``, anything else is reported. ``guardrail_calls``: the
-    deployment's model-assisted input and output policies (G), for the budget warning."""
+    deployment's model-assisted input and output policies (G), for the budget warning;
+    ``estimates`` and ``models`` (#602): its latency estimates and model per purpose, for the
+    deadline warning (none without ``models``)."""
     settings = parse_settings(document, field=field)
     undelivered = undelivered_settings(document, settings, purposes=purposes, field=field)
     missing = missing_dependencies(settings)
     gi, go = guardrail_calls
     warnings = [
         ProfileValidationWarning.model_validate(w)
-        for w in budget_warnings(settings, guardrail_input=gi, guardrail_output=go)
+        for w in budget_warnings(
+            settings, guardrail_input=gi, guardrail_output=go, estimates=estimates, models=models
+        )
     ]
     return ProfileValidation(
         valid=not (undelivered or missing),
@@ -267,6 +291,7 @@ __all__ = [
     "ProfileValidation",
     "ProfileValidationWarning",
     "RequiredModule",
+    "TimedSlot",
     "UndeliveredSetting",
     "canonical",
     "missing_dependencies",

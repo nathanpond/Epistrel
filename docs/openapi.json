@@ -33188,19 +33188,48 @@
         "type": "object"
       },
       "ProfileValidationWarning": {
-        "description": "A warning of the profile validator (#156): ``below_safety_minimum`` names the setting,\nits value, the minimum a turn needs and the reservation that makes it up.",
+        "description": "A warning of the profile validator (#156): ``below_safety_minimum`` names the setting,\nits value, the minimum a turn needs and the reservation that makes it up. #602: on\n``setting: budgets.deadline_ms`` (a structured profile whose deadline is below its time\nminimum) it also carries ``deadline_s``, ``estimated_minimum_s`` and the timed ``slots``\n(``{purpose, model, seconds}``), and ``model_calls`` is the profile's cap (``null``: the\nformula).",
         "properties": {
           "code": {
             "title": "Code",
             "type": "string"
+          },
+          "deadline_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline S"
+          },
+          "estimated_minimum_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Minimum S"
           },
           "minimum_required": {
             "title": "Minimum Required",
             "type": "integer"
           },
           "model_calls": {
-            "title": "Model Calls",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Calls"
           },
           "reservation": {
             "additionalProperties": {
@@ -33212,6 +33241,20 @@
           "setting": {
             "title": "Setting",
             "type": "string"
+          },
+          "slots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TimedSlot"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slots"
           }
         },
         "required": [
@@ -44541,6 +44584,16 @@
             ],
             "title": "Public Base Url"
           },
+          "purpose_latency_estimates": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "title": "Purpose Latency Estimates",
+            "type": "object"
+          },
           "rating_check_model_calls_per_record": {
             "default": 2,
             "maximum": 100.0,
@@ -46406,6 +46459,40 @@
               }
             ],
             "title": "Public Base Url"
+          },
+          "purpose_latency_estimates": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purpose Latency Estimates"
           },
           "rating_check_model_calls_per_record": {
             "anyOf": [
@@ -57093,6 +57180,37 @@
         "title": "TimeAwareness",
         "type": "string"
       },
+      "TimedSlot": {
+        "description": "One call of the time minimum (#602): its purpose, the model it resolves to (``null``:\nnone configured) and its estimated seconds.",
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "seconds": {
+            "title": "Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "purpose",
+          "model",
+          "seconds"
+        ],
+        "title": "TimedSlot",
+        "type": "object"
+      },
       "TransitionBody": {
         "description": "The ``author`` transition: its kind, antecedent (the call's author act), story-time\n(``valid_at``, story-minutes), the confidence it left and its position.",
         "properties": {
@@ -60250,6 +60368,7 @@
                           "protected_index_max",
                           "provider_allowed_hosts",
                           "public_base_url",
+                          "purpose_latency_estimates",
                           "rating_check_model_calls_per_record",
                           "rating_check_retention_days",
                           "readset_change_retention_days",
@@ -100479,7 +100598,7 @@
     },
     "/stories/{story_id}/respond": {
       "post": {
-        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it; where perception is on, both the message and `beats` hold only what that character perceived, unless `player_view` is `story`: FR-RESP-13), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's polish budget (its configuration's `repair.polish.max_regenerations`; none with the polish pass off), and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline from the story's effective configuration (`GET /stories/{id}/effective-config`): `budgets.model_calls` (`null`, Lite's: `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `budgets.deadline_ms`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay from the turn reaching the front (a queued turn starting, else the request arriving) to its first model call; `elapsed_ms` starts at that same moment.\n\nThe turn captures the story's configuration when it starts and runs under it to the end: the deployment's profile defaults, then the story's engine profile at its latest version, then the story's overrides (FR-PROF-5,6). The generation settings come from it, then from the request's prompt parameters (FR-LITE-4). Every response states that configuration (FR-PROF-16): the engine `profile` (`{id, version}`) and the story's `config_revision` then, its `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, and its `quality_status` (`uncertified` until a certification matches the fingerprint, which no M3 configuration can have).\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's turn deadline (`budgets.deadline_ms`), then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
+        "description": "Play one turn of a story. The request names the acting character (any character of the story; who acts as whom is your decision), what they say and/or do (`player_input`, the turn's first beat and only ever the actor's own words), who answers (`render_character_ids`: default every other character, voiced in the order given and composed into one message), the output viewpoint (`character:<id>` or `omniscient`; default the actor, then the story's default; echoed as `output_viewpoint`, and `beats` are produced for it; where perception is on, both the message and `beats` hold only what that character perceived, unless `player_view` is `story`: FR-RESP-13), prompt parameters (`length`, `temperature`, `top_p`) and optional scene context.\n\nThe consumer does no retrieval or memory work: the prompt is assembled from the story's own records. Scene context is checked against the cast and then ignored: it is never stored and never placed in the model's context.\n\nThe response is the **finished** reply: under the `lite` profile it is generated in one model call (plus one `guardrail_check` per model-assisted output policy) and none of its claims is checked against the story's facts. Before it is released the reply is checked against the story's output policies: a reply that breaks one is generated again with the policy's message as a constraint, up to the story's polish budget (its configuration's `repair.polish.max_regenerations`; none with the polish pass off), and then the character's safe fallback line is returned instead (`guardrail.fallback_used`, `degradation: [\"safe_fallback\"]`). Rejected drafts are audit records only. Several characters are voiced in one generation, and their knowledge is kept apart only by instructions in that shared prompt.\n\nEvery turn runs under a model-call budget and a deadline from the story's effective configuration (`GET /stories/{id}/effective-config`): `budgets.model_calls` (`null`, Lite's: `9 + G`, where G is one call per model-assisted input policy plus one per model-assisted output policy) and `budgets.deadline_ms`, or a smaller `budget: {max_calls, deadline_s}` in the request (above the story's is 422). A budget below one generation plus G is refused with 422 `budget_below_safety_minimum` (`details.minimum_required`) before any model call. A structured turn whose request sends `budget.deadline_s` below the time its safety-minimum calls take at the deployment's `purpose_latency_estimates` (less the time already spent on the request) is refused with 422 `deadline_below_safety_minimum` (`details.estimated_minimum_s`, `deadline_s`, `spent_s`, `slots`) before any model call; a profile's own deadline is never refused. The response reports `model_calls` (every attempt, failed ones included), `call_counts` by purpose, `elapsed_ms`, `budget` `{max_calls, reserved, used}` and each `degradation` step with its cause; a 503 carries `model_calls` and `elapsed_ms` in `details`. `queued_ms` is how long the turn waited in the story's turn queue (null when it never queued) and `first_call_offset_ms` the delay from the turn reaching the front (a queued turn starting, else the request arriving) to its first model call; `elapsed_ms` starts at that same moment.\n\nThe turn captures the story's configuration when it starts and runs under it to the end: the deployment's profile defaults, then the story's engine profile at its latest version, then the story's overrides (FR-PROF-5,6). The generation settings come from it, then from the request's prompt parameters (FR-LITE-4). Every response states that configuration (FR-PROF-16): the engine `profile` (`{id, version}`) and the story's `config_revision` then, its `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, and its `quality_status` (`uncertified` until a certification matches the fingerprint, which no M3 configuration can have).\n\nOptional headers: `Idempotency-Key` (a retry returns the identical response) and `X-Epistrel-Expected-Revision` (a stale revision is refused with 409 and nothing written).\n\nWhile another turn of the story runs, a story with `turn_concurrency: reject` (the default) answers 423 `story_busy` with `Retry-After`, and one with `queue` queues the turn and plays the queued turns in order, each after the previous one finished. The request waits for its queued turn up to the story's turn deadline (`budgets.deadline_ms`), then answers 202 `{operation_id, position}` with `Location: /operations/{id}` while the turn stays queued; `Prefer: respond-async` answers 202 at once. A retry under the same `Idempotency-Key` waits for the same turn. A full queue (`turn_queue_max`) is 423.",
         "operationId": "respond",
         "parameters": [
           {
@@ -100677,7 +100796,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `provider_unbound`, `provider_unregistered`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `deadline_below_safety_minimum`, `guardrail_violation`, `provider_unbound`, `provider_unregistered`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {

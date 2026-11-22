@@ -15772,3 +15772,10 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Affected:** M11's exit criterion (a certified model, #819) is not met, so no preset has certification records at the current fingerprints. The release gate test stays skipped unless `EPISTREL_TEST_RELEASE_GATE=1`, and a release claims no certified model. v2's plan now holds the certification work. M12 (Audit) is unchanged.
   - **Cost rule going forward:** paid hosted runs are budgeted in dollars and estimated before launch (memory `paid-runs-dollar-cap`), replacing "5 runs per exec".
   **Issue:** #819, #935
+
+- **Merge (/n8-exec M11 run 15):** PR #995 squash-merged as `b162dda`, with CI at 27 of 27.
+  - One earlier round had `evals (standard)` cancelled at its 45-minute limit. The same code ran it in 29 minutes on round one, so that was runner speed, not a regression. A push restarted CI anyway.
+  - The linked set was exactly #528, #540, #602 and #972, all now CLOSED. None of the issues moved to v2 (#474, #529, #603, #588, #685, #952, #819, #935) closed, nor #994 or #996.
+  - M11 has 0 open and 33 closed issues.
+  - Paid runs in this invocation: 4. #749 used 3 (run 14) and run 15's Full certify used 1. The Max certify was stopped by the owner partway through, and it wrote no report.
+  **Issue:** #528, #540, #602, #972

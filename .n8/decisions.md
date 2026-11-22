@@ -15601,3 +15601,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #748
 - **Discovered (#748 → #988):** in a multi-preset certify, `run_conditions.observed` is a running total across the presets: Max 1801 against its own 901 calls, and run 12's 452/902/1352. Filed `needs-triage`, not fixed inline. #819's exit reports would show it.
   **Issue:** #748, #988
+- **Merge (/n8-exec M11 run 13):** PR #989 squash-merged as `fab879c` after CI passed 27 of 27 on the first round. The linked set was exactly #748, which is now CLOSED, with no casualties. #988 stays open (`needs-triage`). Paid runs used in run 13: 1 of 5.
+  **Issue:** #748, #988

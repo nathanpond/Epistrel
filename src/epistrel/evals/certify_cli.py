@@ -76,7 +76,7 @@ import contextlib
 import json
 import signal
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -105,8 +105,8 @@ from epistrel.evals.runner import (
     default_run_id,
     engine_for,
     is_hosted,
-    judge_layer_for,
-    judge_preflight,
+    judge_layers_for,
+    judge_preflights,
     planned_cases,
     preflight,
     run_suites,
@@ -116,6 +116,7 @@ from epistrel.evals.suites import SUITES, MalformedCase
 from epistrel.evals.suites.e12_direct import E12_MODES, select_mode
 from epistrel.evals.suites.e12_interventions import E12
 from epistrel.evals.trace import CallTrace, TraceFile, trace_path
+from epistrel.orchestrator.models.registry import QUALITY_JUDGE
 from epistrel.tools import model_matrix
 
 EX_FAILED = 1
@@ -293,19 +294,25 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
         else CallTrace(
             model=first.model_name,
             engine_sha=model_matrix.engine_sha(),
-            secrets=(first.api_key, first.judge_api_key, first.embedding_api_key),
+            secrets=(
+                first.api_key,
+                first.judge_api_key,
+                first.embedding_api_key,
+                *(e.api_key for e in first.judges.values() if e.api_key),
+            ),
         )
     )
     async with (
         engine_for(first, None) as live,
-        judge_layer_for(first, live) as judging,
+        judge_layers_for(first, live) as layers,
         _traced(trace),
     ):
+        judging = layers.get(QUALITY_JUDGE.name, live.models)
         try:
             model_version = await preflight(live, first)
-            judge_version = model_version
-            if first.judge_model is not None:
-                judge_version = await judge_preflight(judging, first)
+            # #747: each distinct judge endpoint is probed once.
+            judge_versions = await judge_preflights(layers, first, model_version)
+            judge_version = judge_versions[QUALITY_JUDGE.name]
         except EndpointUnavailable as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EX_FAILED
@@ -355,7 +362,7 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
                     seeds=seeds,
                     tier=tier,
                     now=now,
-                    probed=(model_version, judge_version),
+                    probed=(model_version, judge_versions),
                     calibrated=calibration.status == "calibrated",
                     journals=journals,
                     stop=stop,
@@ -473,7 +480,7 @@ async def _certify_one(
     seeds: list[int],
     tier: str,
     now: datetime,
-    probed: tuple[str | None, str | None],
+    probed: tuple[str | None, Mapping[str, str | None]],
     calibrated: bool,
     journals: Path,
     stop: asyncio.Event | None = None,

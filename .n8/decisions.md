@@ -15513,3 +15513,37 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #939, #978, #979
 - **Merge (/n8-exec M11 run 11):** PR #983 squash-merged as `13283d9` after CI passed on the first round. The linked set was exactly #939, which is now CLOSED, with no casualties. Paid runs used in run 11: 1 of 5 (the confirming certify).
   **Issue:** #939
+
+## /n8-exec M11 run 12 (2026-11-21)
+
+- **Decision:** run 12 takes #747 (NFR-QUAL-3). It is next in the M11 order after #939. Branch `milestone/m11-run12-e03-judge`, cut from `main` at `5c55300`. Preflight: M1–M10 are closed, and M11 has open stories. The drift check found no unreconciled `## Ad-hoc` entry (the last ones were reconciled by `/n8-replan M11` on 2026-11-17). #747's file claims match the code (`e03_consolidation.py`, `judge_model.py`, `CaseContext.judge_models`). #978/#979 are not M11 issues (no milestone, `needs-triage`).
+  **Issue:** #747
+- **Decision (#747, the judge does not enter the fingerprint; deviates from the planner's discretion):** the planner put judge models into the run fingerprint under `judges: {purpose: model}` so a judge change would retire certifications. Not done: a deployment computes its fingerprint with no eval judge, so a certification made with a Sonnet `entailment` judge would never match any deployment's fingerprint, and Haiku deployments could never report certified. Instead the judge is named in `Report.judges`, E-03's `SuiteJudge`, and `CertificationRecord.judges` (record only, `SCHEMA_VERSION` 3, as #937 did with `identity_types`). A `quality_judge` judge still enters the fingerprint as #475 had it. Recorded in ADR-204's Alternatives.
+  **Issue:** #747
+- **Fix (#747, Rule 1, the journal key):** with the entailment judge outside the fingerprint, a resumed run would reuse journal lines another judge had judged. `runner.journal_scope` files E-03's lines (and their trace keys) under `#judge:entailment=<model>` when E-03 has a judge the fingerprint doesn't name. Every other suite's key is unchanged, so existing journals still resume. Test: `test_journal_scope_names_a_judge_the_fingerprint_does_not`.
+  **Issue:** #747
+- **Decision (#747, routing shape):** the planner asked for one dispatching layer behind `CaseContext.judge_models`. Built instead: one `JudgeModels` layer per distinct judge endpoint (`runner.judge_layers_for`), keyed by purpose, and `CaseContext.judge_models_for(purpose)`. `judge_models` stays as `quality_judge`'s. A layer that dispatches inside every Model Access Layer method would override far more surface for the same effect. `AdapterConfig.judge_name` / `self_judged` / `judge_endpoint` now mean `quality_judge`'s judge (the calibration's and the fingerprint's). `judge_name_for(purpose)` gives any purpose's.
+  **Issue:** #747
+- **Decision (#747, calibration per purpose):** no `judge_calibrated` per purpose was added. The entailment judge's calibration is E-03's labelled pairs (the planner's own reading), and ADR-204's trust gate applies it inside the run. `judge_calibrated` stays the quality judge's.
+  **Issue:** #747
+- **Decision (#747, the re-judge's cause rule):** a failing window (the journal's judge found it unfaithful) is `consolidation` only when the candidate also refuses one of its reflections *and* judged both of that window's labelled pairs right. Otherwise it is `judge`. A tie in the majority goes to `judge`. This follows the planner's second pass ("decided by the candidate judge's re-judge; ties → judge"); the first pass's rule (the run judge mis-called a labelled pair) is not used. Sources are rebuilt with `records.render_line("do", …)`, the turn commit's own formatter, so the candidate sees E-03's text. Labelled pairs are judged once per case, not per seed.
+  **Issue:** #747
+- **Decision (#747, an untrusted floor in a record):** when the trust gate makes `nfr_qual_3.faithfulness` report only, `certify.floors_of` puts it in none of a record's passed/failed/insufficient lists (it skips report-only rows, as for any informational row), so NFR-QUAL-3 is simply not evidenced. Stated in ADR-204's Consequences.
+  **Issue:** #747
+- **Decision (#747, API surface):** `CertificationRecord` is the body of `POST /admin/certifications/import`, so `docs/openapi.json` gains the optional `judges` field and `schema_version` 3. The change is additive; #937's `identity_types` took the same path. No Console change is needed: the Console doesn't author records.
+  **Issue:** #747
+- **Decision (#747, the re-judge, 1 of 5 paid runs):** `evals rejudge` over the #818 Full journal (`full-4a6a6e02a0c4.jsonl`) with `claude-sonnet-5-5` judging `entailment`. Faithfulness 99.55% ± 0.39% (pass); judge agreement 96.00% per pair. Haiku had failed 8 windows; Sonnet entails all 8 and called both of each window's pairs right, so all 8 are `judge` and none `consolidation`. Cause named: the judge. Posted on #747 (comment 7069956338).
+  **Issue:** #747
+- **Decision (#747, the confirming run, 2 of 5 paid runs):** `certify --presets standard,full,max --suite e03 --judge-model-for entailment=claude-sonnet-5-5 --fresh` on hosted Haiku, 3 seeds, at `92a5c7d`.
+  - Standard 99.10% ± 1.02% (pass), Full 98.44% ± 0.77% (fail; mean − SD 97.67%), Max 99.56% ± 0.77% (pass). Agreement 96.1–96.2%, trusted.
+  - Full's failing reflections with a trusted judge are consolidation overreach: an added state ("stays awake watching the hall through the night", from "sleeps in the chair facing the hall") and an invented order ("first showed it to the jeweller, then …").
+  - Reports committed (`standard-9571b4ca2e03-2026-11-21-2.md`, `full-bca1e50d0af4-2026-11-21-3.md`, `max-9b6b43379c0f-2026-11-21-2.md`). The two certification records the run wrote (Standard, Max) are **not** committed: an E-03-only run must not mark those fingerprints certified (ADR-200; same as run 11). They are kept in the session scratchpad only.
+  **Issue:** #747
+- **Decision (#747, tuning iteration 1):** `consolidation.j2` gains one wording rule: never add a state, an ongoing activity or an order of events the records do not give, with the chair/awake example and "first/then/after". Wording only, as the planner prescribed. The template hash is in the fingerprint already, so `MODEL_CALL_REVISION` does not move, but every preset's fingerprint does (uncertified anyway until #819). Confirming rerun = paid run 3 of 5.
+  **Issue:** #747
+- **Decision (#747, iteration 1's rerun, 3 of 5 paid runs):** the same certify at `deb2c94` (new fingerprints Standard `0eb007d36bfb`, Full `064728ca3391`, Max `acf72d616451`).
+  - Faithfulness: Standard 99.54% ± 0.40%, Full 99.77% ± 0.39%, Max 99.77% ± 0.40%. All pass mean − SD ≥ 98%.
+  - Agreement 96.4–96.6%, trusted.
+  - `e03.produced` fell from 99.33% to 96.4–97.8%: more windows now write no reflection, as the template's "fewer statements are better" asks. It is report only.
+  - No iteration 2. The reports are committed, and the three records are again not committed (E-03-only run). #747 is done.
+  **Issue:** #747

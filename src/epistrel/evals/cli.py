@@ -91,18 +91,24 @@ from epistrel.evals import report as reports
 from epistrel.evals import sets as labeled_sets
 from epistrel.evals.gate import Verdict
 from epistrel.evals.journal import default_root
+from epistrel.evals.judge_model import JudgeEndpoint
 from epistrel.evals.presets import DEFAULT_PRESET, PRESET_NAMES, PRESETS
 from epistrel.evals.runner import (
     BUILD_DIR,
     DEFAULT_SEED_BASE,
     DEFAULT_SEEDS,
     DEFAULT_SETS_DIR,
+    JUDGE_PURPOSES,
     AdapterConfig,
     AdapterName,
     CalibrationMissing,
     EndpointUnavailable,
     calibration_path,
     default_run_id,
+    engine_for,
+    judge_layers_for,
+    judge_preflight,
+    preflight,
     routed_purposes,
     run_calibration,
     run_fingerprint,
@@ -209,6 +215,86 @@ def _endpoint_options(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument("--judge-base-url", help="the judge model's endpoint (--base-url)")
     command.add_argument("--judge-api-key", help="the judge endpoint's key (--api-key)")
+    purposes = ", ".join(JUDGE_PURPOSES)
+    command.add_argument(
+        "--judge-model-for",
+        action="append",
+        type=_purpose_value,
+        default=[],
+        metavar="PURPOSE=MODEL",
+        help=f"a judge for one judge purpose alone ({purposes}; repeatable; #747), over "
+        "--judge-model for that purpose",
+    )
+    command.add_argument(
+        "--judge-base-url-for",
+        action="append",
+        type=_purpose_value,
+        default=[],
+        metavar="PURPOSE=URL",
+        help="that purpose's judge endpoint (default --judge-base-url, else --base-url)",
+    )
+    command.add_argument(
+        "--judge-api-key-env-for",
+        action="append",
+        type=_purpose_value,
+        default=[],
+        metavar="PURPOSE=ENVVAR",
+        help="the environment variable holding that purpose's judge key (default "
+        "--judge-api-key, else --api-key); keys are never given on the command line",
+    )
+
+
+def _purpose_value(value: str) -> tuple[str, str]:
+    """``PURPOSE=VALUE`` for the ``--judge-*-for`` flags (#747): a judge purpose and its value."""
+    purpose, sep, rest = value.partition("=")
+    if not sep or not rest:
+        raise argparse.ArgumentTypeError(f"expected PURPOSE=VALUE, got {value!r}")
+    if purpose not in JUDGE_PURPOSES:
+        raise argparse.ArgumentTypeError(
+            f"unknown judge purpose {purpose!r}: choose from {', '.join(JUDGE_PURPOSES)}"
+        )
+    return purpose, rest
+
+
+def judge_overrides(args: argparse.Namespace) -> tuple[tuple[str, JudgeEndpoint], ...]:
+    """The per-purpose judges the ``--judge-*-for`` flags name (#747); ``ValueError`` for a
+    purpose named twice, an endpoint or key for a purpose with no model, or a key variable
+    that is not set."""
+    found: dict[str, dict[str, str]] = {}
+    for flag, field_name in (
+        ("judge_model_for", "model"),
+        ("judge_base_url_for", "base_url"),
+        ("judge_api_key_env_for", "key_env"),
+    ):
+        for purpose, value in getattr(args, flag, None) or ():
+            entry = found.setdefault(purpose, {})
+            if field_name in entry:
+                raise ValueError(f"--{flag.replace('_', '-')} names {purpose} twice")
+            entry[field_name] = value
+    overrides: list[tuple[str, JudgeEndpoint]] = []
+    for purpose in JUDGE_PURPOSES:
+        if purpose not in found:
+            continue
+        entry = found[purpose]
+        if "model" not in entry:
+            raise ValueError(f"an endpoint or key for {purpose} needs --judge-model-for")
+        key: str | None = None
+        if "key_env" in entry:
+            key = os.environ.get(entry["key_env"])
+            if not key:
+                raise ValueError(f"{entry['key_env']} (the {purpose} judge's key) is not set")
+        base_url = entry.get("base_url") or args.judge_base_url or None
+        overrides.append(
+            (
+                purpose,
+                JudgeEndpoint(
+                    entry["model"],
+                    base_url.rstrip("/") if base_url else None,
+                    key or args.judge_api_key,
+                ),
+            )
+        )
+    return tuple(overrides)
 
 
 def _embedding_options(command: argparse.ArgumentParser, *, required: bool = False) -> None:
@@ -261,7 +347,12 @@ def _trace(
         engine_sha=model_matrix.engine_sha(),
         file=TraceFile(path(root)),
         preset=config.preset,
-        secrets=(config.api_key, config.judge_api_key, config.embedding_api_key),
+        secrets=(
+            config.api_key,
+            config.judge_api_key,
+            config.embedding_api_key,
+            *(e.api_key for e in config.judges.values() if e.api_key),
+        ),
     )
     return trace
 
@@ -393,6 +484,25 @@ def parser() -> argparse.ArgumentParser:
     )
     _endpoint_options(calibrate)
     _trace_option(calibrate)
+    rejudging = sub.add_parser(
+        "rejudge",
+        help="judge a results journal's E-03 reflections again with another judge, offline "
+        "(#747; judge calls only)",
+    )
+    _endpoint_options(rejudging)
+    rejudging.add_argument("--suite", choices=("e03",), default="e03", help="the suite (e03)")
+    rejudging.add_argument(
+        "--from-journal",
+        type=Path,
+        required=True,
+        help="the results journal (.evals-results/<model>/<preset>-<fingerprint>.jsonl)",
+    )
+    rejudging.add_argument(
+        "--out", type=Path, help="the JSON result (default build/evals/rejudge-<journal>.json)"
+    )
+    rejudging.add_argument(
+        "--concurrency", type=_positive, default=4, help="judge calls at once (4)"
+    )
     from epistrel.evals import certify_cli
 
     certify_cli.add_parser(sub)
@@ -461,9 +571,53 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         judge_model=args.judge_model or None,
         judge_base_url=args.judge_base_url.rstrip("/") if args.judge_base_url else None,
         judge_api_key=args.judge_api_key,
+        judge_for=judge_overrides(args),
         real_purposes=tuple(getattr(args, "real_purposes", None) or ()) or None,
         preset=getattr(args, "preset", DEFAULT_PRESET),
     )
+
+
+async def _rejudge(args: argparse.Namespace) -> int:
+    """``rejudge`` (#747, ``evals.rejudge``): the journal's E-03 reflections judged again."""
+    from epistrel.evals import rejudge as rejudging
+    from epistrel.evals.suites.e03_consolidation import ConsolidationCase
+    from epistrel.orchestrator.models.registry import ENTAILMENT
+
+    adapter = _adapter(args)
+    if adapter == "openai" and not (args.base_url and args.model):
+        print("error: a real-model rejudge needs --base-url and --model", file=sys.stderr)
+        return EX_USAGE
+    if not args.from_journal.is_file():
+        print(f"error: no journal at {args.from_journal}", file=sys.stderr)
+        return EX_USAGE
+    config = _config(args, adapter)
+    suite = SUITES[args.suite]
+    cases = {c.id: c for c in suite.load(args.sets_dir) if isinstance(c, ConsolidationCase)}
+    out = args.out or BUILD_DIR / f"rejudge-{args.from_journal.stem}-{args.suite}.json"
+    try:
+        async with engine_for(config, None) as live, judge_layers_for(config, live) as layers:
+            await preflight(live, config)
+            layer = layers.get(ENTAILMENT.name, live.models)
+            if ENTAILMENT.name in layers:
+                await judge_preflight(layer, config, ENTAILMENT.name)
+            if adapter == "stub":
+                for case in cases.values():
+                    suite.script_stub(case, layer.stub)
+            found = await rejudging.rejudge(
+                layer,
+                args.from_journal,
+                cases,
+                judge_model=config.judge_name_for(ENTAILMENT.name),
+                concurrency=args.concurrency,
+            )
+    except EndpointUnavailable as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EX_FAILED
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(found.as_json(), indent=2, ensure_ascii=False) + "\n")
+    print(rejudging.summary_text(found))
+    print(f"wrote {out}")
+    return 0
 
 
 async def _calibrate(args: argparse.Namespace) -> int:
@@ -533,7 +687,7 @@ async def _run(args: argparse.Namespace) -> int:
     fingerprint_value = run_fingerprint(
         config.model_name,
         dials,
-        judge=config.judge_model,
+        judge=config.quality_judge_model,
         real_purposes=routed_purposes(config),
         preset=config.preset,
     )
@@ -808,6 +962,12 @@ def check_sets() -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command in ("run", "calibrate-judge", "certify", "rejudge"):
+        try:
+            judge_overrides(args)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EX_USAGE
     if args.check:
         return check()
     if args.check_sets:
@@ -827,6 +987,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_run(args))
     if args.command == "calibrate-judge":
         return asyncio.run(_calibrate(args))
+    if args.command == "rejudge":
+        return asyncio.run(_rejudge(args))
     if args.command == "certify":
         from epistrel.evals import certify_cli
 

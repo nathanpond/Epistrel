@@ -143,8 +143,13 @@ class Suite:
     judge_purposes: ClassVar[tuple[str, ...]] = ()
     """The purposes the suite's harness-side judge calls use (#475): E-03's ``entailment``,
     E-12/E-13's ``quality_judge``. A suite that names any is a **judged suite**. Its judge calls
-    go through ``CaseContext.judge_models`` (the run's judge model when one is set), and its
-    result records which model judged."""
+    go through ``CaseContext.judge_models_for`` (that purpose's judge when one is set, #747),
+    and its result records which model judged."""
+    trusted_by: ClassVar[tuple[str, float] | None] = None
+    """``(metric, threshold)`` (#747, ADR-204): the suite's floored rows count only when that
+    report-only metric's mean across seeds (the judge's agreement with labelled pairs) is at
+    least ``threshold``. Below it, or unmeasured, each floored row is ``report_only``, with a
+    note quoting the agreement (``runner.trusted``). ``None``: no such gate."""
 
     @property
     def set_file(self) -> str:

@@ -13,14 +13,17 @@ planner described (normalizing the reflection through #140) has nothing to norma
 judge is the model arm. When the judge is the model under test (a single-model run), the
 report says so: a model may be lenient with its own reflections, and the labeled pairs below
 measure how far its judging can be trusted. A run with a second judge model (``--judge-model``,
-#475) sends these judge calls to it through ``CaseContext.judge_models``. The consolidation
-itself stays on the run model.
+#475, or ``--judge-model-for entailment=<model>``, #747) sends these judge calls to it through
+``CaseContext.judge_models_for``. The consolidation itself stays on the run model.
 
 - ``nfr_qual_3.faithfulness`` (rate, ≥ 98 %): every reflection the window produced is entailed
-  by its episodes (a window that produced none is not observed).
+  by its episodes (a window that produced none is not observed). Its verdict counts only when
+  the judge is trusted (``trusted_by``, ADR-204): ``e03.judge_agreement``'s mean across seeds is
+  at least 75 % (``judging.CALIBRATION_FLOOR``); below it the row is report-only.
 - ``e03.produced`` (report-only): the consolidation wrote at least one reflection.
-- ``e03.judge_agreement`` (report-only): the judge called the labeled ``entailed`` reflection
-  entailed and the labeled ``non_entailed`` one not.
+- ``e03.judge_agreement`` (report-only): per labeled **pair** (#747: two a window, the
+  ``entailed`` reflection and the ``non_entailed`` one), the judge's verdict matched the label.
+  Before #747 it was one observation a window, true only when both pairs matched.
 
 The stub is scripted per case (the labeled reflection with its supports; the judge's verdict
 per text), so CI gates on its stub run.
@@ -29,6 +32,7 @@ per text), so CI gates on its stub run.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,7 +44,8 @@ from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.core.tables.memories import memories
 from epistrel.evals import scenes, trace
 from epistrel.evals.gate import Direction, Metric, Rule
-from epistrel.evals.suites import CaseModel, Outcome, Suite, register
+from epistrel.evals.judging import CALIBRATION_FLOOR
+from epistrel.evals.suites import Aggregate, CaseModel, Counts, Outcome, Suite, register
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -163,15 +168,19 @@ class E03Suite(Suite):
         Metric(
             JUDGE_AGREEMENT,
             Rule.informational,
-            description="the judge agreed with both labeled reflections of the window",
+            description="the judge's verdict matched the label, per labeled pair (two a window)",
         ),
     )
+    trusted_by = (JUDGE_AGREEMENT, CALIBRATION_FLOOR)
     reading_notes = (
         "E-03's judge is the `entailment` purpose. On a single-model run it is the model under "
-        "test judging its own reflections. With `--judge-model` (#475) it is that second model, "
-        "and the suite's Judge line names it. `e03.judge_agreement` shows how well the judge "
-        "judges the labeled entailed and non-entailed reflections. A window that produced no "
-        "reflection is not counted in `nfr_qual_3.faithfulness`, but is in `e03.produced`.",
+        "test judging its own reflections. With `--judge-model` (#475) or "
+        "`--judge-model-for entailment=<model>` (#747) it is that second model, and the "
+        "suite's Judge line names it. `e03.judge_agreement` shows how well the judge judges "
+        "the labeled pairs (each window's entailed and non-entailed reflection, counted "
+        "separately). `nfr_qual_3.faithfulness` counts only when that agreement is at least "
+        "75% (ADR-204); below it the row is report only. A window that produced no reflection "
+        "is not counted in `nfr_qual_3.faithfulness`, but is in `e03.produced`.",
     )
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
@@ -191,22 +200,30 @@ class E03Suite(Suite):
             ctx.engine.db, story, Window(min(turns), max(turns)), models=ctx.models
         )
         reflections = await written_reflections(ctx, story)
-        judges = ctx.judge_models
+        judges = ctx.judge_models_for(ENTAILMENT.name)
         entailed = [await judge(judges, r, sources) for r in reflections]
-        agreement = await judge(judges, case.expected.entailed, sources) and not (
-            await judge(judges, case.expected.non_entailed, sources)
-        )
+        pairs = [
+            await judge(judges, case.expected.entailed, sources),
+            not await judge(judges, case.expected.non_entailed, sources),
+        ]
         observations: dict[str, bool | None] = {
             PRODUCED: bool(reflections),
-            JUDGE_AGREEMENT: agreement,
+            JUDGE_AGREEMENT: all(pairs),
             FAITHFULNESS: all(entailed) if reflections else None,
         }
         detail: dict[str, Any] = {
             "outcome": str(run.outcome),
             "result": run.result,
             "entailed": entailed,
+            "pairs": pairs,
         }
         return Outcome(observations, output=json.dumps(reflections), detail=detail)
+
+    def aggregate(self, outcomes: Sequence[Outcome]) -> Mapping[str, Aggregate]:
+        """#747: ``e03.judge_agreement`` per labeled pair (``detail.pairs``: the entailed pair's
+        and the non-entailed pair's match). A case with no ``pairs`` (a model error) adds none."""
+        found = [bool(p) for o in outcomes for p in o.detail.get("pairs", ())]
+        return {JUDGE_AGREEMENT: Counts(sum(found), len(found) - sum(found))}
 
     def error_metrics(self, case: CaseModel) -> frozenset[str]:
         """#530: a window the model errored on produced no reflection, so it counts against

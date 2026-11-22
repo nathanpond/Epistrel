@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `bc995f908c5f` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `9571b4ca2e03` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Full | `bca1e50d0af4` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Max | `9b6b43379c0f` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Lite | `5338d30fed1f` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `0eb007d36bfb` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `064728ca3391` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `acf72d616451` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 
@@ -38,13 +38,19 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-11-21 | `claude-haiku-5-5` | standard | `9571b4ca2e03` | hosted | `e06` pass | — | — | — | — | — | — | pass | — | — | — | — | [pass](standard-9571b4ca2e03-2026-11-21.md) |
+| 2026-11-21 | `claude-haiku-5-5` | standard | `9571b4ca2e03` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](standard-9571b4ca2e03-2026-11-21-2.md) |
+| 2026-11-21 | `claude-haiku-5-5` | standard | `0eb007d36bfb` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](standard-0eb007d36bfb-2026-11-21.md) |
 | 2026-11-21 | `claude-haiku-5-5` | max | `eb4d3335eb58` | hosted | `e01` pass, `e01_viewpoint` pass, `e02` report_only, `e03` pass, `e04` report_only, `e05` fail, `e06` fail, `e07` pass, `e09` pass, `e10` pass, `e12` insufficient_evidence, `e12_direct` fail, `e13` report_only, `priv_think_leak` pass, `q01` pass, `q02` report_only, `q03` report_only, `q04` fail, `q06` report_only, `smoke` fail | fail | pass | pass | fail | pass | pass | fail | pass | pass | fail | report_only | [fail](max-eb4d3335eb58-2026-11-21.md) |
+| 2026-11-21 | `claude-haiku-5-5` | max | `acf72d616451` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](max-acf72d616451-2026-11-21.md) |
 | 2026-11-21 | `claude-haiku-5-5` | max | `9b6b43379c0f` | hosted | `e06` pass | — | — | — | — | — | — | pass | — | — | — | — | [pass](max-9b6b43379c0f-2026-11-21.md) |
+| 2026-11-21 | `claude-haiku-5-5` | max | `9b6b43379c0f` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](max-9b6b43379c0f-2026-11-21-2.md) |
 | 2026-11-21 | `claude-haiku-5-5` | full | `c74a3d9da152` | hosted | `e06` fail, `e12` insufficient_evidence, `e13` report_only | — | — | — | — | — | — | fail | — | — | insufficient_evidence | report_only | [fail](full-c74a3d9da152-2026-11-21.md) |
 | 2026-11-21 | `claude-haiku-5-5` | full | `bca1e50d0af4` | hosted | `e06` fail | — | — | — | — | — | — | fail | — | — | — | — | [fail](full-bca1e50d0af4-2026-11-21.md) |
+| 2026-11-21 | `claude-haiku-5-5` | full | `bca1e50d0af4` | hosted | `e03` fail | — | — | fail | — | — | — | — | — | — | — | — | [fail](full-bca1e50d0af4-2026-11-21-3.md) |
 | 2026-11-21 | `claude-haiku-5-5` | full | `bca1e50d0af4` | hosted | `e06` pass | — | — | — | — | — | — | pass | — | — | — | — | [pass](full-bca1e50d0af4-2026-11-21-2.md) |
 | 2026-11-21 | `claude-haiku-5-5` | full | `9c73abc94c1f` | hosted | `priv_think_leak` insufficient_evidence, `q04` fail | fail | — | — | — | — | — | — | — | — | — | — | [fail](full-9c73abc94c1f-2026-11-21.md) |
 | 2026-11-21 | `claude-haiku-5-5` | full | `9c73abc94c1f` | hosted | `e06` fail | — | — | — | — | — | — | fail | — | — | — | — | [fail](full-9c73abc94c1f-2026-11-21-2.md) |
+| 2026-11-21 | `claude-haiku-5-5` | full | `064728ca3391` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](full-064728ca3391-2026-11-21.md) |
 | 2026-11-19 | `claude-haiku-5-5` | standard | `775abe41184a` | hosted | `e01_viewpoint` pass, `e02` report_only, `e03` pass, `e04` report_only, `e06` fail, `e07` pass, `e09` pass, `e10` pass, `e12` insufficient_evidence, `e12_direct` insufficient_evidence, `e13` report_only, `priv_think_leak` pass, `q01` pass, `q02` report_only, `q03` report_only, `q04` fail, `q06` report_only, `smoke` fail | fail | pass | pass | — | pass | pass | fail | pass | pass | insufficient_evidence | report_only | [fail](standard-775abe41184a-2026-11-19.md) |
 | 2026-11-19 | `claude-haiku-5-5` | full | `4a6a6e02a0c4` | hosted | `e01` pass, `e01_viewpoint` pass, `e02` report_only, `e03` fail, `e04` report_only, `e05` fail, `e06` fail, `e07` pass, `e09` pass, `e10` pass, `e12` insufficient_evidence, `e12_direct` fail, `e13` report_only, `priv_think_leak` fail, `q01` pass, `q02` report_only, `q03` report_only, `q04` fail, `q06` report_only, `smoke` fail | fail | pass | fail | fail | pass | pass | fail | pass | pass | fail | report_only | [fail](full-4a6a6e02a0c4-2026-11-19.md) |
 | 2026-11-16 | `claude-haiku-5-5` | full | `596a9a6b4dbe` | hosted | `q01` pass | — | — | — | — | — | pass | — | — | — | — | — | [pass](full-596a9a6b4dbe-2026-11-16.md) |

@@ -15547,3 +15547,11 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - `e03.produced` fell from 99.33% to 96.4–97.8%: more windows now write no reflection, as the template's "fewer statements are better" asks. It is report only.
   - No iteration 2. The reports are committed, and the three records are again not committed (E-03-only run). #747 is done.
   **Issue:** #747
+- **Merge (/n8-exec M11 run 12):** PR #985 squash-merged as `5e92e9c` after CI passed 27 of 27. The linked set was exactly #747, which is now CLOSED, with no casualties. Paid runs used in run 12: 3 of 5 (the re-judge, the confirming certify, and iteration 1's rerun).
+  **Issue:** #747
+
+## Ad-hoc — 2026-11-21 (an eval judge for `entailment` stays out of the fingerprint; ADR-204)
+
+- **Change:** #747 added per-purpose eval judges (`--judge-model-for entailment=claude-sonnet-5-5`). Unlike the planner's shape, the entailment judge does **not** enter the configuration fingerprint. The report (`Report.judges`), the certification record (`CertificationRecord.judges`, `schema_version` 3) and the journal scope name it instead. NFR-QUAL-3 now counts only with judge agreement ≥ 75% (per pair). `consolidation.j2` gained a wording rule, which moved every preset fingerprint (Standard `0eb007d36bfb`, Full `064728ca3391`, Max `acf72d616451`).
+  **Why:** a deployment computes its fingerprint with no eval judge, so a judged certification would never match it. And with the self-judge at 61.78% agreement, NFR-QUAL-3 is only trustworthy with Sonnet judging.
+  **Affects:** M11 #819 (the exit certification must pass `--judge-model-for entailment=claude-sonnet-5-5`, and it runs on the new fingerprints); #474 and #748/#749 reruns run on the new fingerprints. Plans may be stale: run `/n8-replan M11`.

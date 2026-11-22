@@ -15761,3 +15761,14 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #540
 - **Decision (run 15, the last paid run):** Max, `--suite q04 --suite priv_think_leak --fresh`, at the fix commit. It was never measured, so it gives #528/#540 their second preset under the corrected rule. Full is not rerun: no budget is left, and the offline re-score covers it.
   **Issue:** #528, #540
+
+## Ad-hoc
+
+- **Change (2026-11-22, the owner, in session):** M11 closes without its live eval evidence. The owner's words: *"I'd rather waive test results at this point and get it out to test with real users."*
+  - The owner also stopped the Max certify for cost, after more than $160 of hosted spend this milestone.
+  - Moved from M11 to **v2**: #474 (NFR-QUAL-14 live), #529 (secret-keeper set and run), #603 with #588 and #685 (the three-character matrix row), #952 (waiting for a CI recurrence), **#819 (the exit certification)** and epic **#935** ("model-bound quality floors met on a certified model").
+  - #528, #540, #972 and #602 close with PR #995 on Full-only live evidence. #540 also rests on an offline re-score at the fixed Q-04 rule; Max and a rerun were waived.
+  - **Why:** the owner wants M11 done to test Epistrel with a real application and real users.
+  - **Affected:** M11's exit criterion (a certified model, #819) is not met, so no preset has certification records at the current fingerprints. The release gate test stays skipped unless `EPISTREL_TEST_RELEASE_GATE=1`, and a release claims no certified model. v2's plan now holds the certification work. M12 (Audit) is unchanged.
+  - **Cost rule going forward:** paid hosted runs are budgeted in dollars and estimated before launch (memory `paid-runs-dollar-cap`), replacing "5 runs per exec".
+  **Issue:** #819, #935

@@ -15565,3 +15565,39 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **M11 milestone description:** outcome 2 gains the ADR-204 line.
   - **Epic #935:** comment only, no AC change.
 - **Unchanged:** #748, #749, #528, #529, #540, #474, #952, #972, #602, #603, #588 and #685. Each re-measures on the current fingerprints first, and none reads E-03 or the judge routing.
+
+## /n8-exec M11 run 13 (2026-11-21)
+
+- **Decision:** run 13 takes #748 (NFR-QUAL-4, E-05 recall). It is next in the M11 order after #747. Branch `milestone/m11-run13-e05-salience`, cut from `main` at `c2f23eb`.
+  - Preflight: M1–M10 are closed, and M11 has open stories.
+  - Drift check: every `## Ad-hoc` entry is reconciled; the last was reconciled by `/n8-replan M11`, 2026-11-21.
+  - #748's file claims match the code (`orchestrator/commit/salience.py`, `evals/suites/e05_salience.py`, `core/seeds/profiles.py`).
+  **Issue:** #748
+- **Fix (#748, Rule 1, the planner's discretion, the E-05 harness):** `E05Suite.evaluate` called `detect_salience` with no `routes` and no `bias`. So every preset was read under `balanced` with the default `salience_detection` route, and Max's `salience_bias = recall` and `salience_detection → "@strongest"` never reached E-05.
+  - `E05Suite.setup` now reads a scratch story's effective configuration on the run's preset, as E-09 does, and plays every case with that configuration's route and bias. `detail.promoted` records a recall-bias promotion.
+  - Test: `test_e_05__m11_plays_the_presets_salience`. It fails on the old harness.
+  - AC2's answer: before the fix, no preset difference reached E-05.
+  **Issue:** #748
+- **Decision (#748, the classified misses):** in the #818 baseline journals, the missed lines are Full 23 and Max 25. Of those, 22 and 24 are the `sunday-dinner` family, and 9 missed cases are shared between the presets.
+  - The trace shows Haiku confidently filing "Sunday dinner is at Aunt Ruth's this week, not here." and "You will all be at Sunday dinner, and I mean all of you." under `texture`, on every seed.
+  - Unlocated quotes are 1 and 2, so the misses are not a locating failure.
+  **Issue:** #748
+- **Decision (#748, a shared-template wording rule; deviates from the planner's discretion):** the planner said "Max-only purpose params (temperature 0 first), not the shared `salience.j2`". Not followed, for two reasons:
+  - Full fails too at the baseline (95.74% ± 0.85%), and the guardrail assumed only Max failed.
+  - The misses are confident and seed-stable. Temperature 0 cannot change a call made the same way on every seed, and recall bias only promotes low-confidence answers.
+
+  `salience.j2` gains one rule: an arrangement, plan or demand a character announces for later is salient (who will be somewhere, where or when a gathering is held, what someone will bring or must do). An immediate request and a remark about the weather or the day are not.
+  - No texture case states a future arrangement. "Pass the butter, would you?" and "Looks like another wet one tomorrow." are the nearest, and the rule names both shapes as texture.
+  - The template hash moves every preset's fingerprint. All are uncertified until #819.
+  **Issue:** #748
+- **Decision (#748, the confirming run, 1 of 5 paid runs):** `certify --presets full,max --suite e05 --fresh` on hosted `claude-haiku-5-5`, 3 seeds, at `dcb3640`. Fingerprints: Full `b5bf45b1b5e4`, Max `ae6202349765`.
+  - The report reads `dcb3640-dirty`. Only `.n8/decisions.md` and `docs/evals/INDEX.md` were uncommitted, with no code change.
+  - `nfr_qual_4.recall`: Full 99.81% ± 0.32% and Max 99.81% ± 0.32%, both pass (mean − SD 99.49%). At the #818 baseline they were 95.74% and 95.37%, both failing.
+  - Precision: Full 98.36% ± 0.53% and Max 98.18% ± 0.62% (baseline 97.37% and 97.36%).
+  - `e05.texture_clean` (report only): Full 98.33% and Max 98.06% (baseline 97.22% and 97.50%).
+  - What is left: one miss per preset, a `stranger` case with an unlocated quote. No `sunday-dinner` miss remains.
+  - Max's recall bias promoted no answer: Haiku sends no `confidence` below the threshold on E-05.
+  - No iteration 2. The two reports are committed and the INDEX regenerated. The two certification records are **not** committed (an E-05-only run; ADR-200).
+  **Issue:** #748
+- **Discovered (#748 → #988):** in a multi-preset certify, `run_conditions.observed` is a running total across the presets: Max 1801 against its own 901 calls, and run 12's 452/902/1352. Filed `needs-triage`, not fixed inline. #819's exit reports would show it.
+  **Issue:** #748, #988

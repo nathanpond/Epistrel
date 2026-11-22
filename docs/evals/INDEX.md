@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `5338d30fed1f` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `0eb007d36bfb` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Full | `064728ca3391` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Max | `acf72d616451` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Lite | `f392781c7f5f` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `ebc8df736fc3` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `b5bf45b1b5e4` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `ae6202349765` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 
@@ -37,6 +37,8 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22.md) |
+| 2026-11-22 | `claude-haiku-5-5` | full | `b5bf45b1b5e4` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](full-b5bf45b1b5e4-2026-11-22.md) |
 | 2026-11-21 | `claude-haiku-5-5` | standard | `9571b4ca2e03` | hosted | `e06` pass | — | — | — | — | — | — | pass | — | — | — | — | [pass](standard-9571b4ca2e03-2026-11-21.md) |
 | 2026-11-21 | `claude-haiku-5-5` | standard | `9571b4ca2e03` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](standard-9571b4ca2e03-2026-11-21-2.md) |
 | 2026-11-21 | `claude-haiku-5-5` | standard | `0eb007d36bfb` | hosted | `e03` pass | — | — | pass | — | — | — | — | — | — | — | — | [pass](standard-0eb007d36bfb-2026-11-21.md) |

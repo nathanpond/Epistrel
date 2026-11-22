@@ -291,7 +291,7 @@ measures.
 
 | Suite | What it measures | Floor (rule) | Labeled set | Ships with |
 |---|---|---|---|---|
-| `smoke` | Lite turns end to end: the turn completes on its designed calls, and the reply follows a one-word instruction (an inflected form counts; #437). 60 cases per seed. Harness smoke, no NFR-QUAL floor. | ≥ 95 %, ≥ 80 % (rate) | `smoke/` | #134, #437 |
+| `smoke` | Lite turns end to end: the turn completes on its designed calls, and the reply follows a one-word instruction (an inflected form counts; #437). 200 cases per seed, ten phrasing templates across ten questions (#749). Harness smoke, no NFR-QUAL floor. | ≥ 95 %, ≥ 80 % (rate) | `smoke/` | #134, #437, #749 |
 | `e01` | E-01: entailment through `Verifier.verify` (deterministic rules, the gate, the `entailment` purpose on the fuzzy residual) | false contradiction ≤ 2 %, false support ≤ 1 % (rate); accuracy reported | `entailment/` (420) | #157 |
 | `e02` | E-02: escalation yield and shadow tightening | report only | `e02/` | #155 |
 | `e03` | E-03: consolidation faithfulness (`consolidate_window`; reflections judged by the `entailment` purpose) | ≥ 98 % (rate) | `consolidation/` (150) | #157 |

@@ -15532,3 +15532,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #747
 - **Decision (#747, API surface):** `CertificationRecord` is the body of `POST /admin/certifications/import`, so `docs/openapi.json` gains the optional `judges` field and `schema_version` 3. The change is additive; #937's `identity_types` took the same path. No Console change is needed: the Console doesn't author records.
   **Issue:** #747
+- **Decision (#747, the re-judge, 1 of 5 paid runs):** `evals rejudge` over the #818 Full journal (`full-4a6a6e02a0c4.jsonl`) with `claude-sonnet-5-5` judging `entailment`. Faithfulness 99.55% ± 0.39% (pass); judge agreement 96.00% per pair. Haiku had failed 8 windows; Sonnet entails all 8 and called both of each window's pairs right, so all 8 are `judge` and none `consolidation`. Cause named: the judge. Posted on #747 (comment 7069956338).
+  **Issue:** #747
+- **Decision (#747, the confirming run, 2 of 5 paid runs):** `certify --presets standard,full,max --suite e03 --judge-model-for entailment=claude-sonnet-5-5 --fresh` on hosted Haiku, 3 seeds, at `92a5c7d`.
+  - Standard 99.10% ± 1.02% (pass), Full 98.44% ± 0.77% (fail; mean − SD 97.67%), Max 99.56% ± 0.77% (pass). Agreement 96.1–96.2%, trusted.
+  - Full's failing reflections with a trusted judge are consolidation overreach: an added state ("stays awake watching the hall through the night", from "sleeps in the chair facing the hall") and an invented order ("first showed it to the jeweller, then …").
+  - Reports committed (`standard-9571b4ca2e03-2026-11-21-2.md`, `full-bca1e50d0af4-2026-11-21-3.md`, `max-9b6b43379c0f-2026-11-21-2.md`). The two certification records the run wrote (Standard, Max) are **not** committed: an E-03-only run must not mark those fingerprints certified (ADR-200; same as run 11). They are kept in the session scratchpad only.
+  **Issue:** #747
+- **Decision (#747, tuning iteration 1):** `consolidation.j2` gains one wording rule: never add a state, an ongoing activity or an order of events the records do not give, with the chair/awake example and "first/then/after". Wording only, as the planner prescribed. The template hash is in the fingerprint already, so `MODEL_CALL_REVISION` does not move, but every preset's fingerprint does (uncertified anyway until #819). Confirming rerun = paid run 3 of 5.
+  **Issue:** #747
+- **Decision (#747, iteration 1's rerun, 3 of 5 paid runs):** the same certify at `deb2c94` (new fingerprints Standard `0eb007d36bfb`, Full `064728ca3391`, Max `acf72d616451`).
+  - Faithfulness: Standard 99.54% ± 0.40%, Full 99.77% ± 0.39%, Max 99.77% ± 0.40%. All pass mean − SD ≥ 98%.
+  - Agreement 96.4–96.6%, trusted.
+  - `e03.produced` fell from 99.33% to 96.4–97.8%: more windows now write no reflection, as the template's "fewer statements are better" asks. It is report only.
+  - No iteration 2. The reports are committed, and the three records are again not committed (E-03-only run). #747 is done.
+  **Issue:** #747

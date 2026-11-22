@@ -15650,3 +15650,8 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The only Lite-path commit between the baseline's engine (`c6c918e`) and now is `140c032` (#735).
   - So most of the baseline's misses were a reply the cap cut after thinking had used most of it. The phrasing was not the cause. The templates that come with the most descriptive questions still miss most: "Slip the word X into your answer", 9–10 of 36, and "Please use the word X somewhere in your answer", 14–18 of 120. All but four of the misses still end with `length`.
   **Issue:** #749
+- **Merge (/n8-exec M11 run 14):** PR #991 squash-merged as `6c1dd51` after CI passed 27 of 27 on the first round.
+  - The pending budget was 80 min: 1.5 × the 53-min longest check on #989. CI finished in about 52 min.
+  - The linked set was exactly #749, which is now CLOSED, with no casualties.
+  - Paid runs used in run 14: 3 of 5.
+  **Issue:** #749

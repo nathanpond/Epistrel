@@ -45,6 +45,7 @@ runs the full set whatever ``--sample`` says (``--full q04``: a zero-tolerance m
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -59,6 +60,7 @@ from epistrel.evals.suites import CaseModel, Outcome, Suite, register
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.call_trace import CALL_PROMPTS
 from epistrel.orchestrator.models.registry import GENERATION, REGENERATION
+from epistrel.orchestrator.models.structured import SCHEMA_INSTRUCTION
 
 if TYPE_CHECKING:
     from epistrel.evals.runner import CaseContext
@@ -118,12 +120,19 @@ async def repaired(ctx: CaseContext, result: RespondResult) -> bool:
 RENDER_PURPOSES = frozenset({GENERATION.name, REGENERATION.name})
 
 
+_JSON = json.JSONDecoder()
+
+
 def character_context(
     prompts: Sequence[tuple[str, tuple[Any, ...]]], name: str, question: str
 ) -> str | None:
-    """What ``name``'s render calls held (#540): the messages of every recorded ``generation``
-    or ``regeneration`` call whose system prompt renders ``name`` (``## You are <name>``), with
-    the player's own question taken out; ``None`` when no such call was recorded."""
+    """What ``name``'s render calls held (#540): the system and user messages of every
+    recorded ``generation`` or ``regeneration`` call whose system prompt renders ``name``
+    (``## You are <name>``), with the player's own question taken out; ``None`` when no such
+    call was recorded. Left out (run 15's Full rerun, where the root ``key`` matched only the
+    schema's ``scope_key``): the response's JSON Schema (``without_schema``), which names no
+    story fact, and the model's own earlier answers (a retry's ``assistant`` turns), which are
+    what it guessed, not what it was given."""
     marker = f"## You are {name}\n"
     found = [
         messages
@@ -133,8 +142,30 @@ def character_context(
     ]
     if not found:
         return None
-    text = "\n".join(m.content for messages in found for m in messages)
+    text = "\n".join(
+        without_schema(m.content)
+        for messages in found
+        for m in messages
+        if m.role in ("system", "user")
+    )
     return text.replace(question, " ")
+
+
+def without_schema(content: str) -> str:
+    """``content`` with the JSON Schema that follows ``SCHEMA_INSTRUCTION`` removed (each one;
+    text after it kept)."""
+    out, rest = [], content
+    while (at := rest.find(SCHEMA_INSTRUCTION)) >= 0:
+        out.append(rest[:at])
+        tail = rest[at + len(SCHEMA_INSTRUCTION) :]
+        start = tail.find("{")
+        try:
+            _, end = _JSON.raw_decode(tail, start) if start >= 0 else (None, 0)
+        except ValueError:
+            end = len(tail)  # not a schema after all: leave nothing of it to match
+        rest = tail[end:]
+    out.append(rest)
+    return "".join(out)
 
 
 def grounded(context: str | None, fact: fixtures.PrivateFact, inputs: AsymmetryInputs) -> bool:

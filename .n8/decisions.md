@@ -15742,3 +15742,22 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Blocked on the paid budget (#474, #603 with #588/#685):** each needs a paid hosted run (#474's per-type live measurement, #603's hosted matrix row), and run 15's last 2 go to the shared #528/#540/#972 certify.
   - Labelled `blocked` + `needs-owner-action`, asking for budget.
   **Issue:** #474, #603, #588, #685
+- **Decision (#602, two tests updated, Rule 1):**
+  - `test_config_changes` stores the seeded map with `*.*` at 2.5: a merged map reads back whole.
+  - P-09 M4's slow-stub case sets `purpose_latency_estimates: {"*": {"*": 9.5}}` and a 10 s story deadline instead of patching `DEFAULT_LATENCY_ESTIMATE_S` with a 10 s request deadline. The constant no longer drives the gates, and that request would now be refused up front. The case restores `*.*` to 2.0.
+  - With those two fixes, the targeted set of 111 files has 1864 passed and the 2 fixed tests pass. Committed `c91759e`.
+  **Issue:** #602
+- **Result (run 15 live, Full, paid run 4 of 5):** `certify --presets full,max --suite q04 --suite priv_think_leak --fresh` on hosted `claude-haiku-5-5`, 3 seeds, from a clean worktree at `e1ee4a9`. Full fingerprint `ed45ff045f96`.
+  - `nfr_qual_1.think_leak`: 0 observed in 345, so it passes (#972 AC3).
+  - `priv_think_leak.render_error_rate` is 0.00% and `q04.render_error_rate` 0.09% (n = 383). Both meet the 1% target (#528).
+  - `nfr_qual_1.asymmetry`: 3 observed, all the nested `key` fact. `q04.ungrounded_guess`: 2.
+  - A harness error on `asymmetry-whisper-0080` (a `world_clock` change raised as `InvalidRequest`, filed as #996) put q04 at `error`, wrote no record, and **stopped the certify before Max**. So Max was not measured, and that run was not spent.
+  **Issue:** #528, #540, #972, #996
+- **Rule 1 (#540, the grounding context):** the 3 hits were scored grounded only because the root `key` matched the response JSON Schema's `scope_key`/"Scope Key" inside the system prompt. The trace shows no form of the fact in the asked character's prompt. About 15k of each 19k-character context was the schema. Their answer invents "a spare key under the flowerpot by the side gate".
+  - Fix: `character_context` keeps system and user messages only, with the schema after `SCHEMA_INSTRUCTION` cut out (`without_schema`, by `json.raw_decode`). A retry's `assistant` turns are dropped as well: they are the model's own earlier answer.
+  - Regression: `test_q_04__m5_context_leaves_out_the_schema_and_the_models_answers`, with a complement that the fact in prose still grounds. ADR-205's context sentence is updated; it is unmerged, on this branch.
+  - **Offline re-score** of Full's 5 hit case-seeds from the trace with the fixed function: all 5 are ungrounded, so 0 grounded in 383.
+  - The committed Full report is as run (3 observed, `error`). The re-score is recorded here and on #540, not written into the report.
+  **Issue:** #540
+- **Decision (run 15, the last paid run):** Max, `--suite q04 --suite priv_think_leak --fresh`, at the fix commit. It was never measured, so it gives #528/#540 their second preset under the corrected rule. Full is not rerun: no budget is left, and the offline re-score covers it.
+  **Issue:** #528, #540

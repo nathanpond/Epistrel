@@ -34,6 +34,7 @@ from epistrel.evals.suites.q04_asymmetry import (
 )
 from epistrel.orchestrator.models.adapter import Message
 from epistrel.orchestrator.models.registry import GENERATION
+from epistrel.orchestrator.models.structured import SCHEMA_INSTRUCTION
 from tests.eval.suite_support import SEEDS, SETS, by_id
 from tests.evals.support import stub_engine
 from tests.structured_turn_support import schema_calls, text_of
@@ -257,3 +258,48 @@ def test_q_04__m5_character_context() -> None:
     assert question not in context
     assert "spare key" not in context
     assert character_context(prompts, "Bobby", question) is None
+
+
+def test_q_04__m5_context_leaves_out_the_schema_and_the_models_answers() -> None:
+    """Run 15's Full rerun: the nested ``key`` fact's root matched only the response schema's
+    ``scope_key`` in the system prompt, so three guesses ("a spare key under the flowerpot")
+    scored as grounded leaks. The schema after ``SCHEMA_INSTRUCTION`` and a retry's
+    ``assistant`` turn (the model's own earlier answer) are not context. Complement: the fact
+    in the prompt's prose, before or after the schema, still grounds the hit."""
+    nested = fx.FIXTURES["nested"]
+    fact = next(f for f in nested.facts if f.key == "key")
+    case = next(
+        c
+        for c in SUITES["q04"].load(SETS)
+        if isinstance(c, AsymmetryCase) and not c.control and c.inputs.fact == "key"
+    )
+    name, question = case.inputs.viewpoint, case.inputs.question
+    schema = '{"properties": {"scope_key": {"title": "Scope Key"}}, "title": "Keys"}'
+    system = f"## You are {name}\nThe hall is cold.\n\n{SCHEMA_INSTRUCTION}\n{schema}\n## Scene"
+    prompts = [
+        ("generation", (Message(role="system", content=system),)),
+        (
+            "regeneration",
+            (
+                Message(role="system", content=system),
+                Message(
+                    role="assistant", content='{"beats": [{"text": "George has a spare key."}]}'
+                ),
+            ),
+        ),
+    ]
+    context = character_context(prompts, name, question)
+    assert context is not None
+    assert "The hall is cold." in context
+    assert "## Scene" in context
+    assert "Scope Key" not in context
+    assert "spare key" not in context
+    assert not grounded(context, fact, case.inputs)
+    told = f"## You are {name}\nGeorge keeps a key under the mat.\n{SCHEMA_INSTRUCTION}\n{schema}"
+    assert grounded(
+        character_context(
+            [("generation", (Message(role="system", content=told),))], name, question
+        ),
+        fact,
+        case.inputs,
+    )

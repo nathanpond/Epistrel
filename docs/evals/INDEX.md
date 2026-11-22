@@ -40,6 +40,7 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 | 2026-11-22 | `claude-haiku-5-5` | standard | `ebc8df736fc3` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](standard-ebc8df736fc3-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22-2.md) |
+| 2026-11-22 | `claude-haiku-5-5` | full | `ed45ff045f96` | hosted | `priv_think_leak` pass, `q04` error | fail | — | — | — | — | — | — | — | — | — | — | [fail](full-ed45ff045f96-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | full | `b5bf45b1b5e4` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](full-b5bf45b1b5e4-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | full | `b5bf45b1b5e4` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](full-b5bf45b1b5e4-2026-11-22-2.md) |
 | 2026-11-21 | `claude-haiku-5-5` | standard | `9571b4ca2e03` | hosted | `e06` pass | — | — | — | — | — | — | pass | — | — | — | — | [pass](standard-9571b4ca2e03-2026-11-21.md) |

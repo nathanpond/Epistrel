@@ -65,12 +65,13 @@ from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
-MODEL_CALL_REVISION: Final[int] = 4
+MODEL_CALL_REVISION: Final[int] = 5
 """The engine's model-call revision, a fingerprint input (#818; ADR-200). 2: #735's structured
 headroom and api.anthropic.com's ``thinking`` extra (ADR-201). 3: #750's render validation
 (cast names resolved, a latent's named holder repaired, the cast in an unknown character's
 correction). 4: #939's effect syntax (no ``change`` example on the world clock, and the
-time-advance line). Bump it with any
+time-advance line). 5: #1009's strict wire schema (``$ref``s inlined, ``title``s dropped)
+and its per-schema fallback when api.anthropic.com finds the grammar too large. Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

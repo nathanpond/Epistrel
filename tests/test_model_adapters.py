@@ -13,7 +13,7 @@ from pathlib import Path
 
 import openai
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from epistrel.orchestrator.models.adapter import Message, ModelParams, ModelUnavailable
 from epistrel.orchestrator.models.config import ConfigRow, EffectiveConfig, KeyBox, resolve
@@ -293,6 +293,85 @@ def test_strict_wire_schema_for_every_response_schema() -> None:
     time_schema = strict_wire_schema(TimeEstimate.model_json_schema())
     assert time_schema is not None
     assert '"pattern"' in json.dumps(time_schema)
+
+
+class _Stat(BaseModel):
+    value: int = Field(ge=0, le=100)
+    note: str = Field(max_length=40)
+
+
+class _Role(BaseModel):
+    title: str  # a property named ``title`` is data, never the dropped annotation
+    stats: list[_Stat]
+    rival: _Stat | None = None
+
+
+class _Host(BaseModel):
+    """A consumer-purpose-like schema (#1009): 3 levels, ``$defs``, bounded integers."""
+
+    name: str
+    roles: list[_Role]
+    lead: _Role
+    a: int = Field(ge=0, le=10)
+    b: int = Field(ge=0, le=10)
+    c: int = Field(ge=0, le=10)
+
+
+class _Tree(BaseModel):
+    label: str
+    children: list[_Tree]
+
+
+def _keywords(node: object, found: set[str] | None = None) -> set[str]:
+    """Every schema keyword under ``node``, not counting property names."""
+    found = set() if found is None else found
+    if isinstance(node, list):
+        for item in node:
+            _keywords(item, found)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            found.add(key)
+            if key == "properties":
+                for sub in value.values():
+                    _keywords(sub, found)
+            else:
+                _keywords(value, found)
+    return found
+
+
+def test_strict_wire_schema_inlines_refs_and_drops_titles() -> None:
+    """#1009: api.anthropic.com refused the Pydantic form of a nested consumer schema as "compiled
+    grammar is too large", and accepted it with ``$ref``s inlined and ``title``s dropped. The
+    wire form has no ``$ref``, ``$defs`` or ``title`` keyword, keeps a property *named*
+    ``title``, and still has every nested object's fields, so it accepts what it accepted
+    before, bounds aside."""
+    full = _Host.model_json_schema()
+    assert {"$defs", "$ref", "title"} <= _keywords(full)
+    wire = strict_wire_schema(full)
+    assert wire is not None
+    assert not {"$defs", "$ref", "title", "minimum", "maximum", "maxLength"} & _keywords(wire)
+    lead = wire["properties"]["lead"]
+    assert lead["required"] == ["title", "stats"]
+    assert lead["properties"]["title"] == {"type": "string"}
+    stat = lead["properties"]["stats"]["items"]
+    assert stat == {
+        "properties": {"value": {"type": "integer"}, "note": {"type": "string"}},
+        "required": ["value", "note"],
+        "type": "object",
+        "additionalProperties": False,
+    }
+    rival = lead["properties"]["rival"]["anyOf"]
+    assert rival == [stat, {"type": "null"}]
+    body = {"response_format": {"json_schema": {"strict": True, "schema": wire}}}
+    assert strict_refusal(body) is None
+
+
+def test_a_recursive_schema_has_no_wire_form() -> None:
+    """#1009 complement: a recursive ``$ref`` cannot be inlined, so the schema has no wire form
+    and api.anthropic.com gets it as parse-validate-retry (``json_schema_mode``)."""
+    assert strict_wire_schema(_Tree.model_json_schema()) is None
+    assert not json_schema_mode("https://api.anthropic.com/v1", _Tree)
+    assert json_schema_mode("http://localhost:1235/v1", _Tree)
 
 
 def test_json_schema_mode_by_endpoint() -> None:

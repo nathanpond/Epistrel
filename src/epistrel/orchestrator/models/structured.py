@@ -50,6 +50,7 @@ deadline passing between attempts (``reason=deadline``). The turn then fails as 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -71,7 +72,11 @@ from epistrel.orchestrator.models.adapter import (
     ModelResult,
 )
 from epistrel.orchestrator.models.call_trace import STRUCTURED_MODEL, STRUCTURED_SCHEMA
-from epistrel.orchestrator.models.errors import ModelUnavailable, ResponseFormatRejected
+from epistrel.orchestrator.models.errors import (
+    ModelUnavailable,
+    ResponseFormatRejected,
+    SchemaTooLarge,
+)
 from epistrel.orchestrator.models.prompts import payload_fields
 from epistrel.orchestrator.models.provider_schema import json_schema_mode
 from epistrel.orchestrator.models.registry import GuardrailVerdict, InputSchema
@@ -155,6 +160,19 @@ class ResponseFormatMemo:
     def __init__(self) -> None:
         self._rejected: dict[tuple[str, str], int] = {}
         self._strikes: dict[tuple[str, str], tuple[int, int]] = {}
+        self._too_large: dict[tuple[str, str, str], int] = {}
+
+    def schema_supported(self, key: tuple[str, str], schema: str, revision: int) -> bool:
+        """Whether ``schema`` (a ``schema_digest``) may go in ``json_schema`` mode to ``key``:
+        not once that endpoint refused it as too large at this revision (#1009)."""
+        learned = self._too_large.get((*key, schema))
+        if learned is not None and learned != revision:
+            del self._too_large[(*key, schema)]
+            return True
+        return learned is None
+
+    def reject_schema(self, key: tuple[str, str], schema: str, revision: int) -> None:
+        self._too_large[(*key, schema)] = revision
 
     def supported(self, key: tuple[str, str], revision: int) -> bool:
         learned = self._rejected.get(key)
@@ -185,6 +203,14 @@ class ResponseFormatMemo:
     def clear(self) -> None:
         self._rejected.clear()
         self._strikes.clear()
+        self._too_large.clear()
+
+
+def schema_digest(schema: type[BaseModel]) -> str:
+    """A response schema's identity for ``ResponseFormatMemo.reject_schema``: its JSON Schema's
+    hash, so two consumer purposes with the same output shape share one entry (#1009)."""
+    text = json.dumps(schema.model_json_schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +353,12 @@ async def structured_messages[T: BaseModel](
     settings = await mal.structured_settings()
     base_url, model, revision = await mal.endpoint(purpose)
     key = (base_url, model)
-    json_mode = mal.response_format.supported(key, revision) and json_schema_mode(base_url, schema)
+    digest = schema_digest(schema)
+    json_mode = (
+        mal.response_format.supported(key, revision)
+        and mal.response_format.schema_supported(key, digest, revision)
+        and json_schema_mode(base_url, schema)
+    )
     messages = list(base) if json_mode else with_schema(base, schema)
     call_params = params
     retries_left = settings.structured_retry_budget
@@ -359,7 +390,11 @@ async def structured_messages[T: BaseModel](
             except ResponseFormatRejected as exc:
                 if not json_mode:
                     raise exc.with_attempts(attempts) from None
-                mal.response_format.reject(key, revision)
+                if isinstance(exc, SchemaTooLarge):
+                    # #1009: this schema only; the endpoint keeps json_schema for the rest.
+                    mal.response_format.reject_schema(key, digest, revision)
+                else:
+                    mal.response_format.reject(key, revision)
                 json_mode = False
                 messages = with_schema(base, schema)
                 # #759: the probe decided nothing. Its slot goes back, and the fallback claims it
@@ -445,6 +480,7 @@ __all__ = [
     "guardrail_deterministic_first",
     "parse",
     "resolve_uncertain",
+    "schema_digest",
     "structured_call",
     "structured_messages",
     "uncertain_verdict",

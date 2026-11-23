@@ -58,7 +58,11 @@ from epistrel.orchestrator.models.adapter import (
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, key_fingerprint
 from epistrel.orchestrator.models.errors import ProviderGarbage
 from epistrel.orchestrator.models.metrics import purpose_label
-from epistrel.orchestrator.models.provider_schema import is_anthropic, strict_wire_schema
+from epistrel.orchestrator.models.provider_schema import (
+    is_anthropic,
+    rejects_grammar_size,
+    strict_wire_schema,
+)
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +341,8 @@ class OpenAICompatibleAdapter:
                     traced.error = call_trace.error_of(exc)
                 if not isinstance(exc, openai.BadRequestError):
                     raise
+                if rejects_grammar_size(exc.message):
+                    raise  # #1009: the schema, not a body setting; structured_call falls back
                 if thinking and rejects_thinking(exc):
                     self._no_thinking.add((base_url, model))
                     thinking = False

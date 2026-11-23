@@ -31,6 +31,7 @@ from typing import Any, Literal
 import openai
 
 from epistrel.core.errors import EpistrelError
+from epistrel.orchestrator.models.provider_schema import rejects_grammar_size
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,21 @@ class ResponseFormatRejected(ModelUnavailable):
         )
 
 
+class SchemaTooLarge(ResponseFormatRejected):
+    """api.anthropic.com's strict mode refused this one schema: its compiled grammar is over the
+    provider's size limit (#1009). Other schemas on the same endpoint may still go in
+    ``json_schema`` mode, so ``structured_call`` remembers it per schema, not per endpoint."""
+
+    def __init__(self, purpose: str) -> None:
+        ModelUnavailable.__init__(
+            self,
+            purpose,
+            "http_error",
+            f"the response schema for {purpose!r} is too large for the endpoint's strict mode",
+            provider_status=400,
+        )
+
+
 class EmptyCompletion(ModelError):
     """An unstructured call came back empty or whitespace-only (``reason=empty``)."""
 
@@ -137,12 +153,16 @@ class ProviderGarbage(Exception):
     ``openai`` adapter, mapped to ``reason=garbage``)."""
 
 
-def _mentions_response_format(exc: openai.APIStatusError) -> bool:
+def _text_of(exc: openai.APIStatusError) -> str:
     try:
         body = json.dumps(exc.body) if exc.body is not None else ""
     except TypeError, ValueError:
         body = ""
-    return "response_format" in f"{exc.message} {body}"
+    return f"{exc.message} {body}"
+
+
+def _mentions_response_format(exc: openai.APIStatusError) -> bool:
+    return "response_format" in _text_of(exc)
 
 
 def map_provider_error(purpose: str, exc: BaseException) -> ModelError | None:
@@ -164,6 +184,8 @@ def map_provider_error(purpose: str, exc: BaseException) -> ModelError | None:
         )
     elif isinstance(exc, openai.AuthenticationError | openai.PermissionDeniedError):
         error = ModelUnavailable(purpose, "auth", provider_status=exc.status_code)
+    elif isinstance(exc, openai.BadRequestError) and rejects_grammar_size(_text_of(exc)):
+        error = SchemaTooLarge(purpose)
     elif isinstance(exc, openai.BadRequestError) and _mentions_response_format(exc):
         error = ResponseFormatRejected(purpose)
     elif isinstance(exc, openai.APIStatusError):
@@ -194,6 +216,7 @@ __all__ = [
     "ModelUnavailable",
     "ProviderGarbage",
     "ResponseFormatRejected",
+    "SchemaTooLarge",
     "UnavailableReason",
     "map_provider_error",
 ]

@@ -181,9 +181,12 @@
   "const:epistrel.orchestrator.models.prompts.BLOCKS": "386b504e42ab043cbed0bb87294ff56535287e2c26c014cea584f2e61b3fe846",
   "const:epistrel.orchestrator.models.prompts.HISTORY_MACRO": "42d2b70866ba77b84620696f6c6cb2814379e3e65f3027c8ec4692eaf7dad0be",
   "const:epistrel.orchestrator.models.provider_schema.ANTHROPIC_HOST": "126241d9437e00228636d0f7ca2788c236e012eae729ba60c3ae17bc9c50e5ba",
+  "const:epistrel.orchestrator.models.provider_schema.GRAMMAR_TOO_LARGE": "7d9fe762cc68b1958751050ec7ff1d730f9efc042245e6884d5fec955106ab04",
   "const:epistrel.orchestrator.models.provider_schema.UNSUPPORTED_BOUNDS": "9b461e72153fdae57b5b1b203099c7d44b211c81a89a25a7d1910e552d0ec09c",
+  "const:epistrel.orchestrator.models.provider_schema._ANNOTATIONS": "db9f1b137477d57748bb50cdf8dc7cf933eeab597558e849728d77604a581d98",
+  "const:epistrel.orchestrator.models.provider_schema._DEFS": "20ac82f997e87fb5543355f51bbb277a3d132572b3f0f067e2dc48ce68d07ece",
   "const:epistrel.orchestrator.models.provider_schema._SCHEMA_LISTS": "374877cd3a4d372de0b9852c6cd7a7aed29f714fd69da82d3633e4e11325a81e",
-  "const:epistrel.orchestrator.models.provider_schema._SCHEMA_MAPS": "4aec41a23e94d0c0973a6e5efc24d439fa394366f9b1066ba9337a843fa8ed97",
+  "const:epistrel.orchestrator.models.provider_schema._SCHEMA_MAPS": "564101ba8ad5e847fcd8f91bee1f46e7a7f783bee8d96945471f0eda2644b8cb",
   "const:epistrel.orchestrator.models.provider_schema._SCHEMA_VALUES": "b3cf72ce346e35dd3a4d0b7adc9c8369571e345eed7e6b320e09a2674538c3e6",
   "const:epistrel.orchestrator.models.registry.ADJUDICATION_MAX_CLAIMS": "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b",
   "const:epistrel.orchestrator.models.registry.ADJUDICATION_MAX_RECORDS": "624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4",
@@ -500,11 +503,11 @@
   "source:epistrel.orchestrator.models.openai_compatible.request_body": "0a411c266be90b2e3b873b1dd080df75805bd33c1d08161d9328fefa3ea9bdb6",
   "source:epistrel.orchestrator.models.openai_compatible.sdk_args": "bdec8063ba8382add821107aef5579716d1bea7ac9699d6f605c62703bc235cd",
   "source:epistrel.orchestrator.models.openai_compatible.sends_thinking": "dca0c6d3397838f290e0ed9698d0b3e62168147bae0ffe4e64818c04ca3f82aa",
-  "source:epistrel.orchestrator.models.provider_schema._strip": "5025149860e0d001f4d30273c1763c7a46ba1414e992bf7b5bb972e4c32ff378",
+  "source:epistrel.orchestrator.models.provider_schema._strip": "5d0a9e360891a81828b4e74ea289a34570b2132f83f63837135ba83765486e1e",
   "source:epistrel.orchestrator.models.provider_schema.is_anthropic": "d3c5f1384cf6eee88d26e284e300a98ada5e2ed00c2fa6b4155f418ffb391dec",
   "source:epistrel.orchestrator.models.provider_schema.json_schema_mode": "539edf89c20e1fc0fd9c70e2ace00aa8372122f6ce763199ebbcd578b676d4c7",
-  "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "063c69c6770a8b9769701fa0901fbb4716ee6f02d5c8c12548af2f3f110a0155",
+  "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "ef6e5bdecbeaab4fae2ae4ffd42afea670c148beca454362aaff9d862920f176",
   "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd"
  },
- "revision": 4
+ "revision": 5
 }

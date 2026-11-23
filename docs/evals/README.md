@@ -237,7 +237,9 @@ to a Python-held prompt string, token cap, schema or the structured-mode choice 
 `tests/test_model_call_revision.py` fails until the revision and its snapshot move together:
 bump the constant, then run `uv run python -m tests.model_call_support --write`. The check is a
 release gate. `release.yml` runs `tests/integration/test_c_18_m11.py` with
-`EPISTREL_TEST_RELEASE_GATE=1`, so a tag fails while no model has all three current records.
+`EPISTREL_TEST_RELEASE_GATE=1`, so a tag fails while no model has all three current records,
+unless an owner waiver in `release-waivers.toml` names that exact version and those presets
+(ADR-208). A waived version ships uncertified, and a waiver never carries over to the next version.
 In PR CI the same test skips and names the stale presets.
 
 ## Reading a report

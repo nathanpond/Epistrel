@@ -66,7 +66,12 @@ from epistrel.evals.runner import seeds_from
 from epistrel.evals.suites import SUITES
 from epistrel.tools.generated import REPO_ROOT
 from tests.auth_support import auth_settings, bearer
-from tests.certification_support import check_presets_certified_at_current_fingerprints
+from tests.certification_support import (
+    Waiver,
+    check_presets_certified_at_current_fingerprints,
+    project_version,
+    waivers,
+)
 from tests.conformance.conftest import migrated_database
 from tests.profile_support import PROFILES, UNCERTIFIED
 from tests.respond_support import body as respond_body
@@ -370,14 +375,51 @@ def test_the_current_fingerprint_guard_refuses_stale_records() -> None:
     stale = [_stale(c) for c in found]
     assert uncertified_presets(stale) == list(CERTIFIED_PRESETS)
     with pytest.raises(pytest.fail.Exception, match="standard, full, max"):
-        check_presets_certified_at_current_fingerprints(stale, enforce=True)
+        check_presets_certified_at_current_fingerprints(stale, enforce=True, found_waivers=[])
     with pytest.raises(pytest.skip.Exception, match="EPISTREL_TEST_RELEASE_GATE=1"):
         check_presets_certified_at_current_fingerprints(stale, enforce=False)
     current = [_current(c) for c in found if c.record.preset in CERTIFIED_PRESETS]
     check_presets_certified_at_current_fingerprints(current, enforce=True)
     without_max = [c for c in current if c.record.preset != "max"]
     with pytest.raises(pytest.fail.Exception, match=r"of max \("):
-        check_presets_certified_at_current_fingerprints(without_max, enforce=True)
+        check_presets_certified_at_current_fingerprints(without_max, enforce=True, found_waivers=[])
+
+
+def test_an_owner_waiver_lets_only_its_own_version_release_uncertified() -> None:
+    """ADR-208: under the release gate a waiver for exactly this version and the stale presets
+    skips the guard (naming the waiver); another version's waiver, or one that misses a stale
+    preset, still fails it."""
+    stale = [_stale(c) for c in index_records()]
+    every = Waiver("9.9.9", tuple(CERTIFIED_PRESETS), "2026-11-22", "https://x", "test")
+    with pytest.raises(pytest.skip.Exception, match=r"WAIVED for 9\.9\.9 .*ships uncertified"):
+        check_presets_certified_at_current_fingerprints(
+            stale, enforce=True, version="9.9.9", found_waivers=[every]
+        )
+    with pytest.raises(pytest.fail.Exception, match="standard, full, max"):
+        check_presets_certified_at_current_fingerprints(
+            stale, enforce=True, version="9.9.10", found_waivers=[every]
+        )
+    partial = Waiver("9.9.9", ("standard", "full"), "2026-11-22", "https://x", "test")
+    with pytest.raises(pytest.fail.Exception, match="standard, full, max"):
+        check_presets_certified_at_current_fingerprints(
+            stale, enforce=True, version="9.9.9", found_waivers=[partial]
+        )
+
+
+def test_committed_waivers_are_well_formed() -> None:
+    """Each committed waiver names a semver version, only certified presets, a date and a link
+    to the owner's words; at most one per version."""
+    found = waivers()
+    versions = [w.version for w in found]
+    assert len(versions) == len(set(versions)), "two waivers for one version"
+    for waiver in found:
+        assert re.fullmatch(r"\d+\.\d+\.\d+", waiver.version), waiver
+        assert waiver.presets, waiver
+        assert set(waiver.presets) <= set(CERTIFIED_PRESETS), waiver
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", waiver.decided), waiver
+        assert waiver.source.startswith("https://github.com/"), waiver
+        assert waiver.reason.strip(), waiver
+    assert re.fullmatch(r"\d+\.\d+\.\d+", project_version())
 
 
 def _stale(committed: Committed) -> Committed:

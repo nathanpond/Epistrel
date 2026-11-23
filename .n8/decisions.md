@@ -15820,3 +15820,20 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Multi-arch publish:** passed. `ghcr.io/nathanpond/epistrel` tags `0.4.0`, `0.4`, `0` and `latest` all point to `sha256:015007eb20ad04d9ca14b4836b3d51b0245579c2efd5652fbca328f433c87b5a` (amd64 and arm64).
   - **GitHub release:** the workflow created it. A human summary went on top, saying that the release is uncertified and listing the known issues.
 - **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.0
+
+## /n8-release v0.4.1 — 2026-11-23
+
+- **Version:** v0.4.1, a patch bump from v0.4.0, for the real-use bug #1009. The owner asked for the fix and the release. The bump to `pyproject.toml` and `uv.lock`, and a 0.4.1 entry in `docs/evals/release-waivers.toml` (ADR-208), went into the fix PR #1010.
+- **Decision:** the owner merged #1010 by bypassing the ruleset before its PR CI finished, then cancelled that PR run. Its `gate` failure came from the cancelled jobs, not from a failing test. Local checks had passed: the full suite and every lint gate. The tag run's full CI then passed on the merged commit.
+  **Why:** a patch for a bug that breaks every large structured call to api.anthropic.com in real use.
+  **Issue:** #1009, #1010
+- **Decision:** 0.4.1 ships uncertified, like 0.4.0. #1010 moves `MODEL_CALL_REVISION` from 4 to 5, which moves every preset fingerprint. The owner's ADR-208 waiver names 0.4.1.
+- **Commit:** the annotated tag `v0.4.1` is on `3faab10` (#1010), on top of `e1f7b2c` (v0.4.0). M12 (Real-use fixes) is open and not verified. #1009 is an ad-hoc fix ahead of it, and it is not an M12 closure.
+- **Milestones included:** none newly closed. This is a patch on M11.
+- **What the tag triggered:** `release.yml` [run 45229678693](https://github.com/nathanpond/Epistrel/actions/runs/45229678693).
+  - **validate:** passed. The C-18 check skipped, citing the ADR-208 waiver.
+  - **Full CI:** attempt 1 failed only because `ci / evals (max)` hit its 45-min `timeout-minutes` and was cancelled. That was a timeout, not a failing eval, and job times varied widely across the run. Attempt 2 (`gh run rerun --failed`) passed, with `evals (max)` taking 44 min. That is close to its limit (it was 40 min at v0.4.0), and raising it is worth a small PR.
+  - **C-10 smoke:** passed.
+  - **Multi-arch publish:** passed. `ghcr.io/nathanpond/epistrel` tags `0.4.1`, `0.4`, `0` and `latest` all point to `sha256:0656500516262664cf1c446c215ef498ae060aeaf368182167d4c756157f3c7f` (amd64 and arm64).
+  - **GitHub release:** the workflow created it. A human summary went on top: the #1009 fix, uncertified under ADR-208, and the same known issues as v0.4.0.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.1

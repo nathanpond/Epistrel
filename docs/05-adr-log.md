@@ -263,7 +263,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 197 | Repair rung 2 is an identity intervention | Current | — |
 | 198 | A composition polish that keeps the draft's words is an identity observation | Current | — |
 | 199 | The structured commit batches its epistemic writes | Current | — |
-| 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Current | — |
+| 200 | A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints | Partly superseded | — |
 | 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 | 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
@@ -271,6 +271,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
 | 206 | A structured turn's deadline is checked up front against per-model latency estimates | Current | — |
 | 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Current | — |
+| 208 | An owner waiver lets one named version release without current certification records | Current | — |
 
 ---
 
@@ -2229,7 +2230,7 @@ Tuning and its exit certification come after every milestone that may change a p
 - The per-belief path stays as the code outside a batch (every other caller of `transition()`), and `pending.disabled()` selects it for a batched commit, for the equivalence tests.
 
 ### ADR-200 — A certification covers the engine's model-call revision, and a certified model is certified at the presets' current fingerprints
-**Status:** Accepted. Amends ADR-179.
+**Status:** Accepted. Amends ADR-179. **Amended by** ADR-208 (an owner waiver lets one named version release without current records).
 **Context:** #760 moved every preset's fingerprint, and #761 put structured calls to api.anthropic.com on strict constrained decoding. The 2026-11-05/06 records stayed committed, and ADR-179's "a model with committed records for Standard, Full and Max" was still met by those stale records alone, and so was `test_committed_certifications`. Neither compared a record's fingerprint with the preset's current one. A second gap: #761's change was in Python (the request body builder and the strict-mode choice), not in a template or a setting, so a change like it would not move the fingerprint at all. A certification could then describe calls the engine no longer makes. The owner decided on 2026-11-09 to require records at the current fingerprints, and chose R1 (a) at `/n8-plan M11` (2026-11-16): the fingerprint covers the engine's model-call behaviour.
 **Decision:** Applied by #818 (FR-PROF-16, NFR-QUAL-11).
 - The configuration fingerprint gains a top-level `"engine": {"model_call_revision": n}` key. `MODEL_CALL_REVISION` is an integer in `core/profiles/fingerprint.py`, carried by `RuntimeFacts.model_call_revision`. Every change to what a model call sends that no template hash or quality-relevant setting captures bumps it in the same PR. That covers Python-held prompt text, token ceilings and input-truncation caps, provider headers and body extras, the purposes' input and response schemas, and the structured-mode choice. Records carry it inside their fingerprint (no schema bump).
@@ -2239,7 +2240,7 @@ Tuning and its exit certification come after every milestone that may change a p
 **Alternatives considered:** Gate PRs on it: then every M11 tuning PR would need a paid recertification before it could merge. Hash whole model-calling modules: any comment or refactor would bump the revision and uncertify every preset. Leave Python-held behaviour out of the fingerprint: a #761-sized change would leave certifications naming calls that are no longer made.
 **Consequences:**
 - Every preset's fingerprint moved once, with this change. The committed records were already stale, so nothing certified was lost.
-- A tag cannot release while Standard, Full and Max lack current records on one model. The next release follows #818's baseline (or #819's exit run).
+- A tag cannot release while Standard, Full and Max lack current records on one model. The next release follows #818's baseline (or #819's exit run). *[superseded in part by ADR-208: an owner waiver in `docs/evals/release-waivers.toml` that names the exact version and the stale presets lets that one version release uncertified]*
 - docs/03 FR-PROF-16 lists the revision as a fingerprint input, §22's M11 row reads "at the presets' current fingerprints", and docs/04 C-18 gains the `[M11: NFR-QUAL-11]` part.
 - Tests: `tests/test_model_call_revision.py`, `tests/integration/test_c_18_m11.py`, and `tests/evals/test_certify_presets.py::test_presets_certified_at_current_fingerprints` with its complement `test_the_current_fingerprint_guard_refuses_stale_records`.
 
@@ -2373,6 +2374,24 @@ Tuning and its exit certification come after every milestone that may change a p
 - No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected.
 - `current_milestone` becomes 11 with M11's closure.
 - M12 is planned by `/n8-plan M12`. Until then, it is an intake bucket.
+
+### ADR-208 — An owner waiver lets one named version release without current certification records
+**Status:** Accepted. Amends ADR-200 (the release gate's consequence).
+**Context:** The v0.4.0 tag (on `9156dec`, M11) failed `release.yml`'s first gate: C-18 M11 found no model with Standard, Full and Max records at the presets' current fingerprints. M11's later tuning runs moved every fingerprint after #818's baseline (#971), and the owner had already waived the exit certification (#819) to v2 at `/n8-verify M11` (*"I'd rather waive test results at this point and get it out to test with real users"*). Recertifying all three presets on hosted Haiku is paid, multi-hour work (Max alone was stopped at more than $160 this milestone). ADR-200 gave the gate no route for a recorded owner waiver, so a waived certification still blocked every release. Nothing was published from the failed run.
+**Decision:** The owner's decision at `/n8-release 0.4.0` (2026-11-22).
+- `docs/evals/release-waivers.toml` holds owner waivers. Each `[[waiver]]` entry names one `version`, the `presets` it covers, the date `decided`, a `source` link to the owner's words, and a `reason`.
+- Under `EPISTREL_TEST_RELEASE_GATE=1` the guard (`tests/certification_support.py`) skips instead of failing when a waiver covers exactly the version in `pyproject.toml` and every preset without a current record. The skip reason says `WAIVED`, names the source and says that the release ships uncertified. `release.yml` runs the check with `-rs`, so the reason shows in the run log.
+- A waiver is never inherited. The next version fails the gate again unless it is certified or the owner adds its own entry. Only the owner adds entries.
+- The first entry is for 0.4.0, covering Standard, Full and Max. v0.4.0's release notes say that it is uncertified.
+- The unpublished `v0.4.0` tag moves onto the merge commit of this change. The owner approved that on the grounds that the failed run built and published nothing.
+**Alternatives considered:**
+- Pay for a three-preset recertification now: the owner declined it on cost, with #819 already in v2.
+- Bypass the gate by editing `release.yml` per release: that leaves no reviewable record and is easy to leave in place.
+- Release v0.4.1 and leave a dead v0.4.0 tag: that avoids rewriting a tag, but nothing was ever published from it.
+**Consequences:**
+- A waived version's responses still report `uncertified`. The waiver changes what may be tagged, not what the engine claims.
+- Tests: `tests/evals/test_certify_presets.py::test_an_owner_waiver_lets_only_its_own_version_release_uncertified` (another version, or a waiver missing a preset, still fails) and `::test_committed_waivers_are_well_formed`. The complement `test_the_current_fingerprint_guard_refuses_stale_records` runs with no waivers.
+- docs/04 C-18's M11 part and `docs/evals/README.md` name the waiver route.
 
 ---
 

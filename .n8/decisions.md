@@ -15797,3 +15797,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - Applied in docs/03 §21/§22 and ADR-207 (which amends ADR-184), and `current_milestone` is now 11.
   **Why:** Epistrel is going into real use with a consuming application; the owner wants its bugs and M11's test gaps fixed in one place, before the audit.
   **Affects:** M13 (Audit; renumbered, still unplanned) and v2 (unchanged). M12 needs `/n8-plan M12`.
+
+## Ad-hoc — 2026-11-22 (release-gate certification waiver; ADR-208)
+
+- **Change:** the C-18 M11 release gate (ADR-200) accepts an owner waiver in `docs/evals/release-waivers.toml` for one exact version and the presets it names. The first entry waives Standard, Full and Max for 0.4.0.
+  **Why:** the `v0.4.0` tag's `release.yml` [run 45086096878](https://github.com/nathanpond/Epistrel/actions/runs/45086096878) failed at `validate`, because no model has current-fingerprint records. The owner had already waived the exit certification (#819) to v2. At `/n8-release 0.4.0` they chose "Waive gate, re-tag" over a paid recertification. Nothing was published, so the `v0.4.0` tag moves to this change's merge commit.
+  **Affects:** #819 (v2). When the exit certification is planned, it must also drop or retire the 0.4.0 waiver. M12: every later release needs current records or a new waiver of its own. `/n8-verify` runs the same gate, and it now skips for a waived version.

@@ -56,7 +56,7 @@ jobs:
         # PR CI only reports this guard (it skips); a release enforces it.
         env:
           EPISTREL_TEST_RELEASE_GATE: "1"
-        run: uv run pytest -q tests/integration/test_c_18_m11.py
+        run: uv run pytest -q -rs tests/integration/test_c_18_m11.py  # -rs prints an ADR-208 waiver
       - name: Released tags so far
         env:
           GH_TOKEN: ${{ github.token }}

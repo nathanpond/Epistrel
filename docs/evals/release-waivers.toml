@@ -1,0 +1,19 @@
+# Owner waivers of the current-fingerprint certification release gate (ADR-208, amending ADR-200).
+#
+# `release.yml` enforces C-18 M11 (`tests/integration/test_c_18_m11.py`): a tag releases only when
+# one model holds Standard, Full and Max records at the presets' current fingerprints. An entry
+# here lets exactly one version release without them, for exactly the presets it names. It is
+# never inherited: the next version fails the gate again unless it is certified or the owner adds
+# its own entry. Only the owner adds entries, and each one quotes the owner's decision and links it.
+# The release ships as uncertified, and its notes say so.
+
+[[waiver]]
+version = "0.4.0"
+presets = ["standard", "full", "max"]
+decided = "2026-11-22"
+source = "https://github.com/nathanpond/Epistrel/pull/995#issuecomment-7085645359"
+reason = """\
+The owner waived M11's exit certification (#819) to v2 at /n8-verify M11 ("I'd rather waive test \
+results at this point and get it out to test with real users"), and chose at /n8-release 0.4.0 to \
+waive this gate for v0.4.0 rather than pay for a three-preset recertification. Responses at these \
+fingerprints report `uncertified`."""

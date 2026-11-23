@@ -15803,3 +15803,20 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Change:** the C-18 M11 release gate (ADR-200) accepts an owner waiver in `docs/evals/release-waivers.toml` for one exact version and the presets it names. The first entry waives Standard, Full and Max for 0.4.0.
   **Why:** the `v0.4.0` tag's `release.yml` [run 45086096878](https://github.com/nathanpond/Epistrel/actions/runs/45086096878) failed at `validate`, because no model has current-fingerprint records. The owner had already waived the exit certification (#819) to v2. At `/n8-release 0.4.0` they chose "Waive gate, re-tag" over a paid recertification. Nothing was published, so the `v0.4.0` tag moves to this change's merge commit.
   **Affects:** #819 (v2). When the exit certification is planned, it must also drop or retire the 0.4.0 waiver. M12: every later release needs current records or a new waiver of its own. `/n8-verify` runs the same gate, and it now skips for a waived version.
+
+## /n8-release v0.4.0 — 2026-11-22
+
+- **Version:** v0.4.0, a minor bump from v0.3.0. The owner chose it at `/n8-release`. The bump to `pyproject.toml` and `uv.lock` was folded into state PR #1006, which saved one CI run.
+- **Decision:** the first tag, on `9156dec` (the merge of #1006), failed `release.yml` at `validate` ([run 45086096878](https://github.com/nathanpond/Epistrel/actions/runs/45086096878)). C-18 M11 (ADR-200) found no current-fingerprint records for Standard, Full or Max, and nothing was published. The owner chose to waive the gate for 0.4.0 and re-tag. #1007 (ADR-208, `docs/evals/release-waivers.toml`) landed that. The owner merged it with an admin merge before its PR CI finished, and the tag run's full CI then passed. The unpublished tag was deleted and re-created on `e1f7b2c`.
+  **Why:** the exit certification (#819) is in v2, and the owner declined a paid recertification.
+  **Issue:** #819, #1007
+- **Decision:** the owner carried the M12 known issues into the release notes: #994, #996, #998–#1005, and #924 (v2).
+- **Commit:** the annotated tag `v0.4.0` is on `e1f7b2c` (#1007). Its parent `9156dec` (#1006) closes M11 with `current_milestone = 11`, on top of `98132a4`. M11 was verified at `b162dda`.
+- **Milestones included:** M11. `/n8-verify` closed it.
+- **What the tag triggered:** `release.yml` [run 45087629189](https://github.com/nathanpond/Epistrel/actions/runs/45087629189), which took 73 min. It queued behind five Dependabot CI runs, which the owner cancelled.
+  - **validate:** passed. The C-18 check skipped, citing the ADR-208 waiver.
+  - **Full CI:** passed.
+  - **C-10 smoke:** passed.
+  - **Multi-arch publish:** passed. `ghcr.io/nathanpond/epistrel` tags `0.4.0`, `0.4`, `0` and `latest` all point to `sha256:015007eb20ad04d9ca14b4836b3d51b0245579c2efd5652fbca328f433c87b5a` (amd64 and arm64).
+  - **GitHub release:** the workflow created it. A human summary went on top, saying that the release is uncertified and listing the known issues.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.0

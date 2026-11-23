@@ -18,6 +18,7 @@ from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
     EmptyCompletion,
     ResponseFormatRejected,
+    SchemaTooLarge,
 )
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
@@ -45,6 +46,7 @@ __all__ = [
     "ModelUnavailable",
     "Purpose",
     "ResponseFormatRejected",
+    "SchemaTooLarge",
     "StubAdapter",
     "Uncertain",
 ]

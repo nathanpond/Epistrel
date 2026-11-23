@@ -42,6 +42,12 @@ class Recorded:
     body: dict[str, Any]
 
 
+GRAMMAR_400 = (
+    "The compiled grammar is too large, which would cause performance issues. Simplify your "
+    "tool schemas or reduce the number of strict tools."
+)
+"""api.anthropic.com's live 400 for a strict schema over its grammar limit (#1009)."""
+
 STRICT_REFUSED = ("minimum", "maximum", "minLength", "maxLength", "maxItems")
 """Keywords api.anthropic.com's strict mode answered with a 400, live (#761)."""
 
@@ -92,7 +98,9 @@ class MockOpenAI:
     400 naming it; with ``reject_sampling`` it answers ``temperature``/``top_p`` with a 400
     naming the parameter, as Claude 4.7 and later do (#235); with ``require_strict`` it answers
     a ``json_schema`` the way api.anthropic.com did live on 2026-11-07 (#761, ``strict_refusal``);
-    ``raw_body`` is served as an HTML page with status 200."""
+    ``raw_body`` is served as an HTML page with status 200; a strict ``json_schema`` named in
+    ``too_large`` is answered with api.anthropic.com's live "compiled grammar is too large" 400
+    (#1009)."""
 
     port: int = 0
     requests: list[Recorded] = field(default_factory=list)
@@ -100,6 +108,7 @@ class MockOpenAI:
     reject_response_format: bool = False
     reject_sampling: bool = False
     require_strict: bool = False
+    too_large: frozenset[str] = frozenset()
     fail_with: int | None = None
     raw_body: bytes | None = None
     script: list[str] = field(default_factory=list)
@@ -149,6 +158,9 @@ class MockOpenAI:
             return 400, {"error": {"type": "invalid_request_error", "message": message}}
         if self.reject_response_format and "response_format" in body:
             return 400, {"error": {"message": "response_format json_schema is not supported"}}
+        json_schema = body.get("response_format", {}).get("json_schema", {})
+        if json_schema.get("strict") is True and json_schema.get("name") in self.too_large:
+            return 400, {"error": {"type": "invalid_request_error", "message": GRAMMAR_400}}
         refusal = strict_refusal(body) if self.require_strict else None
         if refusal is not None:
             return 400, {"error": {"type": "invalid_request_error", "message": refusal}}

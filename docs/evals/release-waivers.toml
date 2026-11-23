@@ -17,3 +17,15 @@ The owner waived M11's exit certification (#819) to v2 at /n8-verify M11 ("I'd r
 results at this point and get it out to test with real users"), and chose at /n8-release 0.4.0 to \
 waive this gate for v0.4.0 rather than pay for a three-preset recertification. Responses at these \
 fingerprints report `uncertified`."""
+
+[[waiver]]
+version = "0.4.1"
+presets = ["standard", "full", "max"]
+decided = "2026-11-23"
+source = "https://github.com/nathanpond/Epistrel/pull/1010"
+reason = """\
+A patch release for #1009 (strict-mode schemas too large for api.anthropic.com), which blocks \
+Social Gambit's structured generations. It bumps MODEL_CALL_REVISION to 5, which moves every \
+preset fingerprint. The presets were already uncertified (#819 is in v2, ADR-208). The owner \
+chose on #1010 to waive the gate for 0.4.1 too. Responses at these fingerprints report \
+`uncertified`."""

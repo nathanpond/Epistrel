@@ -13,6 +13,7 @@ from dataclasses import replace
 import httpx2
 import openai
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from epistrel.core.errors import Unauthenticated
 from epistrel.core.policies.model import Target
@@ -20,7 +21,7 @@ from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import provider_schema
 from epistrel.orchestrator.models.access import ModelAccessLayer
-from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.config import structured_settings
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
@@ -28,6 +29,7 @@ from epistrel.orchestrator.models.errors import (
     ModelUnavailable,
     ProviderGarbage,
     ResponseFormatRejected,
+    SchemaTooLarge,
     map_provider_error,
 )
 from epistrel.orchestrator.models.metrics import recording
@@ -49,6 +51,8 @@ from epistrel.orchestrator.models.structured import (
     guardrail_deterministic_first,
     parse,
     resolve_uncertain,
+    schema_digest,
+    structured_messages,
     uncertain_verdict,
     unfence,
 )
@@ -68,7 +72,7 @@ from epistrel.orchestrator.policies.seeds.policies import (
 from epistrel.orchestrator.policies.store import GuardContext
 from tests.auth_support import auth_settings
 from tests.conftest import DUMMY_DSN
-from tests.model_support import config_key, mock_openai
+from tests.model_support import GRAMMAR_400, config_key, mock_openai
 from tests.policy_support import policy
 from tests.respond_support import WITHIN_S
 from tests.test_model_adapters import configured, fixed
@@ -688,6 +692,33 @@ def _status_error(cls: type[openai.APIStatusError], status: int, message: str) -
     return cls(message, response=response, body={"error": {"message": message}})
 
 
+def test_a_grammar_too_large_400_is_schema_too_large() -> None:
+    """#1009: strict mode's "compiled grammar is too large" 400 (which names no
+    ``response_format``) is ``SchemaTooLarge``, a ``ResponseFormatRejected`` so the probe
+    accounting applies, and still a 503 ``model_unavailable`` should it ever escape."""
+    mapped = map_provider_error("consumer", _status_error(openai.BadRequestError, 400, GRAMMAR_400))
+    assert isinstance(mapped, SchemaTooLarge)
+    assert isinstance(mapped, ResponseFormatRejected)
+    assert mapped.http_status == 503
+    assert mapped.details["provider_status"] == 400
+
+
+def test_memo_remembers_a_too_large_schema_per_schema() -> None:
+    memo = ResponseFormatMemo()
+    key = ("https://api.anthropic.com/v1", "m")
+    big, small = schema_digest(GuardrailVerdict), schema_digest(DirectiveParseResult)
+    assert big != small
+    memo.reject_schema(key, big, 3)
+    assert not memo.schema_supported(key, big, 3)
+    assert memo.schema_supported(key, small, 3)  # other schemas keep json_schema
+    assert memo.supported(key, 3)  # and the endpoint is not marked
+    assert memo.schema_supported(("https://api.anthropic.com/v1", "other"), big, 3)
+    assert memo.schema_supported(key, big, 4)  # a configuration write: try again
+    memo.reject_schema(key, big, 4)
+    memo.clear()
+    assert memo.schema_supported(key, big, 4)
+
+
 def test_map_provider_error() -> None:
     rejected = map_provider_error(
         "guardrail_check",
@@ -843,6 +874,58 @@ async def test_strict_required_endpoint_not_anthropic_still_probes() -> None:
     assert ["response_format" in r.body for r in server.requests] == [True, False]
     assert "strict" not in server.requests[0].body["response_format"]["json_schema"]
     assert [(c.outcome, c.probe) for c in log.calls] == [("http_error", True), ("ok", False)]
+
+
+class _Small(BaseModel):
+    """A second schema on the same endpoint, small enough for strict mode."""
+
+    model_config = ConfigDict(extra="forbid")
+    ok: bool
+
+
+async def test_a_schema_too_large_for_strict_mode_falls_back_for_that_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1009: on api.anthropic.com a schema whose compiled grammar is too large (the live 400)
+    is sent once, falls back to parse-validate-retry in the same call (the 400 is a refunded
+    probe, ADR-180, and the adapter does not retry it as a ``max_tokens`` problem), and is then
+    sent as parse-validate-retry at once. Another schema on the same endpoint and model still
+    goes in ``json_schema`` mode."""
+    _as_anthropic(monkeypatch)
+    with mock_openai(
+        require_strict=True,
+        too_large=frozenset({"GuardrailVerdict"}),
+        json_answers={"_Small": '{"ok": true}'},
+    ) as server:
+        mal = ModelAccessLayer(
+            auth_settings(DUMMY_DSN, model_adapter="openai", config_key=config_key()),
+            adapter=_fixed(f"{server.root}/v1"),
+        )
+
+        async def endpoint(_: str) -> tuple[str, str, int]:
+            return f"{server.root}/v1", "m", 0
+
+        monkeypatch.setattr(mal, "endpoint", endpoint)
+        try:
+            with recording() as log:
+                budget = TurnBudget()
+                assert await check(mal, budget) == GuardrailVerdict(violation=False, confidence=1.0)
+                assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+                small = await structured_messages(
+                    mal,
+                    "guardrail_check",
+                    _Small,
+                    [Message(role="user", content="ok?")],
+                    budget=TurnBudget(),
+                )
+        finally:
+            await mal.aclose()
+    assert small == _Small(ok=True)
+    sent = [r.body.get("response_format", {}).get("json_schema", {}) for r in server.requests]
+    assert [s.get("name") for s in sent] == ["GuardrailVerdict", None, None, "_Small"]
+    assert sent[3]["strict"] is True
+    outcomes = [(c.outcome, c.probe) for c in log.calls]
+    assert outcomes == [("http_error", True), ("ok", False), ("ok", False), ("ok", False)]
 
 
 async def test_anthropic_schema_without_wire_form_skips_json_schema(

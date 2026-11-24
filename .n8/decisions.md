@@ -16375,3 +16375,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#978):** I filed #1024 (needs-triage) for repair constraints that name a place by its raw entity id, and didn't fix it in this milestone run.
   **Why:** it predates M12 (15.5% of baseline case-seeds) and is outside #978's scope.
   **Issue:** #1024
+- **Decision (#1011, Rule 3):** I reran P-04 from the cached seed after the first run hit its 90-minute timeout.
+  **Why:** seeding 10 stories of 10,000 turns took 4,256 s (71 min), and the timed run was killed 18 minutes in. The rerun restored `build/perf/cache/lite-0155-…` and passed 53 of 53 criteria (`perf/results/2026-11-24-1957-lite.md`, ffab8b2). The engine SHA reads "+ uncommitted changes" only for the owner's `.idea/` files, as in earlier reports.
+  **Issue:** #1011
+- **Decision (PR #1025):** The CI pending budget was 73 min, 1.5 × the 49-minute longest check on PR #995.
+  **Why:** it is the derived budget. Both runs finished inside it: about 54 min and 58 min.
+  **Issue:** PR #1025
+- **Decision (PR #1025, Rule 1):** CI attempt 1 failed with two test-side faults from this milestone, fixed in d75f16d. First, `tests/evals/test_run_conditions.py` still expected `rewrite_parse` to be strict on api.anthropic.com, which #941/ADR-213 changed. Second, the #1020 test in `tests/integration/test_i_30_m9.py` left a subject-image row with no `true_age` in the shared database, so the `list_media` tests in `tests/integration/test_media_assets.py` returned 500. That test now deletes the row.
+  **Why:** neither was a product bug. The leaked row exists only because the test writes an invalid declaration on purpose. Attempt 2: 27 of 27 checks green. Merged as eaad643.
+  **Issue:** #941, #1020

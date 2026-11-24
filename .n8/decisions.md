@@ -16174,3 +16174,24 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#941):** Red-first: `test_health__answers_while_warmup_pending` was run against a lifespan that awaited the warm-up (`await epistrel.warmup.wait()` after `start()`). It failed with `TimeoutError` at the 10 s start-up bound (`tests/integration/test_model_warmup_app.py:94`, `1 failed in 13.36s`). With the background start it passes.
   **Why:** The test plan's red-first run.
   **Issue:** #941
+- **Decision (#1012, Discretion):** The ratio set is `SUBJECT_ASPECT_RATIOS` in `orchestrator/images/params.py`. `SubjectImageRequest.aspect_ratio` is `Annotated[StrictStr, AfterValidator(_ratio)] | None`, an exact-match check with no normalisation. A string outside the set is a `value_error` whose message lists the set. A non-string is `string_type`. Both are at `body.aspect_ratio`, and `null` means omitted. The route description, the field description and the `docs/models.md` image-port line all derive the list from the constant.
+  **Why:** The plan's pass-2 discretion. A validator over a `str` field gives one custom message, where a `Literal` gives pydantic's generic one.
+  **Issue:** #1012
+- **Decision (#1012, Discretion):** The head-in-frame line is fixed text in `image_prompt.j2`, in a `## Framing` section after `## Scene`. It is gated on a new `ImagePromptInputs.kind` field (the purpose key, `C.CONSTRAINT`), which `prompt_inputs` fills from `view.purpose`. The `purpose` input stays the human `PURPOSE_TEXT`. Story and catalog renders are byte-identical to before, so their stub digests don't move. A subject view never has a camera, so its `## Framing` can't collide with a story's.
+  **Why:** The template only saw `PURPOSE_TEXT`, and keying on that prose would be fragile. The plan says to key on `purpose == "subject"`.
+  **Issue:** #1012
+- **Decision (#1012):** No new code carries the ratio past `subject_view`. The existing path already does it: `ImageJobRequest.aspect_ratio`, the job `params`, OpenRouter's `plan_body`, then `AppliedParameters` (`requested`/`sent`, or `dropped_parameters` when the endpoint doesn't list it), then the asset's `generation_metadata.requested_parameters` and `applied_parameters`. The actual size is the asset's `width`/`height`. The integration test simulates a model that can't apply the ratio with a stub subclass (`RatioDropper`) that reports it dropped.
+  **Why:** The plan's "no pre-call capability check". The adapter already records drops.
+  **Issue:** #1012
+- **Decision (#1012):** `MODEL_CALL_REVISION` stays 6 (already bumped on the branch), and its docstring names #1012. The snapshot was re-taken through `write_snapshot` into a fresh path and copied over, because `--write` refuses a changed set at an unbumped revision. `PURPOSE_TEXT` and `schema:image_prompt` moved. Per the orchestrator, the snapshot also carries #941's uncommitted `provider_schema` entries. INDEX was regenerated and is unchanged.
+  **Why:** Brief step 6. The orchestrator commits its #941 part right after.
+  **Issue:** #1012
+- **Decision (#1012, Rule 3):** `test_i_30__m9_request` strips the stub `image_prompt` answer's request hash (`stub image <12 hex>`) before `assert_no_age`. The new subject render changed the hash to `5232b1513151`, whose digits contain the true age 52. The hash is not model input, so this is a false positive.
+  **Why:** It blocked the story's own targeted set. The check still covers the rest of the prompt and the negative prompt.
+  **Issue:** #1012
+- **Decision (#1012):** Red-first: with `subject.py` restored to HEAD, `tests/test_subject_image_ratio.py -k "wins_over or no_ratio_keeps or allowed_ratio or head_line_and"` gave `12 failed, 5 passed`. The allowed ratios got 422 `extra_forbidden` at `body.aspect_ratio`. `test_a_given_ratio_wins_over_the_deployment` hit pydantic `extra_forbidden` for each of the 4 deployments. The head-line test failed on the old `SCENE`. The complement `no_ratio_keeps_todays_dimensions` passed before the fix, as it should.
+  **Why:** The test plan's red-first run.
+  **Issue:** #1012
+- **Decision (#1012):** FR-IMG-14 is amended in place with "(amended 2026-11-24, #1012)", and there is no ADR, per the plan. The Console follow-up issue is drafted for the owner rather than filed, on the orchestrator's instruction. The live check AC is left unchecked: it is a paid OpenRouter image run under the owner's $2 cap, which the orchestrator runs.
+  **Why:** The plan's discretion and the orchestrator's brief.
+  **Issue:** #1012

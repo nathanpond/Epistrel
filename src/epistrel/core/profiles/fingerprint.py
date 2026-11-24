@@ -77,7 +77,8 @@ with several renders may send more ``regeneration`` calls); also #996's world-cl
 correction (a render's or a regeneration's change to the clock is corrected once with
 ``CLOCK_CORRECTION``, then dropped); also #941's strict-schema warm-up (one extra
 ``rewrite_parse`` call per api.anthropic.com endpoint and model at start-up, outside every
-request). Bump it with any
+request); also #1012's subject image framing (``PURPOSE_TEXT["subject"]`` no longer says
+"portrait", and ``image_prompt`` takes the purpose's key as ``kind``). Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

@@ -28,6 +28,7 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from epistrel.orchestrator.images.params import SUBJECT_ASPECT_RATIOS
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
     HOSTED_SAFETY_RETENTION,
@@ -426,7 +427,10 @@ def _port_facts(port: Port[PortFloor]) -> list[str]:
         f"- **Default model:** the {_code(port.default_model_key)} row of `model_config` only, "
         "never the `default` row; its `params` take `adapter` (a registered adapter, or "
         "`null`: off), `default_size`, `default_aspect_ratio`, `default_quality`, "
-        "`image_capability_ttl_s` and `request_timeout_s`. With no adapter, model or key, "
+        "`image_capability_ttl_s` and `request_timeout_s`. A request's own size or ratio wins "
+        "over the defaults: a subject image's `aspect_ratio` is one of "
+        + ", ".join(f"`{r}`" for r in SUBJECT_ASPECT_RATIOS)
+        + " (FR-IMG-14). With no adapter, model or key, "
         "every generation entry point answers 409 `not_configured`, and uploads keep working",
         "- **Capability floor:** generates images from a text prompt; seeds, reference images, "
         "sizes and aspect ratios are discovered per endpoint, never assumed (FR-IMG-1)",

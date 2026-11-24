@@ -56454,11 +56454,12 @@
       },
       "SubjectImageRequest": {
         "additionalProperties": false,
-        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted) and ``n`` (1 to 4, default 1). No seed or size.",
+        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted), ``n`` (1 to 4, default 1) and an optional\n``aspect_ratio`` (#1012), exactly one of ``SUBJECT_ASPECT_RATIOS`` (``1:1``, ``2:3``,\n``3:2``, ``3:4``, ``4:3``, ``9:16``, ``16:9``; anything else is 422 at\n``body.aspect_ratio``). A given ratio is the request's own, so it wins over the\ndeployment's ``default_size`` and ``default_aspect_ratio`` and is sent instead of any size;\nomitted (or ``null``), the dimensions are the deployment default's, else ``1:1``. When the\nimage model cannot apply the ratio the image is still made: the job's applied parameters\nname ``aspect_ratio`` as dropped and the asset's ``width``/``height`` are what came back.\nNo seed or size.",
         "examples": [
           {
+            "aspect_ratio": "2:3",
             "n": 2,
-            "style": "oil painting, warm light",
+            "style": "oil painting, warm light, full-body, head to toe in frame",
             "subject": {
               "description": "Weathered fisherman, grey beard, yellow oilskin coat.",
               "label": "Contestant 7",
@@ -56467,6 +56468,18 @@
           }
         ],
         "properties": {
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The image's shape, exactly one of `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`. It wins over the deployment's default size and ratio; omitted, the deployment default applies (else `1:1`).",
+            "title": "Aspect Ratio"
+          },
           "content_rating": {
             "anyOf": [
               {
@@ -106204,7 +106217,7 @@
     },
     "/subject-images": {
       "post": {
-        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age), then checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label and style never reach an operational log, metric or trace.",
+        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. `aspect_ratio` is optional and exactly one of `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9` (anything else, `5:4` included, is 422 at `body.aspect_ratio`): it wins over the deployment's `default_size` and `default_aspect_ratio` and reaches the image model as its ratio; omitted, the deployment default applies, else `1:1`. When the image model cannot apply it the image is still made: the job's applied parameters name `aspect_ratio` as dropped, and the asset's `width` and `height` are what came back. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age), then checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label and style never reach an operational log, metric or trace.",
         "operationId": "request_subject_images",
         "parameters": [
           {

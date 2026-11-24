@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images.jobs import MINORS_POLICY_ID
+from epistrel.orchestrator.images.port import AppliedParameters, ImageRequest, SubmitResult
 from epistrel.orchestrator.images.targets.subject import SubjectImageRequest, SubjectSpec
 from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.testing.images import PASS, ScriptedChecks
@@ -60,6 +62,7 @@ from tests.image_support import Outputs, StubImageGenerator, registered
 from tests.integration.ownership_fixtures import headers
 from tests.media_support import png, uploaded
 from tests.minors_support import SUBJECTS_HEADING
+from tests.model_support import admin_client, put
 from tests.offboarding_support import OFFBOARDING, run_jobs
 from tests.policy_support import OPERATOR as POLICY_OPERATOR
 from tests.policy_support import global_policy, rated_policy_rating, unique, words
@@ -74,6 +77,8 @@ LABEL = "Contestant SEVEN-830"
 DESCRIPTION = "Weathered fisherman with a grey beard and a yellow oilskin coat."
 UNSAFE = "posed provocatively in lingerie"
 TRUE_AGE = 52
+STUB_DIGEST = re.compile(r"\bstub image [0-9a-f]{12}\b")
+"""The stub ``image_prompt`` answer's request hash (``ImagePromptResult.stub_example``)."""
 MINOR_AGE = 15
 
 
@@ -142,11 +147,14 @@ class SubjectApp:
 
 @asynccontextmanager
 async def subject_app(
-    settings: Settings, engine: AsyncEngine, checks: ScriptedChecks | None = None
+    settings: Settings,
+    engine: AsyncEngine,
+    checks: ScriptedChecks | None = None,
+    generator: StubImageGenerator | None = None,
 ) -> AsyncIterator[SubjectApp]:
-    """The REST app with the stub model adapter, the stub image adapter, #257's real prompt
-    check and scripted output checks (passing, unless given)."""
-    generator = StubImageGenerator()
+    """The REST app with the stub model adapter, the stub image adapter (``generator``, else a
+    plain one), #257's real prompt check and scripted output checks (passing, unless given)."""
+    generator = generator or StubImageGenerator()
     async with ip.prompt_app(settings, engine) as (client, lib):
         with registered(ADAPTER, generator), prompt_checked(checks) as scripted:
             yield SubjectApp(client, lib, generator, scripted, settings)
@@ -243,7 +251,10 @@ async def test_i_30__m9_request(
         assert asset["check_status"] == "passed"
 
         sent = app.generator.requests[0].request
-        assert_no_age({"prompt": sent.prompt, "negative_prompt": sent.negative_prompt}, TRUE_AGE)
+        # The stub model's prompt is named by its request's hash, whose hex digits may spell the
+        # age by chance (#1012): the hash is not model input, so it is left out of the check.
+        prompt = STUB_DIGEST.sub("stub image", sent.prompt)
+        assert_no_age({"prompt": prompt, "negative_prompt": sent.negative_prompt}, TRUE_AGE)
 
         other = await app.request(body(), key=f"subject-{secrets.token_hex(4)}")
         assert other.status_code == 202, other.text
@@ -313,6 +324,61 @@ async def test_i_30__m9_refusals(image_settings: Settings, engine: AsyncEngine) 
         assert (await app.request(edge)).status_code == 202
         young = {"subject": subject(true_age=0)}
         assert (await app.request(young)).status_code == 202
+
+
+class RatioDropper(StubImageGenerator):
+    """A stub image adapter whose model cannot apply a ratio: it reports the request's
+    parameters as requested and the ratio as dropped, and returns its scripted size."""
+
+    async def submit(self, request: ImageRequest, idempotency_key: str | None) -> SubmitResult:
+        result = await super().submit(request, idempotency_key)
+        requested = {"n": request.n, "size": request.size, "aspect_ratio": request.aspect_ratio}
+        applied = AppliedParameters(
+            requested={k: v for k, v in requested.items() if v is not None},
+            dropped_parameters=("aspect_ratio",) if request.aspect_ratio else (),
+        )
+        return replace(result, applied_parameters=applied)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_aspect_ratio(image_settings: Settings, engine: AsyncEngine) -> None:
+    """#1012: a subject request's ``aspect_ratio`` wins over the deployment's ``default_size``:
+    the provider call carries ``aspect_ratio: "2:3"`` and no size, and the asset records the
+    ratio as requested. The stub model cannot apply it, so the image is still made: its applied
+    parameters name ``aspect_ratio`` as dropped, and the asset's ``width``/``height`` are what
+    came back. An unlisted ratio (``5:4``) is 422 at ``body.aspect_ratio`` with no job.
+
+    Complement asserted: with no ``aspect_ratio`` the provider call carries the deployment's
+    ``default_size`` and no ratio, exactly as before."""
+    async with subject_app(image_settings, engine, generator=RatioDropper()) as app:
+        await app.configure()
+        async with admin_client(image_settings, app.lib) as admin:
+            await put(
+                admin,
+                "image_generation",
+                {"model": "img-1", "params": {"adapter": ADAPTER, "default_size": "512x512"}},
+            )
+        jobs_before = await subject_jobs(engine)
+        status, code, details = error_of(await app.request(body(aspect_ratio="5:4")))
+        assert (status, code, details["field"]) == (422, "validation_error", "body.aspect_ratio")
+        assert await subject_jobs(engine) == jobs_before
+        assert app.generator.requests == []
+
+        _, job = await app.generated(Outputs(n=1, size=(83, 61)), aspect_ratio="2:3")
+        sent = app.generator.requests[-1].request
+        assert (sent.aspect_ratio, sent.size) == ("2:3", None)
+        asset = await app.asset(job["asset_ids"][0])
+        metadata = asset["generation_metadata"]
+        assert metadata["requested_parameters"]["aspect_ratio"] == "2:3"
+        assert metadata["requested_parameters"]["size"] is None
+        assert metadata["applied_parameters"]["requested"]["aspect_ratio"] == "2:3"
+        assert "aspect_ratio" in metadata["applied_parameters"]["dropped_parameters"]
+        assert (asset["width"], asset["height"]) == (83, 61)
+
+        await app.generated(Outputs(n=1, size=(83, 62)))
+        plain = app.generator.requests[-1].request
+        assert (plain.aspect_ratio, plain.size) == (None, "512x512")
 
 
 # -- the safety path --------------------------------------------------------------------------

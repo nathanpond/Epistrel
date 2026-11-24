@@ -1440,6 +1440,9 @@ class ImagePromptInputs(InputSchema):
     ] = ""
     purpose: Annotated[str, StringConstraints(max_length=200), C.CONSTRAINT] = ""
     """What the image is for (a catalog portrait, a story image at a position)."""
+    kind: Annotated[str, StringConstraints(max_length=32), C.CONSTRAINT] = ""
+    """The purpose's key (``primary``, ``gallery``, ``cover``, ``story``, ``subject``): a
+    subject image (#1012) adds the template's fixed head-in-frame line."""
     beats: Annotated[
         list[Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX)]], C.SCENE
     ] = Field(default_factory=list, max_length=200)

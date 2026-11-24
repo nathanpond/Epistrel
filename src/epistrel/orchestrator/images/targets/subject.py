@@ -8,11 +8,15 @@ request mints a subject id (a ULID). A subject job's ``target`` is ``{subject_id
 content_rating_id, content_rating_version_id}`` (the rating's version current at the request)
 and its ``origin`` ``{subject_id, label, true_age, description, style}``: the declaration the
 safety path resolves inline (``core.images.safety.InlineSubject``), with the consumer's
-description and style checked beside the built prompt.
+description and style checked beside the built prompt. The request's optional
+``aspect_ratio`` (#1012) is the request ratio of ``resolve_dimensions``: it travels on the view
+into the job's ``params`` and the adapter's applied parameters, never in ``origin``.
 
 **The prompt** is the catalog target's: ``image_prompt`` writes it from ``subject_view`` (the
 description with authored ages redacted, the true age's apparent age band, the style and the
-rating's image guidance), never from the true age. **The safety path** is the catalog path
+rating's image guidance), never from the true age; its default scene is ``single subject``
+(no portrait framing, no background), and the template adds a fixed head-in-frame line for a
+subject image (#1012). **The safety path** is the catalog path
 (FR-IMG-3, FR-GUARD-11): #257's prompt check before any generation with the declared true age
 and the global and the rating's policies, figure classification (the subject is a resolved label
 with its true age), and #258's output check on every output. A failing output is never stored.
@@ -41,7 +45,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictInt
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -56,7 +60,7 @@ from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
 from epistrel.core.tables.media import MediaOrigin, MediaState
 from epistrel.core.tables.offboarding import OffboardingStatus, offboarding_jobs
 from epistrel.orchestrator.images import jobs
-from epistrel.orchestrator.images.params import ImageGenerationParams
+from epistrel.orchestrator.images.params import SUBJECT_ASPECT_RATIOS, ImageGenerationParams
 from epistrel.orchestrator.images.prompt_builder import (
     PerceivedSubject,
     PerceivedView,
@@ -71,7 +75,8 @@ TRUE_AGE_MAX = 150
 SUBJECT_N_MAX = 4
 PURPOSE = "subject"
 """The prompt builder's purpose for a subject image (``prompt_builder.PURPOSE_TEXT``)."""
-SCENE = "single-subject portrait, plain background"
+SCENE = "single subject"
+"""The default scene: no framing and no background, so a style may ask for either (#1012)."""
 SUBJECT_KIND = "subject"
 """``depicted_subjects[].kind`` of a subject image's declaration."""
 FAILED_CHECK = "guardrail_violation"
@@ -81,6 +86,12 @@ NO_OUTPUT = "provider_empty_result"
 def _text(value: str) -> str:
     if not value.strip():
         raise ValueError("must not be blank")
+    return value
+
+
+def _ratio(value: str) -> str:
+    if value not in SUBJECT_ASPECT_RATIOS:
+        raise ValueError(f"must be one of {', '.join(SUBJECT_ASPECT_RATIOS)}")
     return value
 
 
@@ -108,7 +119,15 @@ class SubjectSpec(BaseModel):
 class SubjectImageRequest(BaseModel):
     """``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,
     at most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the
-    deployment default when omitted) and ``n`` (1 to 4, default 1). No seed or size."""
+    deployment default when omitted), ``n`` (1 to 4, default 1) and an optional
+    ``aspect_ratio`` (#1012), exactly one of ``SUBJECT_ASPECT_RATIOS`` (``1:1``, ``2:3``,
+    ``3:2``, ``3:4``, ``4:3``, ``9:16``, ``16:9``; anything else is 422 at
+    ``body.aspect_ratio``). A given ratio is the request's own, so it wins over the
+    deployment's ``default_size`` and ``default_aspect_ratio`` and is sent instead of any size;
+    omitted (or ``null``), the dimensions are the deployment default's, else ``1:1``. When the
+    image model cannot apply the ratio the image is still made: the job's applied parameters
+    name ``aspect_ratio`` as dropped and the asset's ``width``/``height`` are what came back.
+    No seed or size."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -120,8 +139,9 @@ class SubjectImageRequest(BaseModel):
                         "true_age": 52,
                         "label": "Contestant 7",
                     },
-                    "style": "oil painting, warm light",
+                    "style": "oil painting, warm light, full-body, head to toe in frame",
                     "n": 2,
+                    "aspect_ratio": "2:3",
                 }
             ]
         },
@@ -131,6 +151,15 @@ class SubjectImageRequest(BaseModel):
     style: Annotated[str, Field(min_length=1, max_length=STYLE_MAX)] | None = None
     content_rating: Annotated[str, Field(min_length=1, max_length=64)] | None = None
     n: Annotated[StrictInt, Field(ge=1, le=SUBJECT_N_MAX)] = 1
+    aspect_ratio: Annotated[StrictStr, AfterValidator(_ratio)] | None = Field(
+        default=None,
+        description=(
+            "The image's shape, exactly one of "
+            + ", ".join(f"`{r}`" for r in SUBJECT_ASPECT_RATIOS)
+            + ". It wins over the deployment's default size and ratio; omitted, the "
+            "deployment default applies (else `1:1`)."
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,8 +231,9 @@ def subject_view(
 ) -> PerceivedView:
     """What ``image_prompt`` writes a subject image's prompt from: the description with
     authored ages redacted, the true age's apparent age band (never the age), the style and the
-    rating's image guidance. 422 at ``body.subject.description`` when redaction leaves no
-    appearance."""
+    rating's image guidance. The request's ``aspect_ratio`` is the request ratio of
+    ``resolve_dimensions``: given, it wins over the deployment's defaults (#1012). 422 at
+    ``body.subject.description`` when redaction leaves no appearance."""
     subject = request.subject
     description = redact_ages(subject.description, subject.true_age).strip()
     if not description:
@@ -213,7 +243,7 @@ def subject_view(
         )
     band = age_band(subject.true_age)
     assert band is not None  # noqa: S101 - a true age has a band
-    size, ratio = resolve_dimensions(PURPOSE, None, None, deployment)
+    size, ratio = resolve_dimensions(PURPOSE, None, request.aspect_ratio, deployment)
     return PerceivedView(
         subjects=(
             PerceivedSubject(

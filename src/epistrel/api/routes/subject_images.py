@@ -19,6 +19,7 @@ from fastapi import status as http_status
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.orchestrator.images.params import SUBJECT_ASPECT_RATIOS
 from epistrel.orchestrator.images.targets.subject import (
     SUBJECT_N_MAX,
     SubjectImageRequest,
@@ -48,7 +49,14 @@ GENERATE = (
     "age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable "
     "characters, not unique); the label and true age are the depicted-subject declaration. "
     "`style` (at most 1,000 characters) and `content_rating` (default: the deployment's "
-    "default rating, read now) are optional; no seed or size is taken. The prompt is written "
+    "default rating, read now) are optional; no seed or size is taken. `aspect_ratio` is "
+    "optional and exactly one of "
+    + ", ".join(f"`{r}`" for r in SUBJECT_ASPECT_RATIOS)
+    + " (anything else, `5:4` included, is 422 at `body.aspect_ratio`): it wins over the "
+    "deployment's `default_size` and `default_aspect_ratio` and reaches the image model as its "
+    "ratio; omitted, the deployment default applies, else `1:1`. When the image model cannot "
+    "apply it the image is still made: the job's applied parameters name `aspect_ratio` as "
+    "dropped, and the asset's `width` and `height` are what came back. The prompt is written "
     "by the `image_prompt` purpose from the description, the true age's apparent age band, "
     "the style and the rating's image guidance (the image model never receives the true age), "
     "then checked **before any generation**, together with the description and style, against "

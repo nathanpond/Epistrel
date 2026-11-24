@@ -631,6 +631,7 @@ Writes an image prompt from what the image's audience has perceived: the subject
 | `visual_style` | `visual_descriptor` |
 | `rating_image_guidance` | `rating_guidance` |
 | `purpose` | `constraint` |
+| `kind` | `constraint` |
 | `beats` | `scene` |
 | `location` | `scene` |
 | `camera` | `constraint` |
@@ -699,7 +700,7 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 The image adapter (FR-IMG-1): generates images through the `ImageGenerator` port (`orchestrator.images.port`) with the adapter its row names (`params.adapter`; OpenRouter is bundled, #255). With no adapter, model or key, every generation entry point answers 409 `not_configured` and uploads keep working.
 
 - **Hot path:** no
-- **Default model:** the `image_generation` row of `model_config` only, never the `default` row; its `params` take `adapter` (a registered adapter, or `null`: off), `default_size`, `default_aspect_ratio`, `default_quality`, `image_capability_ttl_s` and `request_timeout_s`. With no adapter, model or key, every generation entry point answers 409 `not_configured`, and uploads keep working
+- **Default model:** the `image_generation` row of `model_config` only, never the `default` row; its `params` take `adapter` (a registered adapter, or `null`: off), `default_size`, `default_aspect_ratio`, `default_quality`, `image_capability_ttl_s` and `request_timeout_s`. A request's own size or ratio wins over the defaults: a subject image's `aspect_ratio` is one of `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9` (FR-IMG-14). With no adapter, model or key, every generation entry point answers 409 `not_configured`, and uploads keep working
 - **Capability floor:** generates images from a text prompt; seeds, reference images, sizes and aspect ratios are discovered per endpoint, never assumed (FR-IMG-1)
 - **Returns:** the generated images' bytes and media types, with usage and cost when the provider reports them (an unpriced call is `unknown`, never 0)
 - **Engine profiles:** not routable (one deployment-wide adapter)

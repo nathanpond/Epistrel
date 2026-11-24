@@ -43,6 +43,9 @@ ADAPTER_DEFAULT_BASE_URLS: dict[str, str] = {"openrouter": "https://openrouter.a
 read can name the endpoint the data goes to (FR-IMG-13)."""
 
 DEFAULT_ASPECT_RATIO = "1:1"
+SUBJECT_ASPECT_RATIOS: tuple[str, ...] = ("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9")
+"""The ratios a subject image request may name (FR-IMG-14; #1012): exact strings, no
+normalisation. Any other value, a well-formed one such as ``5:4`` included, is refused."""
 DEFAULT_QUALITY: Quality = "auto"
 BUILTIN_DEFAULTS: dict[str, Any] = {
     "default_size": None,
@@ -127,6 +130,7 @@ __all__ = [
     "DEFAULT_CAPABILITY_TTL_S",
     "DEFAULT_QUALITY",
     "IMAGE_GENERATION_PORT",
+    "SUBJECT_ASPECT_RATIOS",
     "ImageGenerationParams",
     "default_base_url",
     "resolve_dimensions",

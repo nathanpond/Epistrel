@@ -15925,3 +15925,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 
   Live paid checks are batched and run by the orchestrating session within the owner's caps: images $2 (#1012, #1017, #1020), E-06 $5 (#978, #979), #941 $1. Story agents make no hosted or paid call.
   **Issue:** M12
+- **Decision (#998, Discretion):** the two tests run through `run_suites` on the stub engine (Postgres integration), with `lib.delete_story` wrapped the way `Tracker.wrap` does. The wrapper fails only the first deletion of the case's own story, so a scratch story an earlier test left (deleted by the opening sweep) passes through and the closing sweep deletes what the failed cleanup left.
+  **Why:** a wrapper that failed the first call of any kind would fail the opening sweep when the session database holds leftovers, which is flaky.
+  **Issue:** #998
+- **Decision (#998, Discretion):** "cleanup ran in the `finally`" is observed by spying on `runner.sweep`: the closing sweep must find 0 stories. Every deletion goes through `lib.delete_story`, so the sweep is the only way to tell the case's cleanup from the run's backstop.
+  **Why:** the run sweeps scratch stories before and after, so "the stories are gone at the end" alone would pass with no case cleanup at all.
+  **Issue:** #998
+- **Decision (#998, Discretion, deviation from AC3):** the stopped-case test cannot fail against `mut953b`, and is shown red against a second mutant (`mut998skip`: `Scratch.delete_all` a no-op) instead. Today's precedence is pinned in a third test: a stopped case whose deletion also fails raises `Stopped`, and no report carries the cleanup error. This is a known gap, and there is no runtime change.
+  **Why:** `mut953b` only swallows `delete_all`'s exceptions. On the `Stopped` path, `_play_case` already discards the cleanup error (the `Stopped` propagates and no report is made), so that mutant is unobservable there by construction. Red-first: `mut953b` makes 1 of the 5 tests in the file fail (`test_a_failed_scratch_deletion_is_reported_as_cleanup_failed`: `assert [] == ['case c-0001...RuntimeError']`). `mut998skip` makes 3 fail (the stopped case: `assert 2 == 0`). Without a mutant, all 5 pass.
+  **Issue:** #998

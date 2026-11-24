@@ -27,6 +27,7 @@ from epistrel.orchestrator.jobs.worker import (
     register_recovery_hook,
     unregister_recovery_hook,
 )
+from epistrel.orchestrator.models.stub import StubLatch
 from epistrel.orchestrator.policies.schemas import PolicyFields
 from tests import genesis_support as g
 from tests import scenario_support as scenarios
@@ -46,7 +47,16 @@ from tests.rating_change_support import (
     story,
     story_counts,
 )
-from tests.respond_support import FIRST, PLAYER, body, everything_sent, new_story, played, respond
+from tests.respond_support import (
+    FIRST,
+    PLAYER,
+    WITHIN_S,
+    body,
+    everything_sent,
+    new_story,
+    played,
+    respond,
+)
 from tests.story_support import READ, WRITE
 
 pytestmark = pytest.mark.integration
@@ -87,6 +97,25 @@ def _guardrail_calls(s: Scratch) -> int:
     return sum(1 for call in s.lib.models.stub.calls if call.purpose == "guardrail_check")
 
 
+async def _entered(latch: StubLatch, work: asyncio.Future[Any]) -> None:
+    """Wait until ``work`` reaches the call ``latch`` holds (#951). Nothing here bounds how long
+    the work before that call may take on a loaded runner: the wait ends on the latch's event, or
+    fails at once if ``work`` ended without reaching the call. ``WITHIN_S`` only stops a hang."""
+    entered = asyncio.ensure_future(latch.entered.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {entered, work}, timeout=WITHIN_S, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        entered.cancel()
+    if latch.entered.is_set():
+        return
+    if work in done:
+        ended = work.result()
+        pytest.fail(f"ended before its held call: {getattr(ended, 'text', ended)!r}")
+    pytest.fail(f"not within {WITHIN_S} s: the held call was not reached")
+
+
 @pytest.mark.part("M3", "FR-RATE-6,7")
 async def test_i_22__relax_tighten(pg_url: str) -> None:
     """Relaxing Teen to Explicit applies with no content check (no guardrail model call),
@@ -110,7 +139,7 @@ async def test_i_22__relax_tighten(pg_url: str) -> None:
         stub.script("generation", ["A quiet evening falls."])
         latch = stub.hold("generation")
         turn = asyncio.ensure_future(respond(s.client, relaxed, body(ids[PLAYER])))
-        await asyncio.wait_for(latch.entered.wait(), 5)
+        await _entered(latch, turn)
         before = _guardrail_calls(s)
         response = await change_rating(s.client, relaxed, EXPLICIT_ID)
         assert response.status_code == 200, response.text
@@ -251,7 +280,7 @@ async def test_equal_guardrails_relax_and_a_retired_target_is_refused(pg_url: st
         stub.script("generation", ["A quiet evening."])
         latch = stub.hold("generation")
         turn = asyncio.ensure_future(respond(s.client, story_id, body(ids[PLAYER])))
-        await asyncio.wait_for(latch.entered.wait(), 5)
+        await _entered(latch, turn)
         response = await change_rating(s.client, story_id, EVERYONE_ID)
         assert response.status_code == 200, response.text
         latch.release()
@@ -350,7 +379,7 @@ async def test_the_check_waits_for_a_turn_in_flight(pg_url: str) -> None:
         stub.script("generation", ["A dragon circles."])
         latch = stub.hold("generation")
         turn = asyncio.ensure_future(respond(s.client, story_id, body(ids[PLAYER])))
-        await asyncio.wait_for(latch.entered.wait(), 5)
+        await _entered(latch, turn)
         started = await change_rating(s.client, story_id, TEEN_ID)
         assert started.status_code == 202, started.text
         job_id = started.json()["job_id"]
@@ -379,7 +408,7 @@ async def test_queued_turns_fail_when_they_would_start(pg_url: str) -> None:
         stub.script("generation", ["First.", "Second."])
         latch = stub.hold("generation")
         first = asyncio.ensure_future(respond(s.client, story_id, body(ids[PLAYER])))
-        await asyncio.wait_for(latch.entered.wait(), 5)
+        await _entered(latch, first)
         second = await respond(
             s.client, story_id, body(ids[PLAYER], "Me too"), {"Prefer": "respond-async"}
         )
@@ -528,7 +557,7 @@ async def test_a_story_deleted_mid_check_keeps_no_verdicts(pg_url: str) -> None:
         assert started.status_code == 202, started.text
         job_id = started.json()["job_id"]
         running = asyncio.ensure_future(run_jobs(s.db, runs=1))
-        await asyncio.wait_for(latch.entered.wait(), 10)
+        await _entered(latch, running)
         deleted = await s.client.delete(f"/stories/{story_id}", headers=WRITE)
         assert deleted.status_code == 204, deleted.text
         latch.release()

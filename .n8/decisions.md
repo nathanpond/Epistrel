@@ -16003,3 +16003,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#1005):** red-first, with `q04_asymmetry.py:279` changed to `is_grounded = injected or False`: `test_q_04__m5_a_grounded_leak_counts` fails (`E assert False is True` on `detail.grounded`; `1 failed, 1 passed`). The absent-fact test passes either way, as expected.
   **Why:** AC3.
   **Issue:** #1005
+- **Decision (#951):** the cause is a wall-clock bound too tight for a loaded runner, not a lock. The failed CI log (run 43945519961 attempt 1, job 133574012910) puts the `TimeoutError` at `tests/integration/test_rating_change.py:382`, `asyncio.wait_for(latch.entered.wait(), 5)`: the wait for the first turn to reach its held `generation` call. Nothing holds the turn slot then; the turn's work before generation took over 5 s on that runner (locally the whole test takes about 4.3 s). `turn_gate.py` is not involved, so the fix is test-only.
+  **Why:** AC1, and the planner's discretion (test-only unless the cause is a real race).
+  **Issue:** #951
+- **Decision (#951, Discretion):** a local helper `_entered(latch, work)` waits on the latch's `entered` event or the work's own task ending, whichever comes first, and fails at once with the response if the work ended without reaching the call. `respond_support.WITHIN_S` (30 s, the #430/#432 bound) only stops a hang. It replaces the five same-pattern waits in the file (the four held `generation` calls and the held `guardrail_check` of `test_a_story_deleted_mid_check_keeps_no_verdicts`). No src hook was added. The later `drainer.idle()` / `running` waits already wait on the tasks themselves and keep their 30 s backstop.
+  **Why:** the wait synchronises on an event, not on runner speed, and a turn that fails early is reported straight away rather than as a timeout.
+  **Issue:** #951
+- **Decision (#951):** mutation, with `pause.refuse` made a no-op (queued turns start): `test_queued_turns_fail_when_they_would_start` fails with `E AssertionError: assert None == 'story_paused'` (`1 failed`). Reverted. On the clean tree it passed 20 of 20 runs in a shell loop (4.15–4.57 s each), and the file passes (`24 passed`).
+  **Why:** AC2 and AC3 (the local half; the CI half is the PR's run).
+  **Issue:** #951

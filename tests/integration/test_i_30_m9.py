@@ -1143,6 +1143,10 @@ async def test_i_30__m9_references_refused(image_settings: Settings, engine: Asy
             ("body.reference_image_ids.2", "reference_duplicate"),
             ("body.reference_image_ids.3", "reference_age_unknown"),
         ]
+        # The ageless row is not a valid MediaAsset: a media listing in a later test on the
+        # same database would fail to read it.
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM media_assets WHERE id = :a"), {"a": ageless})
         consumer = await app.request(body(prompt=SCENE_PROMPT, reference_image_ids=[story_image]))
         assert reference_errors(consumer)[0][1] == "reference_not_subject_image"
         for ids, kind in (([], "too_short"), ([base] * 5, "too_long")):

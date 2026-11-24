@@ -17,13 +17,15 @@ STRICT = {"type": "json_schema", "json_schema": {"name": "V", "strict": True, "s
 
 
 def test_modes_follow_the_endpoint() -> None:
-    """On api.anthropic.com every schema with a strict wire form is strict and
-    ``directive_parse`` (``DirectiveParseResult``) is parse-validate-retry; on any other
-    endpoint every purpose asks for ``json_schema``."""
+    """On api.anthropic.com every schema with a strict wire form is strict, and
+    ``directive_parse`` (``DirectiveParseResult``) and ``rewrite_parse`` (``RewriteParseResult``,
+    over the union limit; #941, ADR-213) are parse-validate-retry; on any other endpoint every
+    purpose asks for ``json_schema``."""
     hosted = structured_modes(ANTHROPIC)
-    assert hosted["directive_parse"] == "parse_validate_retry"
+    fallback = {"directive_parse", "rewrite_parse"}
+    assert {p for p in fallback if hosted[p] == "parse_validate_retry"} == fallback
     assert hosted["entailment"] == "json_schema_strict"
-    assert {m for p, m in hosted.items() if p != "directive_parse"} == {"json_schema_strict"}
+    assert {m for p, m in hosted.items() if p not in fallback} == {"json_schema_strict"}
     assert set(structured_modes("http://localhost:1235/v1").values()) == {"json_schema"}
 
 

@@ -27,6 +27,8 @@ judge (``CaseContext.judge``) refuses any story that is not one of the case's ow
 deleting a story attaches and detaches its partitions, which takes table-level locks that a
 concurrent case's commit would wait behind (#953, from #929's repro), so the run creates and
 deletes scratch stories one at a time (``scratch_ddl_lock``); turns and commits stay concurrent.
+A case's deletion refused ``StoryBusy`` (#947: a lock wait past the timeout) is retried under the
+case's ``BusyRetry`` outside that lock (``Scratch._delete``), so it is no ``cleanup failed``.
 
 **Isolation.** Before and after the run the runner counts, in every table with a ``story_id``
 column, the rows of every story, and the stories themselves; once its scratch stories are gone
@@ -125,7 +127,7 @@ import epistrel.evals.judging as judges
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
-from epistrel.core.errors import GuardrailViolation
+from epistrel.core.errors import GuardrailViolation, StoryNotFound
 from epistrel.core.memory.story_partitions import count_rows, not_a_partition
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
@@ -134,7 +136,7 @@ from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.busy import CURRENT as BUSY
-from epistrel.evals.busy import BusyRetry, Stopped, busy_engine
+from epistrel.evals.busy import BusyEngine, BusyRetry, Stopped, busy_engine, retrying
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.journal import Journal, case_digest
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
@@ -542,9 +544,34 @@ class Scratch:
     async def delete_all(self) -> None:
         while self.ids:
             story_id = self.ids.pop()
+            try:
+                await self._delete(story_id)
+            except BaseException:
+                self.ids.append(story_id)  # #947: kept for the run's closing sweep
+                raise
+
+    async def _delete(self, story_id: str) -> None:
+        """#947: one scratch deletion, retried on ``StoryBusy`` under the case's ``BusyRetry``
+        (#929) outside ``scratch_ddl_lock``: each attempt holds the lock for its own call only,
+        through the unwrapped engine (a retry inside the lock would hold it through the
+        backoff). A retry that finds the story gone counts as deleted (the refused attempt's
+        deletion landed after all)."""
+        engine = self.engine
+        direct = engine.unwrapped if isinstance(engine, BusyEngine) else engine
+        attempts = 0
+
+        async def once() -> None:
+            nonlocal attempts
+            attempts += 1
             async with scratch_ddl_lock():
-                await self.engine.delete_story(_ctx(), story_id)
-                await drop_partition(self.engine, story_id)  # #970: no worker drops it
+                try:
+                    await direct.delete_story(_ctx(), story_id)
+                except StoryNotFound:
+                    if attempts == 1:
+                        raise
+                await drop_partition(engine, story_id)  # #970: no worker drops it
+
+        await retrying(once)
 
 
 @dataclass

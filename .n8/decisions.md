@@ -16012,3 +16012,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#951):** mutation, with `pause.refuse` made a no-op (queued turns start): `test_queued_turns_fail_when_they_would_start` fails with `E AssertionError: assert None == 'story_paused'` (`1 failed`). Reverted. On the clean tree it passed 20 of 20 runs in a shell loop (4.15–4.57 s each), and the file passes (`24 passed`).
   **Why:** AC2 and AC3 (the local half; the CI half is the PR's run).
   **Issue:** #951
+- **Decision (#1018, Discretion):** the `evals` job's `timeout-minutes` goes from 45 to 60, and its comment keeps the #732 line and adds the v0.4.0 durations (29/44/40 min), v0.4.1's cancellation at 45 in release run 45229678693 attempt 1 (then 44 on the rerun) and why 60. No `uses:` line changed, so no action version was resolved. The GitHub Actions grep gate (both lines) prints nothing. No other job, no `release.yml` change, no ADR.
+  **Why:** a cancelled job fails `gate` and blocks a release's publish; 60 matches `evals-zero-leak`.
+  **Issue:** #1018

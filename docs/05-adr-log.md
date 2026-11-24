@@ -28,14 +28,14 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
-| FR-REPAIR | §10 | 207, 210 |
+| FR-REPAIR | §10 | 207, 210, 217 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201, 212 |
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
 | FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
-| FR-MULTI | §16 | 043, 054, 126, 216 |
+| FR-MULTI | §16 | 043, 054, 126, 216, 217 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
@@ -281,6 +281,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Amended | 215 |
 | 215 | A subject image may take earlier subject images of its subject as reference images | Current | — |
 | 216 | A line copied from another speaker in the same turn is regenerated once, else dropped | Current | — |
+| 217 | Only characters at the turn actor's place react, and a name alone is not a line | Current | — |
 
 ---
 
@@ -2569,6 +2570,27 @@ Tuning and its exit certification come after every milestone that may change a p
 - Under a character viewpoint, a dropped copy's per-beat entry shows only when that viewpoint sees another beat of the same speaker (ADR-210's filter); the omniscient history read always shows it.
 - docs/03 FR-MULTI-8 and FR-MULTI-11 gain *[amended by ADR-216]* markers; I-12's M12 part gates them.
 - Tests: `tests/test_copied_lines.py` (normalization, the 5-word floor, the sentence split, what is compared, the claim, the one regeneration and the drop) and `tests/integration/test_i_12.py` (`test_i_12__m12_copied_lines`, `_complements` and `_simultaneous`).
+
+---
+
+### ADR-217 — Only characters at the turn actor's place react, and a name alone is not a line
+**Status:** Accepted. Amends FR-MULTI-9 (who may be narrated reacting) and FR-REPAIR-2 (what a narrowing must keep); refines ADR-043 (2), reactive narration's bounds.
+**Context:** #1019, the other half of #1013's real-use report (a three-character `respond` turn under Full, 2026-11-23): two beats were attributed to a character of the other tribe, at another place: "Nathan Pond." and "Carlos Rivera changes the subject.". A character render cannot emit another character's beat; the one way in is a narrated reaction (FR-MULTI-9), and `roles.resolve` took the **whole cast** as present whenever the player's scene listed no one. The reproduction (`test_s_reactive__off_scene`) confirmed that path: with the player unplaced while the others were placed, and perception off (no reactor perception check), a reaction declared for the off-scene character committed. The reaction was then flagged and went through the ladder: narrowing left only the player's name, and a later beat got the fallback line.
+**Decision:** The owner's decisions at the triage of #1019 (2026-11-23, round three), applied by #1019 (no new FR ID; FR-MULTI-9 and FR-REPAIR-2 amended).
+- **The present set** (`core.epistemic.scene.present_for`, read by `present_at_turn` into `TurnRead.present_character_ids`, fixed at the turn's start): the characters placed at the **turn actor's** place, its placement row else a `present_at` fact on it, read through `KeyedLookup.scene` with the actor as its anchor (`scene:<turn>:<actor entity>`). The whole cast counts as present only in a story where no character has a placement (`core.projections.structured.story_placed`: a placement row or a `present_at` fact, the player's and a benched character's included). An actor with no place in a placed story has no one else present. A sequestered benched character is never present; a `present`-benched one is. #979's toward-another-character permission reuses the helper.
+- **Reactions.** A reaction (declared on the render's `reactions` channel, or found in its `do` prose, whose detection now covers the whole cast) of a character outside the present set is dropped `not_present` and staged as `render_rejected` (constraint `{"kind": "reaction", "reason": "not_present"}`, attempt 0, rung 1, at the narrating primary's beat); it never reaches the repair ladder and adds no `degradation_details` entry. A prose sentence is cut from the primary's beat (the beat is dropped if that empties it). A present character outside `render_character_ids` keeps reacting under its role (FR-MULTI-9, FR-MULTI-10).
+- **Named renderers.** A character the consumer names in `render_character_ids` who is not present still renders and is listed in `turn_report.multi.not_present`, for a single primary too; it counts as present only as a renderer, never as a trigger for others' reactions. The response's `roles` shows it as before (no new source).
+- **The response** gains `present_character_ids`: the present set, sorted, without the player's character and the actor, a `present`-benched character included; under every structured mode, absent for Lite, not in history.
+- **A name is not a line** (`core.repair.rungs.name_only`). A narrowing (rung 1) is accepted only when what remains has at least one word that is not part of a cast member's name or alias (case-folded `[\w']+` words; a possessive counts as the name; a digit is substantive), a title (Mr, Mrs, Ms, Miss, Dr, Sir) or punctuation: "Nathan Pond." fails, "Okay, Nathan." passes. A failing narrowing falls through to the next rung, recorded as `render_rejected` with the constraint `{"kind": "narrowing", "reason": "name_only"}`. A substitution, a regeneration's `say`, `do` or narration candidate and the State deterministic rung's narrowing are held to the same check. An original beat that nothing flagged is left alone.
+**Alternatives considered:**
+- Keeping the player's scene as the anchor: a non-player actor's turn would then judge reactions at the wrong place, and an unplaced player would still let the whole cast in.
+- Leaving the whole-cast fallback for an unplaced actor: that is the reported path.
+- A minimum word count for a narrowing: "Okay, Nathan." is a fine line, and a long list of names is still none.
+**Consequences:**
+- `## Others present` keeps listing the player's scene's reactive characters, so no prompt string changes; `MODEL_CALL_REVISION` stays 6 (the `name_only` constraint is never sent to a model).
+- `docs/openapi.json` gains `present_character_ids` on the respond and regenerate responses; `turn_report.roles.dropped` keys are unchanged in shape.
+- docs/03 FR-MULTI-9 and FR-REPAIR-2 gain *[amended by ADR-217]* markers; S-REACTIVE's M12 part gates FR-MULTI-9 and I-12's M12 part FR-REPAIR-2.
+- Tests: `tests/scenario/test_s_reactive.py::test_s_reactive__off_scene`, `tests/integration/test_i_12.py::test_i_12__m12_name_only` and the units in `tests/test_off_scene.py`.
 
 ---
 

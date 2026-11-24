@@ -490,6 +490,10 @@ class RespondResult:
     reduced_characters: list[str] = field(default_factory=list)
     """#176 (NFR-PERF-7 (6)): the named primaries budget planning turned into reactive
     narration."""
+    present_character_ids: list[str] | None = None
+    """#1019 (FR-MULTI-9): a structured turn's present set (the characters at the turn actor's
+    place as it started; the whole cast in a story with no placements), sorted, without the
+    player's character and the actor; ``None`` for a Lite turn."""
     player_view: str | None = None
     """#177 (FR-RESP-13): the player view the result was produced under (``character`` or
     ``story``); ``None`` only in a result stored before #177."""

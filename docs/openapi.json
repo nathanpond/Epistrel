@@ -37504,6 +37504,20 @@
             ],
             "title": "Player View"
           },
+          "present_character_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Present Character Ids"
+          },
           "previous_variant": {
             "title": "Previous Variant",
             "type": "integer"
@@ -38687,6 +38701,20 @@
               }
             ],
             "title": "Player View"
+          },
+          "present_character_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Present Character Ids"
           },
           "profile": {
             "anyOf": [

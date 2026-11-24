@@ -20,7 +20,8 @@ verdict, the checked intent and the provenance, and its record on a repair.
 narrator's and the first primary's, three primaries, two flagged beats in one render, a call
 budget with room for one regeneration), the drop rule (a fallback line beside its speaker's real
 line, one fallback line per speaker, a lone failing beat, a narration) and the per-beat cause in
-``respond`` and the history read.
+``respond`` and the history read. ``test_i_12__m12_name_only`` (M12, #1019, FR-REPAIR-2): a
+narrowing that leaves only a name is not accepted at rung 1.
 """
 
 from __future__ import annotations
@@ -1147,3 +1148,46 @@ async def test_i_12__m12_copied_lines_simultaneous(
         report = await turn_report(engine, story)
         assert report["multi"]["mode"] == "simultaneous"
         assert report["multi"]["copied"] == 1
+
+
+NAME_ONLY_SEVENTY = "Wren. I am 70 years old."
+"""#1019: a say whose second sentence (canon: 64) narrowing drops, leaving only a name."""
+WORDED_SEVENTY = "Okay, Wren. I am 70 years old."
+
+
+@pytest.mark.part("M12", "FR-REPAIR-2")
+async def test_i_12__m12_name_only(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1019 (FR-REPAIR-2): a narrowing that leaves only a name is not a line. Ada's "Wren. I
+    am 70 years old." (canon: 64) narrowed to "Wren." is not accepted at rung 1 (before #1019
+    it committed): the next rung runs (substitution: "Wren. I am 64 years old.") and "Wren." is
+    recorded as a rejected render with the ``name_only`` constraint. Complement: "Okay, Wren. I
+    am 70 years old." is accepted at rung 1 as "Okay, Wren."; neither regenerates."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for said, kept in (
+            (NAME_ONLY_SEVENTY, "Wren. I am 64 years old."),
+            (WORDED_SEVENTY, "Okay, Wren."),
+        ):
+            story, ids = await _cast(client, engine, "Ada")
+            stub.reset()
+            ms.renders_for(stub, "Ada", ms.render(_old(text_=said)))
+            stub.script("regeneration", [_regenerated(SAY_REGENERATED)])
+            played = (
+                await respond(
+                    client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"]])
+                )
+            ).json()
+            texts = _texts(played)
+            assert kept in texts, texts
+            assert "Wren." not in texts
+            rejected = [e.payload for e in await _audit(engine, story, "render_rejected")]
+            name_only = [
+                r for r in rejected if {"kind": "narrowing", "reason": "name_only"} in r.constraints
+            ]
+            if said == NAME_ONLY_SEVENTY:
+                assert [(r.rung, r.text) for r in name_only] == [(1, "Wren.")]
+            else:
+                assert name_only == []
+            assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 0

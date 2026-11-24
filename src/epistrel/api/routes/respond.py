@@ -293,6 +293,12 @@ class RespondResponse(MutationResponse):
     reduced_characters: list[str] = Field(default_factory=list, exclude_if=lambda r: not r)
     """The named primaries budget planning turned into reactive narration (#176); absent when
     none."""
+    present_character_ids: list[str] | None = Field(default=None, exclude_if=lambda p: p is None)
+    """A structured turn's present set (#1019, FR-MULTI-9), sorted: the characters placed at
+    the turn actor's place as the turn started (the whole cast in a story where no character
+    has a placement), without the player's character and the actor, a ``present``-benched
+    character included. Reactions are narrated only for these; a named primary outside it still
+    renders. Absent for a Lite turn."""
     reconcile: list[ReconcileBody] = Field(default_factory=list, exclude_if=lambda r: not r)
     """A structured turn's reconciled concurrent commitments (#177, FR-MULTI-3); absent when
     nothing contradicted."""
@@ -373,6 +379,9 @@ class RespondResponse(MutationResponse):
             escalation_deferred=[EscalationDeferredBody(**e) for e in result.escalation_deferred],
             deferred_characters=[DeferredCharacterBody(**d) for d in result.deferred_characters],
             reduced_characters=list(result.reduced_characters),
+            present_character_ids=None
+            if result.present_character_ids is None
+            else list(result.present_character_ids),
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
             state_effects=[StateEffectModel(**e) for e in result.state_effects],
             settled_effects=[StateEffectModel(**e) for e in result.settled_effects],

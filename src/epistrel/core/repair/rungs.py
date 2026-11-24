@@ -12,6 +12,13 @@ sentence is left and every violation was located; a partly covered claim whose r
 contradicted is narrowed the same way (its sentence goes, the canon that covered the rest
 stands).
 
+**A name is not a line** (#1019; ``name_only``). A narrowing is accepted only when what is
+left has at least one word that is not part of a cast member's name or alias, a title (Mr, Mrs,
+Ms, Miss, Dr, Sir, with or without a period) or punctuation: "Nathan Pond." is no line, "Okay,
+Nathan." is. Words are ``[\\w']+`` runs, case-folded; a possessive ("Nathan's") counts as the
+name; a word with a digit is always substantive. The Orchestrator holds a substitution, a
+regeneration's candidate and a State finding's narrowing to the same check.
+
 **Rung 2, substitution** (``substitute``). The claim's object surface is replaced, as a whole
 word and in every place it occurs, by the canon value's surface (an entity's canonical name or
 a literal's text). The Orchestrator applies it only to a functional predicate whose verdict
@@ -35,7 +42,7 @@ Pure: no I/O, no story text in any log.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
@@ -117,6 +124,44 @@ def locate(text: str, surfaces: Sequence[str | None]) -> tuple[int, int] | None:
     return None
 
 
+NAME_ONLY: dict[str, Any] = {"kind": "narrowing", "reason": "name_only"}
+"""#1019: the ``render_rejected`` constraint of a repair text that is only a name."""
+
+TITLES = frozenset({"mr", "mrs", "ms", "miss", "dr", "sir"})
+"""#1019: the titles a name-only text may hold (case-folded, without the period)."""
+
+_WORDS = re.compile(r"[\w']+")
+
+
+def _tokens(text: str) -> list[str]:
+    return _WORDS.findall(text.replace("\u2019", "'").casefold())
+
+
+def _bare(word: str) -> str:
+    """``word`` without a possessive ending (``nathan's``, ``james'``) or stray quotes."""
+    word = word.strip("'")
+    return word[:-2] if word.endswith("'s") else word
+
+
+def name_words(names: Iterable[str]) -> frozenset[str]:
+    """#1019: the case-folded words of ``names`` (the cast's names and aliases)."""
+    return frozenset(w for name in names for t in _tokens(name) if (w := _bare(t)))
+
+
+def name_only(text: str, words: frozenset[str]) -> bool:
+    """#1019: whether ``text`` holds nothing but ``words`` (the cast's name words), titles and
+    punctuation (see the module docstring); never with no ``words`` (the check is off)."""
+    if not words:
+        return False
+    for token in _tokens(text):
+        word = _bare(token)
+        if not word:
+            continue
+        if any(ch.isdigit() for ch in word) or (word not in words and word not in TITLES):
+            return False
+    return True
+
+
 def narrow(text: str, spans: Sequence[tuple[int, int]]) -> str | None:
     """Rung 1: ``text`` without the sentences any of ``spans`` touches, or ``None`` when that
     would leave nothing, or change nothing."""
@@ -155,15 +200,19 @@ def classify(
 __all__ = [
     "DEFAULT_CASCADE_THRESHOLD",
     "FALLBACK",
+    "NAME_ONLY",
     "NARROWING",
     "REGENERATION",
     "RUNGS",
     "SUBSTITUTION",
+    "TITLES",
     "Constraint",
     "ConstraintKind",
     "RepairClass",
     "classify",
     "locate",
+    "name_only",
+    "name_words",
     "narrow",
     "sentences",
     "substitute",

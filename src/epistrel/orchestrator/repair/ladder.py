@@ -21,7 +21,15 @@ The neighborhood's size (its facts, memories excluded) classifies the repair.
 ``core.repair.rungs``):
 
 1. *narrowing*: the sentences that carry the violations are dropped (a ``say``, ``do`` or
-   narration beat that keeps at least one sentence), model-free;
+   narration beat that keeps at least one sentence), model-free. #1019 (FR-REPAIR-2): **a
+   name is not a line**: the narrowed text is accepted only when it keeps at least one word
+   that is not part of a cast member's name or alias, a title or punctuation
+   (``core.repair.rungs.name_only``; "Nathan Pond." fails, "Okay, Nathan." passes), else the
+   next rung runs. The ladder's ``name_words`` are the whole cast's (the check is off when
+   empty); a substitution, a regeneration's ``say``, ``do`` or narration candidate and the State
+   deterministic rung's narrowing are held to it too, and a failing text is recorded as a
+   ``RejectedRender`` with the constraint ``{"kind": "narrowing", "reason": "name_only"}``. An
+   original beat that is only a name, and that nothing flagged, is left alone;
 2. *substitution*: a functional predicate whose verdict cites exactly one canon fact has the
    claim's object replaced by the canon value (its canonical name or literal), model-free;
 3. *regeneration*: the ``regeneration`` purpose rewrites the beat in place (the generation
@@ -137,6 +145,7 @@ from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.repair.rungs import (
     FALLBACK,
+    NAME_ONLY,
     NARROWING,
     REGENERATION,
     SUBSTITUTION,
@@ -144,6 +153,7 @@ from epistrel.core.repair.rungs import (
     RepairClass,
     classify,
     locate,
+    name_only,
     narrow,
     substitute,
 )
@@ -366,6 +376,8 @@ class RejectedRender:
     verdicts: tuple[dict[str, Any], ...] = ()
     detected_claims: tuple[dict[str, Any], ...] = ()
     prompt_hash: str | None = None
+    reasons: tuple[dict[str, Any], ...] = ()
+    """#1019: untyped constraint payloads after the typed ones (``NAME_ONLY``)."""
 
     def event(self) -> RenderRejected:
         return RenderRejected(
@@ -373,7 +385,7 @@ class RejectedRender:
             attempt=self.attempt,
             rung=self.rung,
             text=self.text,
-            constraints=tuple(c.as_payload() for c in self.constraints),
+            constraints=(*(c.as_payload() for c in self.constraints), *self.reasons),
             verdicts=self.verdicts,
             detected_claims=self.detected_claims,
             prompt_hash=self.prompt_hash,
@@ -719,6 +731,9 @@ class RepairLadder:
     ``regenerated`` and ``regenerations`` say what it ran, for ``turn_report.repair`` and
     ``epistrel_repair_renders_total``."""
 
+    name_words: frozenset[str] = frozenset()
+    """#1019: the case-folded words of the whole cast's names and aliases (``name_only``)."""
+
     def __init__(
         self,
         db: AsyncEngine,
@@ -738,6 +753,7 @@ class RepairLadder:
         check_calls: int,
         render_of: RenderOf | None = None,
         cast_names: Mapping[str, str] | None = None,
+        name_words: frozenset[str] | None = None,
     ) -> None:
         self.db = db
         self.models = models
@@ -756,6 +772,7 @@ class RepairLadder:
         self.render_of: RenderOf = render_of or (lambda _: None)
         self.cast_names: Mapping[str, str] = cast_names or {}
         """#1013: the render's cast names, for a copied line's ``no_copy`` constraint."""
+        self.name_words = name_words or frozenset()
         self.used: dict[Hashable, int] = {}
         """#1014: the regenerations each render has used."""
         self.renders: list[Hashable] = []
@@ -1003,6 +1020,19 @@ class RepairLadder:
                     )
                 )
 
+            if candidate.kind in DETERMINISTIC_KINDS and name_only(candidate.text, self.name_words):
+                # #1019: a name is not a line.
+                rejected.append(
+                    RejectedRender(
+                        beat=beat.beat,
+                        attempt=number,
+                        rung=rung,
+                        text=candidate.text,
+                        prompt_hash=hash_,
+                        reasons=(NAME_ONLY,),
+                    )
+                )
+                return None
             if not await self.output_ok(candidate.text):
                 reject()
                 return None
@@ -1094,7 +1124,9 @@ class RepairLadder:
             degradation[:] = [(REPAIR_DROPPED, COPIED_LINE)]
             if stating and beat.kind in DETERMINISTIC_KINDS:
                 # The State deterministic rung for the effect, built without the copied text.
-                outcome = state_deterministic(replace(beat, text=""), stating)
+                outcome = state_deterministic(
+                    replace(beat, text=""), stating, words=self.name_words
+                )
                 if outcome is not None and outcome.text.strip():
                     return result(FALLBACK, outcome)
             gone = result(FALLBACK, None)
@@ -1106,7 +1138,7 @@ class RepairLadder:
             return result(FALLBACK, None)
         if stating and len(stating) == len(violations):
             # #187: the deterministic rung of a State finding (see the module docstring).
-            settled = state_deterministic(beat, stating)
+            settled = state_deterministic(beat, stating, words=self.name_words)
             if settled is not None:
                 return result(FALLBACK, settled)
         line = await self._fallback_line(narrator=beat.narrator or beat.kind == NARRATION)
@@ -1285,26 +1317,29 @@ class RepairLadder:
         return LAST_RESORT.replace(NAME_PLACEHOLDER, self.fallback.name)  # pragma: no cover
 
 
-def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
+def state_deterministic(
+    beat: TurnBeat, findings: Sequence[Finding], *, words: frozenset[str] = frozenset()
+) -> TurnBeat | None:
     """#187: the deterministic rung of a beat whose only violations are State findings: a
     refused effect narrated as refused (every effect dropped: nothing changes); an unresolved or
     undeclared change without its sentence and its effect; ``None`` when nothing of the beat
     would be left (the fallback line then). #190: an unnarrated effect keeps its effect and the
-    beat gains one line built from its reason (``Finding.narration``)."""
+    beat gains one line built from its reason (``Finding.narration``). #1019: a narrowing that
+    leaves only a name (``words``, ``core.repair.rungs.name_only``) leaves nothing."""
     if any(f.tag == TIME_STOP for f in findings):
         # #196 (FR-CLOCK-16): nothing narrated past a due event's stop is committed.
         return None
     outcomes = [f for f in findings if f.tag == EXTERNAL_OUTCOME_UNCONFIRMED]
     if outcomes:
         # #209: the asserted outcome goes; the requested effects stay.
-        found = _outcome_settled(beat, outcomes)
+        found = _outcome_settled(beat, outcomes, words)
         findings = [f for f in findings if f.tag != EXTERNAL_OUTCOME_UNCONFIRMED]
         if found is None or not findings:
             return found
         beat = found
     unnarrated = [f for f in findings if f.tag == STATE_UNNARRATED and f.narration]
     rest = [f for f in findings if f.tag != STATE_UNNARRATED]
-    settled = _state_settled(beat, rest) if rest else beat
+    settled = _state_settled(beat, rest, words) if rest else beat
     if not unnarrated or (settled is not None and settled.attempt):
         return settled  # a refusal drops every effect: nothing is left to narrate
     base = settled
@@ -1319,12 +1354,15 @@ def state_deterministic(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat
     return replace(base, text=text, claims=(), mentions=())
 
 
-def _outcome_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
+def _outcome_settled(
+    beat: TurnBeat, findings: Sequence[Finding], words: frozenset[str] = frozenset()
+) -> TurnBeat | None:
     """#209: ``beat`` without the sentences asserting an unconfirmed external outcome, its
-    effects kept; when nothing else is left, the attempt narrated (``Finding.refusal``)."""
+    effects kept; when nothing else is left (#1019: or only a name), the attempt narrated
+    (``Finding.refusal``)."""
     spans = [f.span for f in findings if f.span is not None]
     text = narrow(beat.text, spans) if spans else None
-    if text is not None:
+    if text is not None and not name_only(text, words):
         return replace(beat, text=text, claims=(), mentions=())
     attempt = next((f.refusal for f in findings if f.refusal), "")
     if not attempt:
@@ -1332,7 +1370,9 @@ def _outcome_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | 
     return replace(beat, text=attempt, claims=(), mentions=(), attempt=True)
 
 
-def _state_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | None:
+def _state_settled(
+    beat: TurnBeat, findings: Sequence[Finding], words: frozenset[str] = frozenset()
+) -> TurnBeat | None:
     refused = [f for f in findings if f.tag in REFUSED_TAGS and f.refusal]
     if refused:
         return replace(
@@ -1349,7 +1389,7 @@ def _state_settled(beat: TurnBeat, findings: Sequence[Finding]) -> TurnBeat | No
     if not spans:
         return replace(beat, claims=(), mentions=(), effects=effects)
     text = narrow(beat.text, spans)
-    if text is None:
+    if text is None or name_only(text, words):
         return None
     gone = {f.state for f in findings if f.span is not None}
     effects = tuple(e for e in effects if e.state not in gone)
@@ -1460,6 +1500,7 @@ __all__ = [
     "DETERMINISTIC_KINDS",
     "DROPPED",
     "DUPLICATE_FALLBACK",
+    "NAME_ONLY",
     "NARRATOR_FALLBACK",
     "NARRATOR_RENDER",
     "REGENERATION_OUTCOMES",

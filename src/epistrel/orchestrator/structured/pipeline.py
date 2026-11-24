@@ -262,6 +262,7 @@ from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.propositions.registry import turn_cache as registry_turn_cache
 from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.repair.rungs import name_words
 from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context, load_index
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
@@ -286,7 +287,7 @@ from epistrel.core.settings_schema import (
 )
 from epistrel.core.states import external as external_values
 from epistrel.core.states.effects import TIME_STOP, UNESTIMATED_SKIP, UNPROMPTED_SKIP
-from epistrel.core.tables import entity_aliases, events, facts, operations, stories
+from epistrel.core.tables import characters, entity_aliases, events, facts, operations, stories
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.operations import REGENERATED_VARIANT
@@ -986,6 +987,16 @@ class TurnRead:
     """#623 (owner decision): the viewpoint the turn is delivered to; a narrated hidden State's
     value is verified at it, so one the viewpoint holds no belief about is repaired, not
     supported (hidden canon a perceived narration states stays #566's reveal)."""
+    placed: bool = False
+    """#1019: whether any character of the story has a placement (a placement row or a
+    ``present_at`` fact); with none, the whole cast is present."""
+    present_character_ids: tuple[str, ...] = ()
+    """#1019 (FR-MULTI-9): the turn's present set, sorted: the characters at the turn actor's
+    place as the turn starts (``core.epistemic.scene.present_at_turn``), fixed for the turn.
+    Roles, ``multi.not_present`` and the response read it; ``present``/``present_ids`` (the
+    scene line and ``## Scene``) keep the player's scene."""
+    name_words: frozenset[str] = frozenset()
+    """#1019: the words of the whole cast's names and aliases (the ladder's ``name_only``)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -1066,6 +1077,26 @@ async def _aliases(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> 
     return [str(r.alias) for r in found]
 
 
+async def _name_words(conn: AsyncConnection, story_id: str) -> frozenset[str]:
+    """#1019: the case-folded words of every cast member's name and its entity's aliases (the
+    player's included), read once per turn (not keyed: no generation reads them)."""
+    names = [
+        str(n)
+        for n in await conn.scalars(
+            select(characters.c.name).where(characters.c.story_id == story_id)
+        )
+    ]
+    names += [
+        str(a)
+        for a in await conn.scalars(
+            select(entity_aliases.c.alias)
+            .join(entities, entities.c.id == entity_aliases.c.entity_id)
+            .where(entities.c.story_id == story_id, entities.c.character_id.is_not(None))
+        )
+    ]
+    return name_words(names)
+
+
 def _addresses(text: str, names: Sequence[str]) -> bool:
     folded = f" {' '.join(text.casefold().split())} "
     return any(f" {n.casefold()} " in folded or f" {n.casefold()}," in folded for n in names)
@@ -1138,6 +1169,10 @@ async def read_turn(
     scene_doings = tuple(b.text for b in everyone if b.kind == "do")
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)
+    # #1019: the present set, anchored on the turn actor's place.
+    placed, present_set = await scene_loader.present_at_turn(
+        conn, story_id, actor.id, head, read_set=read_set
+    )
     before, _ = await _scene(lookup, story_id, head - 2)
     # By name: the scene lists them by id, which is random across runs (#154, NFR-DETERM-1).
     present = tuple(sorted(e.name for e in scene.present)) if scene is not None else ()
@@ -1192,6 +1227,9 @@ async def read_turn(
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
         characters=tuple(current.get(c.id, c) for c in cast_.render),
         steers=tuple(await author_directives.queued_steers(conn, story_id)),
+        placed=placed,
+        present_character_ids=tuple(sorted(present_set)),
+        name_words=await _name_words(conn, story_id),
     )
 
 
@@ -2998,6 +3036,7 @@ async def repair_turn(
                 check_calls=regeneration_cost(policies) - 1,
                 render_of=render_of,
                 cast_names=read.names,
+                name_words=read.name_words,
             )
         result = await ladder.run(beat, violations, budget)
         _merge_repair(checked, result)
@@ -4610,6 +4649,9 @@ async def play(
     """#174: ``turn_report.multi``."""
     roles_state: list[roles_rt.TurnRoles] = []
     """#176: the turn's participation roles and reactive narration (per-character renders)."""
+    present_state: list[tuple[str, ...]] = []
+    """#1019: the response's ``present_character_ids`` (the turn's present set, sorted, without
+    the player's character and the actor)."""
     view: audience_rules.PlayerView = request.player_view or story.settings.player_view
     """#177: the player view the output is produced under (the request's, else the story's)."""
     input_qualifiers: list[perception.Qualifiers] = [perception.Qualifiers()]
@@ -5198,6 +5240,11 @@ async def play(
         )
         timing.assemble_s += time.perf_counter() - reading
         clock.add("plan", time.perf_counter() - reading)
+        present_state[:] = [
+            tuple(
+                c for c in read.present_character_ids if c != read.actor.id and c != read.player_id
+            )
+        ]
         facts = await runtime_facts(conn)
         stamped[:] = [captured.stamp(facts)]
         op.config_revisions = {
@@ -5550,6 +5597,7 @@ async def play(
         if multi.per_character(settings):
             turn_roles = roles_rt.resolve(
                 story.cast,
+                present_ids=read.present_character_ids,
                 present_names=read.present,
                 rendering=[p.id for p in order],
                 actor_id=read.actor.id,
@@ -5831,8 +5879,9 @@ async def play(
                 read_k = (
                     read if primary.id == read.character.id else replace(read, character=primary)
                 )
-                if sequential and read.present and primary.name not in read.present:
-                    # A named primary who is not in the scene renders with nothing perceived.
+                if primary.id not in read.present_character_ids:
+                    # A named primary who is not in the present set still renders (the consumer
+                    # asked); #1019: listed for one primary too.
                     report_multi.not_present.append(primary.id)
                 turn_stage.open_render(primary.id, next_beat)
                 if k > 0:
@@ -7794,6 +7843,9 @@ async def play(
         if multis and multi.per_character(settings):
             # #175: the mode the turn ran in, as requested (one primary included).
             fields["interaction_mode"] = multis[0].mode
+        if present_state:
+            # #1019: who Epistrel took as present (every structured mode).
+            fields["present_character_ids"] = list(present_state[0])
         if roles_state:
             # #176 (FR-MULTI-7,10, NFR-PERF-7 (6)).
             found_roles = roles_state[0]

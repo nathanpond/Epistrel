@@ -955,17 +955,25 @@ class KeyedLookup:
         return found
 
     async def scene(
-        self, story_id: str, *, as_of: int | None = None, viewpoint: str = OMNISCIENT
+        self,
+        story_id: str,
+        *,
+        as_of: int | None = None,
+        viewpoint: str = OMNISCIENT,
+        actor: str | None = None,
     ) -> SceneView:
         """The scene (#137's ``scene_view``) as of turn ``as_of`` for ``viewpoint``, recorded
         as a retrieved row (``scene:<turn>``, versioned by its location and the entities
-        present): a turn's reads of the scene projection go through here (#141)."""
+        present): a turn's reads of the scene projection go through here (#141). #1019:
+        ``actor`` (an entity id) reads the scene at that entity's place (``scene_view``'s
+        ``actor``), recorded as ``scene:<turn>:<actor>`` beside the player's."""
         from epistrel.core.projections.structured import scene_view
 
-        found = await scene_view(self.conn, story_id, as_of=as_of, viewpoint=viewpoint)
+        found = await scene_view(self.conn, story_id, as_of=as_of, viewpoint=viewpoint, actor=actor)
         members = [None if found.location is None else found.location.entity_id]
         members += [e.entity_id for e in found.present]
-        self.retrieved(SCENE_TABLE, str(found.turn), _version_of(found.turn, members))
+        row = str(found.turn) if actor is None else f"{found.turn}:{actor}"
+        self.retrieved(SCENE_TABLE, row, _version_of(found.turn, members))
         return found
 
 

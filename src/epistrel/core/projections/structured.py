@@ -293,21 +293,30 @@ def scene(
     position: Position,
     now: int,
     visible: Callable[[Mapping[str, Any]], bool] = lambda _: True,
+    *,
+    by_presence: bool = False,
 ) -> Scene:
     """The scene as of ``position``: ``actor``'s location (its latest current placement at a
-    location) and the entities placed, or ``present_at``, there, sorted by id."""
+    location) and the entities placed, or ``present_at``, there, sorted by id. #1019:
+    ``by_presence`` takes an actor with no placement at the place of its latest current
+    ``present_at`` row (the turn actor's scene, ``scene_view``'s ``actor``); the stored scene
+    rows never do."""
     current = [r for r in placements if through(r, position) and covers(r, now) and visible(r)]
+    present_rows = [r for r in presences if through(r, position) and covers(r, now) and visible(r)]
     own = _latest(r for r in current if r["entity_id"] == actor and r["location_id"] is not None)
-    if own is None:
+    location: str | None = None if own is None else str(own["location_id"])
+    if location is None and by_presence and actor is not None:
+        held = _latest_presence(r for r in present_rows if r["subject_id"] == actor)
+        location = None if held is None else str(held["object_id"])
+    if location is None:
         return Scene(None, ())
-    location = str(own["location_id"])
     present = {str(r["entity_id"]) for r in current if r["location_id"] == location}
-    present |= {
-        str(r["subject_id"])
-        for r in presences
-        if r["object_id"] == location and through(r, position) and covers(r, now) and visible(r)
-    }
+    present |= {str(r["subject_id"]) for r in present_rows if r["object_id"] == location}
     return Scene(location, tuple(sorted(present)))
+
+
+def _latest_presence(rows: Iterable[Row]) -> Row | None:
+    return _latest(r for r in rows if r["object_id"] is not None)
 
 
 def turn_position(turn: int) -> Position:
@@ -559,6 +568,40 @@ async def _scene_inputs(
         else []
     )
     return places, presences
+
+
+async def story_placed(conn: AsyncConnection, story_id: str) -> bool:
+    """#1019: whether any of the story's characters has ever been placed: a placement row at a
+    location, or a ``scene`` relationship row (``present_at``), of a character's entity, the
+    player's and a benched one's included. A story with none takes its whole cast as present
+    (``core.epistemic.scene.present_for``)."""
+    character_entities = select(entities.c.id).where(
+        entities.c.story_id == story_id, entities.c.character_id.is_not(None)
+    )
+    found = await conn.scalar(
+        select(placement.c.source_fact_id)
+        .where(
+            placement.c.story_id == story_id,
+            placement.c.location_id.is_not(None),
+            placement.c.entity_id.in_(character_entities),
+        )
+        .limit(1)
+    )
+    if found is not None:
+        return True
+    scene_ids = await _scene_predicates(conn, story_id)
+    if not scene_ids:
+        return False
+    found = await conn.scalar(
+        select(relationships.c.source_fact_id)
+        .where(
+            relationships.c.story_id == story_id,
+            relationships.c.predicate_id.in_(sorted(scene_ids)),
+            relationships.c.subject_id.in_(character_entities),
+        )
+        .limit(1)
+    )
+    return found is not None
 
 
 async def _scenes(
@@ -1040,15 +1083,18 @@ async def scene_view(
     *,
     as_of: int | None = None,
     viewpoint: str | None = None,
+    actor: str | None = None,
 ) -> SceneView:
     """The scene as of turn ``as_of`` (default the head) for ``viewpoint`` (default the story's
     default output viewpoint; 422 ``viewpoint_unresolved`` when none resolves). The omniscient
     read answers the stored row; a character's presence is recomputed from the rows its
-    visibility admits. 422 beyond the head."""
+    visibility admits. 422 beyond the head. #1019: ``actor`` (an entity id) anchors the scene
+    on that entity's place instead of the player character's (its placement, else its
+    ``present_at``), always recomputed (the stored rows are the player's)."""
     ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
     variant = await _variant_at(conn, story_id, turn)
     found: Scene | None = None
-    if ctx.viewpoint == OMNISCIENT and variant is not None:
+    if ctx.viewpoint == OMNISCIENT and variant is not None and actor is None:
         stored = (
             await conn.execute(
                 select(scene_state).where(
@@ -1071,10 +1117,11 @@ async def scene_view(
         found = scene(
             places,
             presences,
-            await _actor(conn, story_id),
+            actor if actor is not None else await _actor(conn, story_id),
             turn_position(turn),
             ctx.now,
             _visible(ctx.viewpoint),
+            by_presence=actor is not None,
         )
     present, bench, benched_characters = await _benched_presence(
         conn, story_id, turn, found.present
@@ -1494,5 +1541,6 @@ __all__ = [
     "relationships_views",
     "scene",
     "scene_view",
+    "story_placed",
     "through",
 ]

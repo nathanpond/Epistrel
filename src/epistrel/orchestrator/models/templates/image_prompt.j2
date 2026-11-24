@@ -2,7 +2,8 @@
     generates from, using only what the image's audience perceived. Every section is always
     present ("(none)" when empty); the visual style and the rating's image guidance are fixed
     sections (FR-SCN-11, FR-RATE-4). A story image (#263) adds its location, the beats its
-    audience viewpoint perceived and its framing; a rewrite adds its fixed instruction. -#}
+    audience viewpoint perceived and its framing; a subject image (#1012) adds its fixed
+    framing line; a rewrite adds its fixed instruction. -#}
 {% block system %}
 You write prompts for an image-generation model. Describe only what is listed: the subjects
 as they appear, the scene, and the visual style. Follow the rating's image guidance. State each
@@ -23,6 +24,11 @@ Answer only with a JSON object {"prompt": "..."}.
 
 ## Scene
 {{ scene or "(none)" }}
+{% if kind == "subject" %}
+
+## Framing
+Keep the subject's whole head in frame unless the style asks for a crop.
+{% endif %}
 {% if beats or location or camera %}
 
 ## Location

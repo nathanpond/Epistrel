@@ -17,13 +17,15 @@ STRICT = {"type": "json_schema", "json_schema": {"name": "V", "strict": True, "s
 
 
 def test_modes_follow_the_endpoint() -> None:
-    """On api.anthropic.com every schema with a strict wire form is strict and
-    ``directive_parse`` (``DirectiveParseResult``) is parse-validate-retry; on any other
-    endpoint every purpose asks for ``json_schema``."""
+    """On api.anthropic.com every schema with a strict wire form is strict, and
+    ``directive_parse`` (``DirectiveParseResult``) and ``rewrite_parse`` (``RewriteParseResult``,
+    over the union limit; #941, ADR-213) are parse-validate-retry; on any other endpoint every
+    purpose asks for ``json_schema``."""
     hosted = structured_modes(ANTHROPIC)
-    assert hosted["directive_parse"] == "parse_validate_retry"
+    fallback = {"directive_parse", "rewrite_parse"}
+    assert {p for p in fallback if hosted[p] == "parse_validate_retry"} == fallback
     assert hosted["entailment"] == "json_schema_strict"
-    assert {m for p, m in hosted.items() if p != "directive_parse"} == {"json_schema_strict"}
+    assert {m for p, m in hosted.items() if p not in fallback} == {"json_schema_strict"}
     assert set(structured_modes("http://localhost:1235/v1").values()) == {"json_schema"}
 
 
@@ -60,6 +62,40 @@ def test_the_trace_counts_fallback_requests_without_the_judge(tmp_path: Path) ->
     assert untraced.parse_validate_retry is None
     assert untraced.observed is None
     assert untraced.note == "untraced run (--no-trace)"
+
+
+def test_a_preset_counts_only_the_requests_after_its_baseline(tmp_path: Path) -> None:
+    """#988: certify plays every preset on one trace. The second preset's run conditions count
+    what it sent after its baseline (``CallTrace.counts`` at its start), and a schema it never
+    sent is left out. With no baseline (a single-preset run), the counts are the whole
+    trace's, as before."""
+    sink = CallTrace(model="m", engine_sha="abc", file=TraceFile(tmp_path / "t.calls.jsonl.gz"))
+    body = {"model": "m", "messages": []}
+    strict = {**body, "response_format": STRICT}
+    parse = {"purpose": "directive_parse", "schema": "DirectiveParseResult", "attempt": 1}
+    token = CALL_TRACE.set(sink)
+    try:
+        sink.record(parse, [Exchange(body=body)])
+        sink.record({"purpose": "entailment", "attempt": 1, "schema": "V"}, [Exchange(body=strict)])
+        first = sink.counts()
+        sink.record(parse, [Exchange(body=body)])
+        sink.record(parse, [Exchange(body=body)])
+    finally:
+        CALL_TRACE.reset(token)
+    assert first == {
+        "DirectiveParseResult": {"parse_validate_retry": 1},
+        "V": {"json_schema_strict": 1},
+    }
+    second = run_conditions(ANTHROPIC, sink, baseline=first)
+    assert second.observed == {"DirectiveParseResult": {"parse_validate_retry": 2}}
+    assert second.parse_validate_retry == {"DirectiveParseResult": 2}
+    whole = run_conditions(ANTHROPIC, sink)
+    assert whole == run_conditions(ANTHROPIC, sink, baseline={})
+    assert whole.observed == {
+        "DirectiveParseResult": {"parse_validate_retry": 3},
+        "V": {"json_schema_strict": 1},
+    }
+    assert sink.counts() is not sink.structured
 
 
 def _report(conditions: RunConditions | None) -> Report:

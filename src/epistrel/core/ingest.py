@@ -11,7 +11,9 @@ story. Three kinds are recorded:
   (``core.states.api``; ``state_unpermitted`` included).
 
 The first two are narrative turns: each event is its own ``turn`` operation (``origin =
-ingested``, provenance ``consumer``, no viewpoint) at the next turn index. A ``state_change`` is
+ingested``, provenance ``consumer``, no viewpoint) at the next turn index. Each writes the
+memories of every character who perceives it in its commit, with no model call (#958,
+FR-MEM-1: ``core.memory.records.write_message``). A ``state_change`` is
 an ``inter_turn`` slot operation (source ``consumer``) in the next slot after the last turn
 written before it in the batch, or after the story's last completed turn when none precedes it:
 batch order is position order. Each bumps the timeline revision (FR-CONC-1), and none advances
@@ -111,6 +113,7 @@ from epistrel.core.events.types import (
     StateSet,
 )
 from epistrel.core.ids import ULID_PATTERN, new_ulid
+from epistrel.core.memory import records
 from epistrel.core.states import api as state_api
 from epistrel.core.states.model import REASON_MAX, Violation
 from epistrel.core.tables import client_events, events, stories
@@ -502,7 +505,9 @@ def stage_event(op: Operation, event: IngestEvent) -> None:
             character_id=event.actor_character_id,
             beat=INPUT_BEAT,
         )
+        _stage_memories(op, event)
         return
+    _stage_memories(op, event)
     op.append(
         "message_rendered",
         MessageRendered(
@@ -517,6 +522,25 @@ def stage_event(op: Operation, event: IngestEvent) -> None:
         character_id=None,
         beat=INPUT_BEAT,
     )
+
+
+def _stage_memories(op: Operation, event: IngestEvent) -> None:
+    """#958 (FR-MEM-1): the message's memories, a commit step of its turn: every perceiver of
+    the ``player_turn``'s ``say``/``do`` or the ``narration`` remembers it, with no model call
+    (``core.memory.records.write_message``)."""
+
+    async def write(conn: AsyncConnection) -> None:
+        await records.write_message(
+            conn,
+            op,
+            actor=event.actor_character_id,
+            say=event.say if event.kind == PLAYER_TURN else None,
+            do=event.do if event.kind == PLAYER_TURN else None,
+            narration=event.text if event.kind == NARRATION else None,
+            event_type=event.kind,
+        )
+
+    op.add_commit_step(write)
 
 
 def _stage_state_change(op: Operation, event: IngestEvent) -> None:

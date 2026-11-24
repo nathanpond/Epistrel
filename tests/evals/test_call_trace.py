@@ -12,24 +12,35 @@ import asyncio
 import gzip
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.engine import Engine
-from epistrel.evals import cli, trace
+from epistrel.evals import Outcome, cli, trace
 from epistrel.evals.journal import Journal, case_digest
+from epistrel.evals.presets import PresetName
 from epistrel.evals.report import Report
-from epistrel.evals.runner import AdapterConfig, Progress, run_fingerprint, run_suites
+from epistrel.evals.runner import (
+    AdapterConfig,
+    CaseContext,
+    Progress,
+    run_fingerprint,
+    run_suites,
+)
 from epistrel.evals.suites import CaseModel
 from epistrel.evals.trace import CallTrace, TraceFile, structured_mode, trace_path
+from epistrel.orchestrator.models.adapter import Message
 from epistrel.orchestrator.models.call_trace import CALL_TRACE, Exchange
+from epistrel.orchestrator.models.registry import GENERATION
 from epistrel.tools import model_matrix
 from tests.auth_support import auth_settings
-from tests.evals.support import SyntheticZeroSuite, synthetic_cases
+from tests.evals.support import ZERO_METRIC, SyntheticZeroSuite, synthetic_cases
 from tests.model_support import config_key, mock_openai, restored_model_config
 
 MODEL = "trace-model"
@@ -204,6 +215,69 @@ async def test_a_cancelled_run_resumes_into_a_clean_trace(
     assert len({r["session"] for r in records}) == 2
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         assert all(json.loads(line) for line in handle)
+
+
+class Tally(BaseModel):
+    """A structured answer for ``StructuredSuite`` (``mock_openai`` answers it by name)."""
+
+    n: int
+
+
+class StructuredSuite(SyntheticZeroSuite):
+    """One structured ``generation`` request (schema ``Tally``) per case."""
+
+    name = "synthetic_structured"
+    title = "A synthetic suite of structured requests (tests only)"
+
+    async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
+        result = await ctx.models.complete(
+            GENERATION.name, [Message(role="user", content="Count.")], response_schema=Tally
+        )
+        return Outcome({ZERO_METRIC: True}, output=result.text)
+
+
+@pytest.mark.integration
+async def test_each_preset_reports_its_own_structured_requests(
+    pg_url: str, engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """#988: certify shares one trace across its presets and attaches it to each one's file.
+    Standard plays 2 cases and Full plays 3 (1 seed each), so each report's
+    ``run_conditions.observed`` is its own count: Standard 2 and Full 3. Before the fix, Full
+    showed 5, Standard's 2 plus its own 3. Each preset's trace file holds its own records,
+    exactly as before."""
+    suite = StructuredSuite()
+    sink = CallTrace(model=MODEL, engine_sha=model_matrix.engine_sha())
+    reports: dict[str, Report] = {}
+    with mock_openai(models=(MODEL,), json_answers={"Tally": '{"n": 1}'}) as mock:
+        async with restored_model_config(engine):
+            lib = await _engine(pg_url, engine)
+            try:
+                plays: tuple[tuple[PresetName, int], ...] = (("standard", 2), ("full", 3))
+                for preset, n in plays:
+                    config = replace(_config(mock.root), preset=preset)
+                    sink.attach(TraceFile(tmp_path / f"{preset}.calls.jsonl.gz"), preset=preset)
+                    reports[preset] = await run_suites(
+                        [suite],
+                        config,
+                        [1],
+                        engine=lib,
+                        cases={suite.name: synthetic_cases(n)},
+                        trace=sink,
+                    )
+            finally:
+                await lib.models.aclose()
+    observed = {
+        p: (r.run_conditions.observed if r.run_conditions else None) for p, r in reports.items()
+    }
+    assert observed == {
+        "standard": {"Tally": {"json_schema": 2}},
+        "full": {"Tally": {"json_schema": 3}},
+    }
+    for preset, n in (("standard", 2), ("full", 3)):
+        records = _records(tmp_path / f"{preset}.calls.jsonl.gz")
+        assert len(records) == n
+        assert {r["preset"] for r in records} == {preset}
+    assert sink.structured == {"Tally": {"json_schema": 5}}
 
 
 def test_a_torn_last_member_is_cut_on_open(tmp_path: Path) -> None:
@@ -397,6 +471,65 @@ def test_records_carry_the_mode_the_judge_flag_and_capped_text(tmp_path: Path) -
     assert second["complete"] is True
     assert second["error"]["status"] == 400
     assert second["raised"] == "X"
+
+
+class _Sink:
+    """A trace sink that keeps what it is handed."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, Any], list[Exchange]]] = []
+
+    def record(self, call: dict[str, Any], exchanges: list[Exchange]) -> None:
+        self.calls.append((call, list(exchanges)))
+
+
+EMBEDDED_TEXT = "Wren hid the brass key under the third stair."
+"""A text only the embedding call carries: the trace must never hold it (#737)."""
+
+
+@pytest.mark.integration
+async def test_an_embedding_under_a_trace_sink_is_not_traced(pg_url: str) -> None:
+    """#1004 (#737: "embedding calls are not traced"): under a trace sink, an ``/embeddings``
+    call through the engine's embedding service (the ``openai`` SDK adapter against a local
+    mock) hands the sink nothing, and no record holds its text or names the ``embedding``
+    purpose.
+
+    Complement asserted: a chat call in the same context is traced (one record, its request as
+    sent), and the mock saw the embedding request, so it was made."""
+    from tests.embedding_support import embedding_db
+    from tests.model_support import OPERATOR_HEADERS, put_key
+
+    sink = _Sink()
+    async with embedding_db(pg_url, model_adapter="openai", embedding_adapter="openai") as s:
+        with mock_openai(models=(MODEL,), embedding_dimension=8) as server:
+            for purpose, model in (("default", MODEL), ("embedding", "mock-embed")):
+                await put_key(s.client, purpose, "k-trace")
+                written = await s.client.put(
+                    f"/admin/model-config/{purpose}",
+                    json={"base_url": f"{server.root}/v1", "model": model},
+                    headers=OPERATOR_HEADERS,
+                )
+                assert written.status_code == 200, written.text
+            token = CALL_TRACE.set(sink)
+            try:
+                embedded = await s.lib.models.embeddings.embed([EMBEDDED_TEXT])
+                answered = await s.lib.models.complete(
+                    "generation", (Message(role="user", content="Say hello."),)
+                )
+            finally:
+                CALL_TRACE.reset(token)
+            sent = [r.body for r in server.requests if r.path.endswith("/embeddings")]
+    assert len(embedded.vectors) == 1
+    assert any(EMBEDDED_TEXT in json.dumps(body) for body in sent)
+    assert answered.text
+    assert len(sink.calls) == 1, [call for call, _ in sink.calls]
+    ((call, exchanges),) = sink.calls
+    assert call["purpose"] == "generation"
+    assert len(exchanges) == 1
+    assert exchanges[0].body["messages"] == [{"role": "user", "content": "Say hello."}]
+    traced = json.dumps([[c, [e.body for e in ex]] for c, ex in sink.calls], default=str)
+    assert EMBEDDED_TEXT not in traced
+    assert '"embedding"' not in traced
 
 
 def test_a_deployed_engine_has_no_trace_setting() -> None:

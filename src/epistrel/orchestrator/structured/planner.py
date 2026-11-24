@@ -166,6 +166,8 @@ def check_deadline(
 SKIP_POLISH = "skip_polish"
 REPAIR_DETERMINISTIC = "repair_deterministic"
 SAFE_FALLBACK = "safe_fallback"
+REPAIR_DROPPED = "repair_dropped"
+"""#1014: a fallback line the drop rule removed; ranks with ``safe_fallback``."""
 ENTAILMENT_SAFE_DISPOSITION = "entailment_safe_disposition"
 BEAT_REPLACED = "beat_replaced_safe_fallback"
 SALIENCE_SKIPPED = "salience_skipped"
@@ -551,6 +553,7 @@ RANK = {
     SKIP_POLISH: 0,
     REPAIR_DETERMINISTIC: 1,
     SAFE_FALLBACK: 1,
+    REPAIR_DROPPED: 1,
     TESTIMONY_DEFAULTED: 2,
     ENTAILMENT_SAFE_DISPOSITION: 3,
     UNESTIMATED_SKIP_REMOVED: 4,
@@ -584,6 +587,7 @@ __all__ = [
     "PRIMARY_DEFERRED",
     "REPAIR",
     "REPAIR_DETERMINISTIC",
+    "REPAIR_DROPPED",
     "SAFE_FALLBACK",
     "SALIENCE_SKIPPED",
     "SKIP_POLISH",

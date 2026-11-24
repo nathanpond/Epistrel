@@ -19,7 +19,7 @@ Its stub answers are scripted per case (the word included), so CI gates on its s
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -27,7 +27,7 @@ from pydantic import Field
 from epistrel.core.stories import CharacterSpec, StorySpec
 from epistrel.evals.gate import Direction, Metric, Rule
 from epistrel.evals.suites import CaseModel, Outcome, Suite, register
-from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, RespondRequest
+from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, DegradationStep, RespondRequest
 from epistrel.orchestrator.models.registry import GENERATION
 from epistrel.tools.model_matrix import TurnCalls, design_problems, designed_calls
 
@@ -131,7 +131,7 @@ class SmokeSuite(Suite):
         turn = TurnCalls(
             result.model_calls,
             designed_calls(reserved),
-            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            _fallback_causes(result.degradation_details),
             result.budget.max_calls if result.budget else None,
         )
         problems = design_problems([turn], designed_calls(0))
@@ -153,6 +153,12 @@ class SmokeSuite(Suite):
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, SmokeCase)  # noqa: S101 - load() validated it as case_model
         return {GENERATION.name: f'{INNKEEPER} nods. "Of course: {case.keyword}, as you asked."'}
+
+
+def _fallback_causes(details: Sequence[DegradationStep]) -> list[str]:
+    """The causes of the safe fallbacks a turn released, each once (#1014: the repair ladder's
+    entries are per beat)."""
+    return list(dict.fromkeys(d.cause for d in details if d.step == SAFE_FALLBACK))
 
 
 __all__ = [

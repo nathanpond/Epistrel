@@ -35,6 +35,11 @@ The bar (``tests.reactive_support``): Cal (the player) asks; Bobby and Jenni are
 - ``test_s_reactive__m6`` (#187): with the bar's stock tracked as a State, a reaction naming it
   escalates the default bartender, and the fixed bartender is limited with no State change;
   complement: the same reaction with no State tracked stays reactive.
+
+- ``test_s_reactive__off_scene`` (M12, #1019): only characters at the turn actor's place react;
+  an off-scene character's declared or prose reaction is dropped ``not_present`` and staged as
+  ``render_rejected``; the present set is in the response; the whole cast only with no
+  placements.
 """
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows, scalar
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import READ
-from tests.structured_turn_support import beat, turn_report
+from tests.structured_turn_support import beat, history, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
 
@@ -544,3 +549,181 @@ async def test_s_reactive__m6(
         assert await ss.value(engine, b.story_id, "beer_stock") == 10
         assert not await ss.change_rows(engine, b.story_id)
         assert "state_effects" not in turn
+
+
+# -- #1019: no beats from off-scene characters ----------------------------------------------------
+
+CAMP = ("Nathan", "Malik", "Jared", "Sam", "Ethan", "Carlos")
+CARLOS_LOOKS = "Carlos looks over at the fire."
+CARLOS_PROSE = "Carlos glances up from across the river."
+ETHAN_GLANCE = "Ethan glances up."
+GOOD_GAME = "Good game, everyone."
+
+
+async def _camps(
+    client: Any,
+    engine: AsyncEngine,
+    *,
+    placed: bool = True,
+    player_placed: bool = True,
+) -> tuple[str, dict[str, str]]:
+    """Two tribes' camps (#1019): Nathan (the player), Malik, Jared, Sam and Ethan at camp A,
+    Carlos at camp B (not adjoining); ``player_placed`` false leaves Nathan unplaced, ``placed``
+    false places nobody. Perception is off (no partitions, as in the reported story), so the
+    present set is the only guard: no reactor perception check runs."""
+    story, ids = await structured_story(client, *CAMP)
+    if placed:
+        camp_a = await ps.place_entity(engine, story, "camp A")
+        camp_b = await ps.place_entity(engine, story, "camp B")
+        for name in CAMP:
+            if name == "Nathan" and not player_placed:
+                continue
+            await ps.put(engine, story, ids[name], camp_b if name == "Carlos" else camp_a)
+    await ts.enable_testimony(engine, story, "defaulted", partitions=False)
+    await ms.per_character(engine, story)
+    return story, ids
+
+
+def _malik(*reactions: dict[str, Any]) -> str:
+    return rs.render(beat("say", GOOD_GAME, intent="sincere"), reactions=list(reactions))
+
+
+def _camp_renders(stub: Any, malik: str) -> None:
+    ms.renders_for(stub, "Malik", malik)
+    ms.renders_for(stub, "Jared", rs.render(beat("say", "We go again tomorrow.", intent="sincere")))
+    ms.renders_for(stub, "Sam", rs.render(beat("say", "Count me in.", intent="sincere")))
+
+
+async def _camp_turn(client: Any, story: str, ids: dict[str, str]) -> dict[str, Any]:
+    answer = await respond(
+        client,
+        story,
+        body(
+            ids["Nathan"],
+            "Tough loss today.",
+            render_character_ids=[ids[n] for n in ("Malik", "Jared", "Sam")],
+        ),
+    )
+    assert answer.status_code == 200, answer.text
+    played: dict[str, Any] = answer.json()
+    return played
+
+
+async def _beats_of(client: Any, engine: AsyncEngine, story: str, who: str) -> list[Any]:
+    """``who``'s committed beats (events) and its beats in the omniscient history read."""
+    found = await rows(
+        engine,
+        "SELECT type, payload->>'text' AS text FROM events WHERE story_id = :s "
+        "AND character_id = :c AND type LIKE 'beat_%' ORDER BY seq",
+        s=story,
+        c=who,
+    )
+    seen = [
+        item
+        for item in await history(client, story, "omniscient")
+        if item.get("actor_character_id") == who
+    ]
+    return [*found, *seen]
+
+
+def _ids(ids: dict[str, str], *names: str) -> list[str]:
+    return sorted(ids[n] for n in names)
+
+
+@pytest.mark.part("M12", "FR-MULTI-9")
+async def test_s_reactive__off_scene(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1019: a character at another place never gets a beat. Two camps (Carlos alone at camp
+    B), perception off; a sequential turn renders Malik, Jared and Sam.
+
+    - Malik's render declaring a reaction for Carlos commits no Carlos beat (the events and the
+      omniscient history read): it is dropped ``not_present`` and staged as ``render_rejected``
+      (rung 1, never repaired). Ethan, present and not rendered, still reacts (FR-MULTI-9). The
+      response lists the present set.
+    - Narrated in Malik's ``do`` prose, the sentence is cut from Malik's beat and dropped
+      ``not_present`` the same way.
+    - The reported path (red before the fix): the player unplaced while the others are placed.
+      The player's scene was empty, so the whole cast was taken as present and Carlos's
+      reaction committed. Now the present set is the actor's: an unplaced actor in a placed
+      story has no one else present; the named primaries still render, listed in
+      ``multi.not_present``.
+    - A story with no placement at all keeps the whole cast present: Carlos's reaction stands.
+    """
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- Declared: Carlos's reaction is dropped not_present and staged; Ethan's stands.
+        story, ids = await _camps(client, engine)
+        stub.reset()
+        _camp_renders(
+            stub,
+            _malik(
+                rs.reaction(ids["Carlos"], CARLOS_LOOKS), rs.reaction(ids["Ethan"], ETHAN_GLANCE)
+            ),
+        )
+        turn = await _camp_turn(client, story, ids)
+        assert await _beats_of(client, engine, story, ids["Carlos"]) == []
+        narrated = await rs.narrated(engine, story)
+        assert [(n.character_id, n.text) for n in narrated] == [(ids["Ethan"], ETHAN_GLANCE)]
+        ethan = [
+            i
+            for i in await history(client, story, "omniscient")
+            if i.get("actor_character_id") == ids["Ethan"]
+        ]
+        assert [i["text"] for i in ethan] == [ETHAN_GLANCE]  # the history read lists beats
+        report = await turn_report(engine, story)
+        assert report["roles"]["dropped"] == {"not_present": 1}
+        (dropped,) = await rs.rejected(engine, story)
+        assert dropped.payload["text"] == CARLOS_LOOKS
+        assert dropped.payload["constraints"] == [{"kind": "reaction", "reason": "not_present"}]
+        assert (dropped.payload["rung"], dropped.payload["attempt"]) == (1, 0)
+        assert turn.get("degradation_details", []) == []
+        assert turn["present_character_ids"] == _ids(ids, "Malik", "Jared", "Sam", "Ethan")
+        assert report["multi"]["not_present"] == []
+
+        # -- Prose: the sentence is cut from Malik's beat and dropped not_present.
+        story, ids = await _camps(client, engine)
+        stub.reset()
+        _camp_renders(stub, rs.render(beat("do", f"Malik stokes the fire. {CARLOS_PROSE}")))
+        turn = await _camp_turn(client, story, ids)
+        assert await _beats_of(client, engine, story, ids["Carlos"]) == []
+        assert CARLOS_PROSE not in turn["message"]["text"]
+        (malik_do,) = await rows(
+            engine,
+            "SELECT payload->>'text' AS text FROM events WHERE story_id = :s "
+            "AND character_id = :c AND type = 'beat_do'",
+            s=story,
+            c=ids["Malik"],
+        )
+        assert malik_do.text == "Malik stokes the fire."
+        assert (await turn_report(engine, story))["roles"]["dropped"] == {"not_present": 1}
+        (dropped,) = await rs.rejected(engine, story)
+        assert dropped.payload["text"] == CARLOS_PROSE
+
+        # -- The reported path: the player unplaced in a placed story.
+        story, ids = await _camps(client, engine, player_placed=False)
+        stub.reset()
+        _camp_renders(stub, _malik(rs.reaction(ids["Carlos"], CARLOS_LOOKS)))
+        turn = await _camp_turn(client, story, ids)
+        assert await _beats_of(client, engine, story, ids["Carlos"]) == []
+        assert turn["present_character_ids"] == []
+        # The consumer named them: they still render, listed as not present.
+        assert rs.character_renders(stub) == ["Malik", "Jared", "Sam"]
+        report = await turn_report(engine, story)
+        assert report["multi"]["not_present"] == [ids[n] for n in ("Malik", "Jared", "Sam")]
+        assert report["roles"]["dropped"] == {"not_present": 1}
+
+        # -- Nobody placed: the whole cast is present (unchanged); Carlos's reaction stands.
+        story, ids = await _camps(client, engine, placed=False)
+        stub.reset()
+        _camp_renders(stub, _malik(rs.reaction(ids["Carlos"], CARLOS_LOOKS)))
+        turn = await _camp_turn(client, story, ids)
+        narrated = await rs.narrated(engine, story)
+        assert [(n.character_id, n.text) for n in narrated] == [(ids["Carlos"], CARLOS_LOOKS)]
+        assert turn["present_character_ids"] == _ids(
+            ids, "Malik", "Jared", "Sam", "Ethan", "Carlos"
+        )
+        assert (await turn_report(engine, story))["multi"]["not_present"] == []

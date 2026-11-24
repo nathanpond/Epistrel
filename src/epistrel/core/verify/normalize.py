@@ -14,6 +14,9 @@ never guesses (FR-PROP-12):
   relation (unregistered, or ``auto``: FR-PROP-4 (c)) is marked ``weak_relation``, with
   ``touches_character`` when another argument resolved to a modeled character other than the
   speaker; ``Unnormalizable.untracked_weak`` is what #479's surfacing reads (ADR-163, ADR-165).
+  #978: ``touches_character`` is recorded for an unresolved argument of a registered relation
+  too, and ``Unnormalizable.untracked_mention`` (the mention named nothing the story holds,
+  whatever the relation) is what the extraction layer's silent pass reads (ADR-219).
 - **The predicate** is the registry's predicate of that name (``registry.auto_name`` of the
   relation text). Failing that, ``RELATION_ALIASES`` maps everyday relation names to core
   predicates ("lives in" → ``located_at``, "has a sister" → ``sibling_of``). An unregistered
@@ -171,7 +174,7 @@ class Unnormalizable:
     semantics, FR-PROP-4 (c)) named nothing the story tracks (``untracked_weak``)."""
     touches_character: bool = False
     """#479: another argument resolved to a modeled character (or the player's) other than
-    the speaker."""
+    the speaker (#978: under any relation, weak or not)."""
 
     @property
     def untracked_weak(self) -> bool:
@@ -185,6 +188,24 @@ class Unnormalizable:
             self.weak_relation
             and not self.touches_character
             and self.reason is VerdictReason.UNRESOLVED_ENTITY
+            and found is not None
+            and not found.candidates
+            and _untracked(found.reason)
+        )
+
+    @property
+    def untracked_mention(self) -> bool:
+        """#978 (ADR-219): whether this is uncertain only because an argument's mention names
+        nothing the story holds, under any relation, with no other character involved: the
+        claim the extraction layer's silent pass applies to
+        (``orchestrator.verify.extraction.passes``). The resolver ran on a non-empty mention
+        (``resolution`` is set) and found nothing for it (``no_mention``, ``unknown_name`` or
+        ``no_antecedent``, as ``untracked_weak`` counts it), with no candidates: never an
+        ambiguous mention, a ``protected_value`` or a gender mismatch."""
+        found = self.resolution
+        return (
+            self.reason is VerdictReason.UNRESOLVED_ENTITY
+            and not self.touches_character
             and found is not None
             and not found.candidates
             and _untracked(found.reason)
@@ -284,11 +305,11 @@ def _weak(
     speaker: str,
     context: ResolutionContext,
 ) -> Unnormalizable:
-    """``failed`` marked for #479 when the relation is weak (see ``Unnormalizable``)."""
-    if predicate is not None and predicate.layer is not Layer.AUTO:
-        return failed
+    """``failed`` marked for #479 when the relation is weak, and (#978) whether another
+    argument is another modeled character under any relation (see ``Unnormalizable``)."""
+    weak = predicate is None or predicate.layer is Layer.AUTO
     touches = any(r is not None and _other_character(r, speaker, context) for r in resolved)
-    return replace(failed, weak_relation=True, touches_character=touches)
+    return replace(failed, weak_relation=weak, touches_character=touches)
 
 
 def _scheduled_time(

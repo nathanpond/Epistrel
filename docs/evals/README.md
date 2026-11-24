@@ -108,6 +108,13 @@ once, remembered per model (#235). Anthropic ignores `seed`, so a hosted run's s
 case order, not the sampling. Raise `--concurrency` as far as the account's rate limits allow:
 a rate-limited case is a model error and plays again on the next run (below).
 
+**The call timeout.** Every model call of a certification run has a 210 s per-call timeout
+(`evals.runner.CALL_TIMEOUT_S`, written into the run database's `default` model row). That is
+1.5 x the slowest cold strict-schema compile measured on api.anthropic.com, 138.8 s for
+`RewriteParseResult` ([below](#first-use-of-a-strict-schema-on-apianthropiccom-785)), so a
+schema's first use is measured instead of losing the case to a timeout. A call's own deadline
+still clamps it. `tests/evals/test_call_timeout.py` pins it (#999).
+
 **On the local reference model** (the local row of [docs/model-matrix.md](../model-matrix.md),
 `cydonia-24b-v4.3`), add `--reference` so the records are `host.tier = reference`:
 
@@ -233,7 +240,9 @@ when its Standard, Full and Max records match the presets' **current** fingerpri
 recomputed from the record's own models. Older records stay committed as history and read
 `uncertified (preset changed since certification …)` in INDEX. The fingerprint also covers the
 engine's model-call revision (`MODEL_CALL_REVISION` in `core/profiles/fingerprint.py`). A change
-to a Python-held prompt string, token cap, schema or the structured-mode choice must bump it.
+to a Python-held prompt string, token cap, schema or the structured-mode choice must bump it,
+and so must an edit to a function that computes a call's params, such as `polish_params`' token
+ceiling (#1003; the guarded functions are listed in `tests/model_call_support.py`).
 `tests/test_model_call_revision.py` fails until the revision and its snapshot move together:
 bump the constant, then run `uv run python -m tests.model_call_support --write`. The check is a
 release gate. `release.yml` runs `tests/integration/test_c_18_m11.py` with
@@ -260,9 +269,14 @@ the structured mode the endpoint gets (`json_schema_strict` on api.anthropic.com
 has a strict wire form, `parse_validate_retry` when it has none, today `DirectiveParseResult`,
 and `json_schema` elsewhere). From the trace, it gives the structured requests seen by schema
 and mode, and the parse-validate-retry requests by schema, retries included and judge calls
-excluded. Without a trace (`--no-trace`) the counts are `null`. A resumed run counts this
-session's requests only and says how many cases came from the journal. A stub run has no
-`run_conditions`.
+excluded. The counts are this preset's own: `certify` plays its presets on one trace, and each
+report counts only the requests sent after its preset's run started (#988). Reports committed
+before #988 show a running total across a multi-preset certify run instead. For example, the
+2026-11-21 e03 reports give `ConsolidationResult` 452, 902 and 1352 for Standard, Full and Max,
+where each preset's own count is about 450. Those reports are left as they are, and their
+verdicts are unaffected, because no floor reads these counts. Without a trace (`--no-trace`)
+the counts are `null`. A resumed run counts this session's requests only and says how many
+cases came from the journal. A stub run has no `run_conditions`.
 
 - A **rate** floor passes when the mean clears it by more than one standard deviation.
 - A **zero-tolerance** floor passes only with no violation on any seed over at least 300
@@ -540,6 +554,15 @@ structured calls are within Standard's and Full's 45 s per-call bound.
   keeps a grammar compiled by a call the client gave up on was not measured. Until #941 (the engine
   fix) is decided, retry a failed parse after a few minutes.
 
+**Re-measured on 2026-11-24 (#941): strict `RewriteParseResult` is now refused.** All 6 calls of
+`schema_compile_probe --rounds 3 --schema RewriteParseResult` (`claude-haiku-5-5`) were HTTP 400
+in 0.1 to 0.3 s: "Schemas contains too many parameters with union types (17 parameters with type
+arrays or anyOf) … (limit: 16 parameters with unions)". The wire form inlines `$ref`s since #1009
+(v0.4.1), so a union in a shared definition counts once per use. A schema over the limit now has
+no strict wire form (`provider_schema.UNION_LIMIT`), so `rewrite_parse` goes to api.anthropic.com
+as parse-validate-retry and compiles nothing; every other strict schema has 8 unions or fewer.
+The probe's verdict lines ignore failed calls: read its error notes before its timings.
+
 ## The quality judge and its calibration (#158)
 
 E-12 is judged by the `quality_judge` purpose (the `default` model unless `/admin/model-config`
@@ -697,7 +720,8 @@ judges.
 
 `e03.judge_agreement` counts each labelled **pair** (two a window: the entailed reflection and
 the non-entailed one). `nfr_qual_3.faithfulness` counts only when that agreement's mean across
-seeds is at least 75%; below it the row is report only, with a note quoting the agreement.
+seeds is at least 75% on at least 200 pairs in total across seeds (ADR-209); below either the
+row is report only, with a note quoting the agreement and any shortfall of pairs.
 
 `evals rejudge --suite e03 --from-journal <journal>` judges a results journal's E-03
 reflections and labelled pairs again with the run's `entailment` judge, offline (judge calls

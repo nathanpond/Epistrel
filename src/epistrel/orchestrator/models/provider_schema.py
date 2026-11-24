@@ -124,16 +124,41 @@ def strict_wire_schema(schema: dict[str, Any]) -> dict[str, Any] | None:
         stripped: dict[str, Any] = _strip(schema, defs)
     except _NoWireForm:
         return None
+    if union_parameters(stripped) > UNION_LIMIT:
+        return None
     return stripped
+
+
+UNION_LIMIT = 16
+"""The most union-typed parameters (a ``type`` list or an ``anyOf``) api.anthropic.com's strict
+mode accepts in one schema. Over it, the endpoint answers 400 ("too many parameters with union
+types"; live 2026-11-24, #941), so such a schema has no wire form and goes as
+parse-validate-retry without that wasted call."""
+
+
+def union_parameters(node: Any) -> int:
+    """The number of nodes in ``node`` with a ``type`` list or an ``anyOf`` (``UNION_LIMIT``)."""
+    if isinstance(node, list):
+        return sum(union_parameters(sub) for sub in node)
+    if not isinstance(node, dict):
+        return 0
+    own = int(isinstance(node.get("type"), list) or "anyOf" in node)
+    return own + sum(union_parameters(sub) for sub in node.values())
 
 
 GRAMMAR_TOO_LARGE = "compiled grammar is too large"
 """The phrase in api.anthropic.com's 400 for a strict schema over its grammar limit (#1009)."""
 
+TOO_MANY_UNIONS = "too many parameters with union types"
+"""The phrase in api.anthropic.com's 400 for a strict schema over ``UNION_LIMIT`` (#941). Matched
+as a safety net: ``strict_wire_schema`` already declines such a schema."""
+
 
 def rejects_grammar_size(message: str) -> bool:
-    """Whether a 400's text is strict mode's "compiled grammar is too large" (#1009)."""
-    return GRAMMAR_TOO_LARGE in message.casefold()
+    """Whether a 400's text is strict mode refusing this one schema: "compiled grammar is too
+    large" (#1009) or "too many parameters with union types" (#941)."""
+    folded = message.casefold()
+    return GRAMMAR_TOO_LARGE in folded or TOO_MANY_UNIONS in folded
 
 
 def json_schema_mode(base_url: str, schema: type[BaseModel]) -> bool:
@@ -145,9 +170,12 @@ def json_schema_mode(base_url: str, schema: type[BaseModel]) -> bool:
 __all__ = [
     "ANTHROPIC_HOST",
     "GRAMMAR_TOO_LARGE",
+    "TOO_MANY_UNIONS",
+    "UNION_LIMIT",
     "UNSUPPORTED_BOUNDS",
     "is_anthropic",
     "json_schema_mode",
     "rejects_grammar_size",
     "strict_wire_schema",
+    "union_parameters",
 ]

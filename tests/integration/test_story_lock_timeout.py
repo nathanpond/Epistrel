@@ -260,3 +260,67 @@ async def test_lost_connection_is_still_database_unavailable(
         with pytest.raises(OperationalError):
             await lib.respond(AUTHOR, story, turn)
         assert await _footprint(engine, story) == before
+
+
+async def _exists(engine: AsyncEngine, story: str) -> bool:
+    found = await rows(engine, "SELECT id FROM stories WHERE id = :s", s=story)
+    return bool(found)
+
+
+async def test_delete_lock_timeout_is_story_busy(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#947: a deletion whose commit waits past ``LOCK_TIMEOUT`` for the story row another
+    transaction holds is ``StoryBusy`` (``lock_timeout``, ``retry_after``) in the library and
+    423 ``story_busy`` with ``Retry-After`` on ``DELETE /stories/{id}``, not the driver's
+    ``OperationalError``. Complement asserted: nothing is deleted (the story and its events
+    stay), and the deletion succeeds once the lock is free."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, ids = await new_story(client)
+        first = await respond(client, story, body(ids[PLAYER], "One."))
+        assert first.status_code == 200, first.text
+        before = await _footprint(engine, story)
+
+        with pytest.raises(StoryBusy) as raised:
+            async with lock_held_at_commit(monkeypatch, engine, story):
+                await asyncio.wait_for(lib.delete_story(AUTHOR, story), WITHIN_S)
+        assert raised.value.details == {"story_id": story, "reason": "lock_timeout"}
+        assert raised.value.retry_after == operation.LOCK_RETRY_AFTER_S
+        assert isinstance(raised.value.__cause__, OperationalError)
+        sqlstate = getattr(raised.value.__cause__.orig, "sqlstate", None)
+        assert sqlstate == operation.LOCK_NOT_AVAILABLE
+        assert await _exists(engine, story)
+        assert await _footprint(engine, story) == before
+        monkeypatch.undo()
+
+        async with lock_held_at_commit(monkeypatch, engine, story):
+            refused = await asyncio.wait_for(
+                client.delete(f"/stories/{story}", headers=WRITE), WITHIN_S
+            )
+        _busy(refused, story)
+        assert await _exists(engine, story)
+        assert await _footprint(engine, story) == before
+        monkeypatch.undo()
+
+        deleted = await client.delete(f"/stories/{story}", headers=WRITE)
+        assert deleted.status_code == 204, deleted.text
+        assert not await _exists(engine, story)
+
+
+async def test_delete_lost_connection_is_not_story_busy(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#947 complement: a deletion's other ``OperationalError`` (its connection lost mid-commit)
+    is unchanged, the driver's error, not ``StoryBusy``: the mapping covers lock waits only.
+    Nothing is deleted."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _ = await new_story(client)
+
+        async def lost(conn: AsyncConnection) -> None:
+            await _terminate(engine, conn)
+
+        _hook(monkeypatch, lost)
+        with pytest.raises(OperationalError) as raised:
+            await lib.delete_story(AUTHOR, story)
+        assert not isinstance(raised.value, StoryBusy)
+        assert await _exists(engine, story)

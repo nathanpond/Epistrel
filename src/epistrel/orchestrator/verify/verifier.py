@@ -48,7 +48,12 @@ reason is recorded); ``surface`` lets the beat stand and lists the claim in the 
 ``uncertain``: an undecided claim is never a silent ``supported``. One case is surfaced
 whatever the profile says (#479, ADR-163): an extraction claim that did not normalize only
 because a weak relation names something untracked (``orchestrator.verify.extraction.surfaces``;
-the caller passes ``unnormalizable(..., disposition="surface")``).
+the caller passes ``unnormalizable(..., disposition="surface")``). #978 (ADR-219): an extraction
+claim that did not normalize only because a mention names nothing the story holds, under any
+relation, takes ``pass`` whatever the profile says (``orchestrator.verify.extraction.passes``;
+``unnormalizable(..., disposition="pass")``): the beat stands, the verdict is recorded
+(``uncertain``, ``unresolved_entity``, disposition ``pass``), and nothing is listed in
+``uncertain_claims`` or sent to repair. ``pass`` is never a profile's ``safe_disposition``.
 
 **Novelty is not permission** (FR-VERIFY-11,12; #144). Every claim that ends ``novel`` and
 names its asserter (``verify(..., asserter=...)``) passes ``core.verify.permission`` before it
@@ -232,7 +237,10 @@ from epistrel.orchestrator.verify.gate import (
 
 log = logging.getLogger(__name__)
 
-SafeDisposition = Literal["repair", "surface"]
+ProfileDisposition = Literal["repair", "surface"]
+"""A profile's ``verification.safe_disposition``."""
+SafeDisposition = Literal["repair", "surface", "pass"]
+"""A result's disposition: ``pass`` (#978) is the extraction layer's own, never a profile's."""
 Source = Literal["deterministic", "entailment"]
 ObjectiveRelation = Literal["true", "false", "unresolved"]
 
@@ -245,6 +253,10 @@ UNPERMITTED = "unpermitted"
 HALLUCINATION = "hallucination"
 """#166: the repair tag of a first-person claim with no legitimate basis (FR-VERIFY-10)."""
 RESOLUTION_CONFLICT = "resolution_conflict"
+COPIED_LINE = "copied_line"
+"""#1013 (FR-MULTI-8,11): the repair tag of a ``say`` or ``do`` sentence that repeats, word for
+word after normalization, a sentence another speaker already said in the turn
+(``orchestrator.structured.copies``): regenerated once, else dropped."""
 THINK_LEAK = "think_leak"
 """#172: the repair tag of a claim that repeats or narrates another character's private thought
 (the thought side index or the inner-state check; FR-TURN-3, NFR-PRIV-1)."""
@@ -367,7 +379,7 @@ class VerifyConfig:
     level: str = "off"
     entailment_gate: float = 1.0
     entailment_min_confidence: float = 0.6
-    safe_disposition: SafeDisposition = "repair"
+    safe_disposition: ProfileDisposition = "repair"
     entailment_max_records: int = VerifySettings().entailment_max_records
     neighborhood_max_facts: int = VerifySettings().neighborhood_max_facts
     clock: bool = False
@@ -489,6 +501,9 @@ class VerifyResult:
     schedule: schedules.Statement | None = None
     """#198 (FR-CLOCK-19): a ``scheduled`` claim's classification: a create, a change or a
     report (``core.world_clock.schedule_statements``)."""
+    copied_from: tuple[int, str] | None = None
+    """#1013 (FR-MULTI-8,11): the copied sentence's source, ``(beat, speaker id)``: always
+    repaired (``COPIED_LINE``), whatever the disposition."""
 
     @property
     def schedule_kind(self) -> str | None:
@@ -555,8 +570,8 @@ class VerifyResult:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
         and not permitted (``repair_tag``); under partitions (#166) a hallucination always
         (unless surfaced), and never a sincere error, a lie or a joke; #187: a State finding
-        always."""
-        if self.state_finding is not None:
+        always; #1013: a copied line always."""
+        if self.state_finding is not None or self.copied_from is not None:
             return True
         if self.think_leak is not None or self.confabulated:
             return True  # #172: under every profile (the channel is private)
@@ -578,9 +593,11 @@ class VerifyResult:
         ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
         for a first-person claim with no legitimate basis (#166); #187: a State finding's tag
         (``state_constraint``, ``effect_unresolved``, ``state_undeclared``: a ``state_change``
-        denial)."""
+        denial); #1013: ``copied_line`` for a copied sentence."""
         if self.state_finding is not None:
             return self.state_finding.tag
+        if self.copied_from is not None:
+            return COPIED_LINE
         if self.think_leak is not None:
             return THINK_LEAK
         if self.confabulated:
@@ -626,6 +643,17 @@ class VerifyResult:
             ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
             | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
             | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
+            | (
+                {
+                    "cause": COPIED_LINE,
+                    "copied_from": {
+                        "beat": self.copied_from[0],
+                        "character_id": self.copied_from[1],
+                    },
+                }
+                if self.copied_from is not None
+                else {}
+            )
             | ({"recall": self.recall.payload()} if self.recall is not None else {})
             | (
                 {"cause": self.state_finding.tag, "state": self.state_finding.payload()}
@@ -720,6 +748,8 @@ class ClaimSource(Protocol):
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -792,6 +822,8 @@ class RecordsSource:
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -804,6 +836,8 @@ class RecordsSource:
             resolves=resolves,
             giver=giver,
             fiat_known=fiat_known,
+            present=present,
+            channel=channel,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -895,6 +929,8 @@ class CanonSource:
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -909,6 +945,8 @@ class CanonSource:
             resolves=resolves,
             giver=giver,
             fiat_known=fiat_known,
+            present=present,
+            channel=channel,
         )
 
     async def anchor(
@@ -1666,6 +1704,10 @@ class Verifier:
         self.schedules: schedules.Book | None = None
         """#198: the story's canon scheduled events a ``scheduled`` claim is classified over
         (``None``: no classification, as before #198)."""
+        self.present: frozenset[str] | None = None
+        """#979: the turn's present set (the turn actor added when it is the player's
+        character) the permission check's toward-another-character exception reads (``None``:
+        only the player's character counts as present)."""
 
     async def verify(
         self,
@@ -1759,7 +1801,14 @@ class Verifier:
             result = await self._hidden(result, claim, holder, position, mover)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+                result,
+                claim,
+                asserter,
+                at,
+                protected=protected,
+                resolves=resolves,
+                giver=giver,
+                channel=where.channel,
             )
         elif (
             asserter is not None
@@ -1771,7 +1820,14 @@ class Verifier:
             # is not the pinned one is unpermitted (``denied:external_value``) as well as
             # contradicted; a character's first-person claim (``believer``) is its belief's.
             denied = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+                result,
+                claim,
+                asserter,
+                at,
+                protected=protected,
+                resolves=resolves,
+                giver=giver,
+                channel=where.channel,
             )
             if (
                 denied.denied is not None
@@ -1878,7 +1934,8 @@ class Verifier:
         """A claim #140's ``normalize`` could not turn into a proposition: ``uncertain`` with
         its reason, which takes the safe disposition directly (there is no normalized claim to
         show the model), or ``disposition`` when the caller names one (#479, ADR-163: an
-        extraction claim whose weak relation names something untracked is surfaced);
+        extraction claim whose weak relation names something untracked is surfaced; #978,
+        ADR-219: an extraction claim whose mention names nothing the story holds passes);
         ``None`` when the story's verification is off."""
         if not self.config.on:
             return None
@@ -2160,6 +2217,7 @@ class Verifier:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        channel: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
             claim,
@@ -2168,6 +2226,8 @@ class Verifier:
             protected=protected,
             resolves=resolves,
             giver=giver,
+            present=self.present,
+            channel=channel,
         )
         if (
             isinstance(found, Denied)
@@ -2191,6 +2251,8 @@ class Verifier:
                 resolves=resolves,
                 giver=giver,
                 fiat_known=True,
+                present=self.present,
+                channel=channel,
             )
         anchor = None
         if isinstance(found, Permitted):
@@ -2232,7 +2294,8 @@ class Verifier:
         ``novel``) is a ``clock_anchor`` commitment (``anchors_clock``, ``visibility =
         engine``); with it off, ``time_is`` canonizes as in M4. #200: so does a character's
         sincere, belief-consistent time statement from ``exact`` awareness (``_anchors``); a
-        guess never does."""
+        guess never does. #979: nor a claim permitted as ``action_texture`` (an action toward
+        another character, texture only)."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -2267,6 +2330,8 @@ class Verifier:
                     continue  # #191: an owner's value (a State's) is never a fact
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
+            if permitted.basis is Basis.ACTION_TEXTURE:
+                continue  # #979: an action toward another character as texture, never canon
             found.append(
                 CanonRequest(
                     claim=r.claim,
@@ -2641,6 +2706,7 @@ async def story_verifier(
 
 __all__ = [
     "BUILT_IN_PARAMS",
+    "COPIED_LINE",
     "ENTAILMENT_BUDGET",
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",

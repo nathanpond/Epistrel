@@ -263,6 +263,7 @@ from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.models import registry as model_registry
 from epistrel.orchestrator.models.held import HeldCalls
+from epistrel.orchestrator.models.warmup import StrictWarmup
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -868,6 +869,11 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # The strict-schema warm-up (#941, ADR-212): the app's start-up starts it, and every
+        # model-configuration write asks it for another pass.
+        self.warmup = StrictWarmup(
+            self.models, enabled=settings.model_warmup and settings.model_adapter == "openai"
+        )
         # The embedding jobs and the embedding-model change listener embed through this layer
         # (#138; the last Engine constructed in a process binds them, like the jobs below).
         reembed_job.bind(self.models.embeddings)
@@ -4721,7 +4727,7 @@ class Engine:
         params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
-            return await self._keyed(
+            written = await self._keyed(
                 ctx,
                 "replace_model_config",
                 lambda _: model_config.replace_config(
@@ -4735,6 +4741,8 @@ class Engine:
                     },
                 },
             )
+        self.warmup.changed()
+        return written
 
     async def _probe_embedding_change(
         self, purpose: str, body: model_config.ConfigReplacement
@@ -4870,7 +4878,7 @@ class Engine:
         self, ctx: RequestContext, purpose: str
     ) -> model_config.ConfigWrite:
         principal = self.require_principal(ctx)
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "remove_model_override",
             lambda _: model_config.remove_override(
@@ -4878,6 +4886,8 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+        self.warmup.changed()
+        return written
 
     async def set_model_api_key(
         self, ctx: RequestContext, purpose: str, api_key: SecretStr
@@ -4885,7 +4895,7 @@ class Engine:
         principal = self.require_principal(ctx)
         # The hash covers the key's digest, never the key (NFR-SEC-3).
         digest = hashlib.sha256(api_key.get_secret_value().encode()).hexdigest()
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "set_model_api_key",
             lambda _: model_config.set_api_key(
@@ -4893,12 +4903,14 @@ class Engine:
             ),
             material={"purpose": purpose, "api_key_sha256": digest},
         )
+        self.warmup.changed()
+        return written
 
     async def remove_model_api_key(
         self, ctx: RequestContext, purpose: str
     ) -> model_config.ConfigWrite:
         principal = self.require_principal(ctx)
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "remove_model_api_key",
             lambda _: model_config.remove_api_key(
@@ -4906,6 +4918,8 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+        self.warmup.changed()
+        return written
 
     # -- consumer purposes (FR-MODEL-14; #824) -----------------------------------------------
     # Deployment-scoped like the model configuration: each write takes the deployment lock,
@@ -6348,15 +6362,22 @@ class Engine:
         ``GET /image-jobs/{id}``, which ends ``completed`` with the ``asset_ids`` and the
         ``failures`` (``{index, reason}`` per output not stored), or ``failed`` when none
         passed. The prompt is built by ``image_prompt`` from the description and style (the true
-        age only as its apparent age band) and checked before any generation against the
+        age only as its apparent age band), or is the consumer's own ``prompt`` with its written
+        ages removed and nothing added (#1017, ADR-214; no ``image_prompt`` call), and is checked
+        before any generation against the
         global and the rating's image-prompt policies with the declared true age, together
         with the description and style (FR-IMG-3, FR-GUARD-11); figure classification and the
         output check run on every image, and a failing one is never stored. Each passing image
         is a live media asset owned by the caller (``origin: subject``), kept until it is
         deleted or its owner is offboarded (ADR-186) and usable as a story character's image.
+        Optional ``reference_image_ids`` (#1020, ADR-215) send 1 to 4 earlier subject images of
+        the same subject to the image model as references, and the new images keep their
+        subject's id (``subject_images.check_references``).
         Refused before any job, reservation or provider call: 409 ``not_configured`` without
         an image adapter, 409 ``image_check_unconfigured`` while an image-output policy applies
-        and ``image_check`` is unset, 422 for an unknown or retired ``content_rating`` (the
+        and ``image_check`` is unset, 422 for a reference that is not the caller's live subject
+        image of the same true age and subject (before any model call), 422 for an unknown or
+        retired ``content_rating`` (the
         deployment default is read now), 503 ``image_prompt_unavailable``, 422
         ``guardrail_violation`` (its audit row names the subject's id, never its label) or 503
         ``model_unavailable`` from the prompt check, and 409 ``image_limit_reached`` or 422
@@ -6367,18 +6388,33 @@ class Engine:
         async def run(_: RequestContext) -> subject_images.SubjectImagesQueued:
             await image_jobs.require_generation(self.models, self.db)
             async with self.db.connect() as conn:
+                # #1020: the references are judged first, so a refused one costs no model call.
+                references = await subject_images.check_references(conn, request, principal)
                 rating = await subject_images.subject_rating(conn, request.content_rating)
             deployment = await self._image_deployment()
-            view = subject_images.subject_view(request, rating.guidance, deployment)
-            built = await prompt_builder.write_image_prompt(self.models, view)
-            subject_id = new_ulid()
-            job_request = image_jobs.ImageJobRequest(
-                prompt=built.prompt,
-                negative_prompt=built.negative_prompt,
-                n=request.n,
-                size=built.size,
-                aspect_ratio=None if built.size is not None else built.aspect_ratio,
-            )
+            consumer = subject_images.prompt_override(request, deployment)
+            if consumer is not None:
+                # #1017: the consumer wrote the whole prompt; no ``image_prompt`` call.
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=consumer.prompt,
+                    n=request.n,
+                    size=consumer.size,
+                    aspect_ratio=None if consumer.size is not None else consumer.aspect_ratio,
+                    reference_image_ids=() if references is None else references.ids,
+                )
+            else:
+                view = subject_images.subject_view(request, rating.guidance, deployment)
+                built = await prompt_builder.write_image_prompt(self.models, view)
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=built.prompt,
+                    negative_prompt=built.negative_prompt,
+                    n=request.n,
+                    size=built.size,
+                    aspect_ratio=None if built.size is not None else built.aspect_ratio,
+                    reference_image_ids=built.reference_image_ids,
+                )
+            # #1020: images made from references keep their subject's id.
+            subject_id = new_ulid() if references is None else references.subject_id
             prepared = await image_jobs.prepare_image_job(
                 self.image_runtime(),
                 ImageJobKind.SUBJECT,
@@ -6386,6 +6422,7 @@ class Engine:
                 subject_images.job_origin(subject_id, request),
                 job_request,
                 principal,
+                extra_params=subject_images.job_params(request),
             )
             async with self.db.begin() as conn:
                 queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)

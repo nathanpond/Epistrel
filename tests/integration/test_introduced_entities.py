@@ -204,11 +204,13 @@ async def test_a_name_the_story_holds_reuses_its_entity(
 TEXTURE = "Maren looks up from wiping down the bar."
 
 
-async def test_a_weak_relation_naming_something_untracked_is_surfaced(
+async def test_a_weak_relation_naming_something_untracked_passes(
     stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """The model's own relation (``looks_up_from``) about an untracked thing: released as
-    rendered, listed in ``uncertain_claims``, never repaired and never canonized."""
+    rendered, never repaired and never canonized. #978 (ADR-219): an extraction finding of its
+    own passes silently (disposition ``pass``, not listed in ``uncertain_claims``); a declared
+    claim still surfaces (below)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         story, ids = await structured_story(client, "Wren", "Maren")
         played = await _turn(
@@ -228,11 +230,10 @@ async def test_a_weak_relation_naming_something_untracked_is_surfaced(
         assert (verdict["kind"], verdict["reason"], verdict["disposition"]) == (
             "uncertain",
             "unresolved_entity",
-            "surface",
+            "pass",
         )
-        ((listed),) = report["uncertain_claims"]
-        assert (listed["claim_id"], listed["reason"]) == (verdict["claim_id"], "unresolved_entity")
-        assert "uncertain_surfaced" in report["degradation"]
+        assert report["uncertain_claims"] == []
+        assert "uncertain_surfaced" not in report["degradation"]
         assert report["commit"]["canonized"] == 0
 
 
@@ -281,8 +282,9 @@ async def test_the_renders_own_untracked_weak_claim_is_surfaced(
     [
         # the player's character is an argument
         ("Wren looks up from the bar", "Wren", "looks_up_from", "the_bar"),
-        # a core relation: option 2 governs it, and a person slot never mints
-        ("knows the ferryman", "Maren", "knows", "the_ferryman"),
+        # #978: a core relation's untracked person slot ("knows the ferryman") now passes
+        # (``test_unresolved_texture``); the player's character under a core relation does not
+        ("Wren knows the ferryman", "Wren", "knows", "the_ferryman"),
     ],
 )
 async def test_other_unresolved_claims_are_still_repaired(

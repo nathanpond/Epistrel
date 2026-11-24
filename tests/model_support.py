@@ -89,6 +89,10 @@ def strict_refusal(body: dict[str, Any]) -> str | None:
     return None if problem is None else f"response_format.json_schema.schema: {problem}"
 
 
+GATE_TIMEOUT_S = 30.0
+"""The longest a gated ``MockOpenAI`` request waits for its gate."""
+
+
 @dataclass
 class MockOpenAI:
     """A Chat Completions endpoint on 127.0.0.1. Replies ``[mock <model>] <last user text>``,
@@ -100,7 +104,7 @@ class MockOpenAI:
     a ``json_schema`` the way api.anthropic.com did live on 2026-11-07 (#761, ``strict_refusal``);
     ``raw_body`` is served as an HTML page with status 200; a strict ``json_schema`` named in
     ``too_large`` is answered with api.anthropic.com's live "compiled grammar is too large" 400
-    (#1009)."""
+    (#1009); with a ``gate``, each ``POST`` waits for it before answering (#941)."""
 
     port: int = 0
     requests: list[Recorded] = field(default_factory=list)
@@ -121,6 +125,9 @@ class MockOpenAI:
         default_factory=lambda: {"ProbeAnswer": '{"colour": "red", "count": 3}'}
     )
     """Answers for structured requests by schema name (the capability probe's schema)."""
+    gate: threading.Event | None = None
+    """When set, every ``POST`` waits for it (at most ``GATE_TIMEOUT_S``) before answering: a
+    call that is still pending while the test checks something else (#941)."""
     embedding_dimension: int = 16
     """The dimension ``POST /v1/embeddings`` answers with (#138): each input's vector is
     ``stub_vector(text, dimension, "mock")``."""
@@ -223,6 +230,8 @@ def mock_openai(**options: Any) -> Iterator[MockOpenAI]:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
             mock.requests.append(Recorded(self.path, self.headers.get("Authorization"), body))
+            if mock.gate is not None:
+                mock.gate.wait(GATE_TIMEOUT_S)
             if self.path.rstrip("/").endswith("/embeddings"):
                 status, payload = mock.embeddings(body)
             else:

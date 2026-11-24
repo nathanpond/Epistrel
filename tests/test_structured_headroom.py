@@ -14,7 +14,7 @@ import openai
 import pytest
 
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.models import openai_compatible, structured
+from epistrel.orchestrator.models import call_trace, openai_compatible, structured
 from epistrel.orchestrator.models.adapter import MAX_COMPLETION_TOKENS, Message, ModelParams
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox
 from epistrel.orchestrator.models.errors import ModelUnavailable
@@ -237,6 +237,37 @@ async def test_a_400_about_thinking_is_retried_without_it_and_remembered(
     assert ["thinking" in b for b in server.bodies] == [True, False, False, True]
     logged = [r.getMessage() for r in caplog.records if "thinking_fallback" in r.getMessage()]
     assert logged == ["model_call_thinking_fallback purpose=generation model=claude-haiku-5-5"]
+
+
+async def test_the_trace_keeps_both_requests_of_a_thinking_fallback(server: _Server) -> None:
+    """#1004 (ADR-201: "the trace keeps both requests"): under an eval run's call trace (the
+    exchange list ``ModelAccessLayer.send`` opens and hands its sink), a call whose first
+    request is refused for ``thinking`` records two exchanges: the first with ``thinking`` and
+    the 400, the second without it and the reply.
+
+    Complement asserted: the endpoint saw the same two bodies."""
+    server.reject_thinking = True
+    adapter = _adapter(ANTHROPIC, [])
+    opened: list[call_trace.Exchange] = []
+    token = call_trace.EXCHANGES.set(opened)
+    try:
+        answered = await adapter.complete("generation", HELLO, ModelParams(max_tokens=20))
+    finally:
+        call_trace.EXCHANGES.reset(token)
+        await adapter.aclose()
+    assert answered.text == "hello"
+    assert len(opened) == 2, opened
+    refused, retried = opened
+    assert refused.body["thinking"] == {"type": "disabled"}
+    assert refused.error is not None
+    assert refused.error["status"] == 400
+    assert "thinking" in json.dumps(refused.error["body"])
+    assert refused.response is None
+    assert "thinking" not in retried.body
+    assert retried.error is None
+    assert retried.response is not None
+    assert retried.response["text"] == "hello"
+    assert [e.body for e in opened] == server.bodies
 
 
 async def test_a_400_about_something_else_is_not_swallowed(server: _Server) -> None:

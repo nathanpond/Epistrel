@@ -6,7 +6,8 @@ adapter ``AdapterConfig.adapter`` names. Without an ``engine`` passed in it buil
 ``AdapterConfig.database_url``, or over a throwaway PostgreSQL started through testcontainers
 when none is given (``tools.model_matrix.database``, which also migrates it); the run writes
 the endpoint into that database's ``model_config`` (``default`` row: base URL, model, key and
-a 120 s per-call timeout; no adapter retries), so the URL should name a scratch database.
+a ``CALL_TIMEOUT_S`` per-call timeout, 210 s; no adapter retries), so the URL should name a
+scratch database.
 Before any case, a **preflight** probe (``ModelAccessLayer.probe``) checks the endpoint speaks
 the protocol; an unreachable one raises ``EndpointUnavailable`` and nothing is reported. The
 completing model's ``model`` field is the report's ``model_version``.
@@ -26,6 +27,8 @@ judge (``CaseContext.judge``) refuses any story that is not one of the case's ow
 deleting a story attaches and detaches its partitions, which takes table-level locks that a
 concurrent case's commit would wait behind (#953, from #929's repro), so the run creates and
 deletes scratch stories one at a time (``scratch_ddl_lock``); turns and commits stay concurrent.
+A case's deletion refused ``StoryBusy`` (#947: a lock wait past the timeout) is retried under the
+case's ``BusyRetry`` outside that lock (``Scratch._delete``), so it is no ``cleanup failed``.
 
 **Isolation.** Before and after the run the runner counts, in every table with a ``story_id``
 column, the rows of every story, and the stories themselves; once its scratch stories are gone
@@ -124,7 +127,7 @@ import epistrel.evals.judging as judges
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
-from epistrel.core.errors import GuardrailViolation
+from epistrel.core.errors import GuardrailViolation, StoryNotFound
 from epistrel.core.memory.story_partitions import count_rows, not_a_partition
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
@@ -133,7 +136,7 @@ from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.busy import CURRENT as BUSY
-from epistrel.evals.busy import BusyRetry, Stopped, busy_engine
+from epistrel.evals.busy import BusyEngine, BusyRetry, Stopped, busy_engine, retrying
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.journal import Journal, case_digest
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
@@ -541,9 +544,34 @@ class Scratch:
     async def delete_all(self) -> None:
         while self.ids:
             story_id = self.ids.pop()
+            try:
+                await self._delete(story_id)
+            except BaseException:
+                self.ids.append(story_id)  # #947: kept for the run's closing sweep
+                raise
+
+    async def _delete(self, story_id: str) -> None:
+        """#947: one scratch deletion, retried on ``StoryBusy`` under the case's ``BusyRetry``
+        (#929) outside ``scratch_ddl_lock``: each attempt holds the lock for its own call only,
+        through the unwrapped engine (a retry inside the lock would hold it through the
+        backoff). A retry that finds the story gone counts as deleted (the refused attempt's
+        deletion landed after all)."""
+        engine = self.engine
+        direct = engine.unwrapped if isinstance(engine, BusyEngine) else engine
+        attempts = 0
+
+        async def once() -> None:
+            nonlocal attempts
+            attempts += 1
             async with scratch_ddl_lock():
-                await self.engine.delete_story(_ctx(), story_id)
-                await drop_partition(self.engine, story_id)  # #970: no worker drops it
+                try:
+                    await direct.delete_story(_ctx(), story_id)
+                except StoryNotFound:
+                    if attempts == 1:
+                        raise
+                await drop_partition(engine, story_id)  # #970: no worker drops it
+
+        await retrying(once)
 
 
 @dataclass
@@ -1296,18 +1324,29 @@ def journal_scope(suite: Suite, config: AdapterConfig, fingerprint_value: str | 
 
 
 def trusted(metrics: list[MetricResult], by: str, threshold: float) -> list[MetricResult]:
-    """``metrics`` under ``Suite.trusted_by`` (#747, ADR-204): unchanged when ``by``'s mean
-    across seeds is at least ``threshold``; else every floored row (``by`` aside) is
-    ``report_only``, with a note quoting the agreement."""
+    """``metrics`` under ``Suite.trusted_by`` (#747, ADR-204, ADR-209): unchanged when ``by``'s
+    mean across seeds is at least ``threshold`` on at least ``judging.CALIBRATION_MIN_PAIRS``
+    labelled pairs in total across seeds (its ``sample_size`` times its ``seed_count``); else
+    every floored row (``by`` aside) is ``report_only``, with a note quoting the agreement and
+    any shortfall of pairs. A missing or empty ``by`` row is untrusted."""
     found = next((m for m in metrics if m.id == by), None)
     agreement = found.mean if found is not None else None
-    if agreement is not None and agreement >= threshold:
+    pairs = found.sample_size * found.seed_count if found is not None else 0
+    enough = pairs >= judges.CALIBRATION_MIN_PAIRS
+    if agreement is not None and agreement >= threshold and enough:
         return metrics
-    shown = "was not measured" if agreement is None else f"is {agreement:.2%}"
-    note = (
-        f"report only: the judge's agreement with the labelled pairs (`{by}`) {shown}, "
-        f"below {threshold:.0%} (ADR-204)"
-    )
+    if agreement is None:
+        reason = f"(`{by}`) was not measured"
+    elif agreement < threshold:
+        reason = f"(`{by}`) is {agreement:.2%}, below {threshold:.0%}"
+    else:
+        reason = f"(`{by}`) is {agreement:.2%}"
+    if agreement is not None and not enough:
+        reason += (
+            f", on {pairs} pairs, fewer than the {judges.CALIBRATION_MIN_PAIRS} it needs "
+            f"({judges.CALIBRATION_MIN_PAIRS - pairs} short)"
+        )
+    note = f"report only: the judge's agreement with the labelled pairs {reason} (ADR-204)"
     return [
         m.model_copy(update={"verdict": Verdict.report_only, "note": note})
         if m.id != by and m.rule is not Rule.informational
@@ -1476,8 +1515,12 @@ async def run_suites(
     sees each suite start and each case end.
 
     ``trace`` (#737, ``evals.trace``): the run's per-call trace, on for the run's model calls;
-    the judge calibration's calls are recorded under ``phase: calibration``."""
+    the judge calibration's calls are recorded under ``phase: calibration``. The report's
+    ``run_conditions`` count only the structured requests this run sent, not those an earlier
+    preset sent on the same trace (#988)."""
     started = now or datetime.now(UTC)
+    # #988: certify plays every preset on one trace; this run reports what it sends from here.
+    baseline = trace.counts() if trace is not None else None
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
     if not calibrate and any(s.judge_calibration == "pairwise" for s in suites):
@@ -1594,7 +1637,10 @@ async def run_suites(
     report.errors.extend(f"isolation: {p}" for p in problems)
     if config.adapter == "openai" and config.base_url:
         report.run_conditions = run_conditions(
-            config.base_url, trace, journal.reused if journal is not None else 0
+            config.base_url,
+            trace,
+            journal.reused if journal is not None else 0,
+            baseline=baseline,
         )
     if journal is not None and journal.reused:
         shas = set(journal.reused_shas)

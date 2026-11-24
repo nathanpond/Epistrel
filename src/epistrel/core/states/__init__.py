@@ -121,7 +121,6 @@ from epistrel.core.states.model import (
     CLOCK_INTERPRETIVE_MEMBERS,
     CLOCK_MEMBERS,
     CLOCK_PROSPECTIVE_MEMBERS,
-    CLOCK_SOURCES,
     COUNTED,
     IMMUTABLE_MEMBERS,
     INTERPRETIVE_MEMBERS,
@@ -142,6 +141,7 @@ from epistrel.core.states.model import (
     Value,
     Violation,
     check_change,
+    clock_change_permitted,
     coerce,
     derived_rule,
     fold,
@@ -254,7 +254,7 @@ CLOCK_ADVANCE_ROUTE = "POST /stories/{story_id}/clock/advance"
 def _clock_change_ok(change: StateChange) -> None:
     """The world clock moves only forward, by an advance from a clock source (#193): a ``set``
     (of any value, so never backward) or another source is 422 ``reserved_state``."""
-    if change.kind is not StateChangeKind.DELTA or change.source not in CLOCK_SOURCES:
+    if not clock_change_permitted(change.kind, change.source):
         raise InvalidRequest(
             f"{WORLD_CLOCK!r} is the built-in clock: advance it with {CLOCK_ADVANCE_ROUTE}",
             {"field": "state", "reason": "reserved_state", "use": CLOCK_ADVANCE_ROUTE},

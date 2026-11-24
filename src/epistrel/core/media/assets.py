@@ -156,8 +156,10 @@ from epistrel.core.tables.media import (
     MediaKind,
     MediaSource,
     MediaState,
+    PromptSource,
     SubjectKind,
     media_assets,
+    prompt_source_of,
 )
 from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
@@ -427,6 +429,12 @@ class MediaAsset(BaseModel):
         "story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it "
         "is deleted or its owner is offboarded, and the media sweep never purges it; `null` "
         "for any other asset.",
+    )
+    prompt_source: PromptSource | None = Field(
+        default=None,
+        description="Who wrote a generated image's prompt (#1017): `consumer` (its `source` is "
+        "`generated_from_consumer_prompt`) or `engine` (`generated`; every image generated "
+        "before #1017 reads `engine`); `null` for an upload or an extracted poster.",
     )
 
 
@@ -847,6 +855,7 @@ def _asset(row: Any) -> MediaAsset:
         found.pop("check_endpoint"),
         found.pop("policy_results") or (),
     )
+    found["prompt_source"] = prompt_source_of(str(found["source"]))
     return MediaAsset.model_validate(found)
 
 

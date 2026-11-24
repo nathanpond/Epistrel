@@ -142,9 +142,11 @@ class Decl:
 
 def _play(turn: Turn) -> tuple[roles_rt.TurnRoles, list[TurnBeat]]:
     request = Request(turn.overrides or None, turn.interjections)
+    names = turn.present or tuple(c.name for c in turn.cast if not c.is_player)
     found = roles_rt.resolve(
         turn.cast,
-        present_names=turn.present or tuple(c.name for c in turn.cast if not c.is_player),
+        present_ids={c.id for c in turn.cast if c.name in names},
+        present_names=names,
         rendering=list(turn.named),
         actor_id=PLAYER,
         request=request,

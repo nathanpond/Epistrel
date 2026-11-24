@@ -99,7 +99,13 @@ the correction it accepts (re-detected and re-verified) replaces the beat at its
 ``repaired_from {rung, class}``, the rejected beat's canon requests are dropped, and the commit
 stages each repaired beat's ``verify_verdict`` and every rejected text as ``render_rejected``
 (both ``audit``), with ``turn_report.repairs`` and ``epistrel_repairs_total``. With the module
-off a contradicted beat stands, labelled.
+off a contradicted beat stands, labelled. #1014 (FR-REPAIR-5): ``repair.max_attempts`` is each
+render's (``render_key``), the drop rule (``drop_fallbacks``) runs after each repair pass over
+the turn so far, and each repair's ``degradation_details`` entry is per beat
+(``repair_details``), with ``turn_report.repair``'s totals. #1013 (FR-MULTI-8,11): with
+several primaries ``repair_turn`` also checks each beat, and each repair candidate, for a
+sentence another speaker already said in the turn (``copies``; ``copy_scope``), regenerated
+once or dropped.
 
 **Regenerate** (#154, ``regenerate``): the head turn's recorded input is played again as a new
 variant. Its reads leave the replaced variant's records out (``core.membership.excluding``), so
@@ -219,7 +225,7 @@ from epistrel.core.events.types import (
     VerifyVerdict,
 )
 from epistrel.core.genesis.structured import deferred_items
-from epistrel.core.history import filtered_turn_beats
+from epistrel.core.history import filtered_turn_beats, visible_details
 from epistrel.core.images import story_images
 from epistrel.core.membership import (
     Position,
@@ -256,6 +262,7 @@ from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.propositions.registry import turn_cache as registry_turn_cache
 from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
+from epistrel.core.repair.rungs import name_words
 from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context, load_index
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
@@ -280,7 +287,7 @@ from epistrel.core.settings_schema import (
 )
 from epistrel.core.states import external as external_values
 from epistrel.core.states.effects import TIME_STOP, UNESTIMATED_SKIP, UNPROMPTED_SKIP
-from epistrel.core.tables import entity_aliases, events, facts, operations, stories
+from epistrel.core.tables import characters, entity_aliases, events, facts, operations, stories
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.operations import REGENERATED_VARIANT
@@ -349,6 +356,7 @@ from epistrel.observability.metrics import (
     count_degradation,
     count_perception_repair,
     count_repair,
+    count_repair_render,
 )
 from epistrel.orchestrator import directives as author_directives
 from epistrel.orchestrator.budget import (
@@ -409,8 +417,18 @@ from epistrel.orchestrator.providers import external_facts, unavailability
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
-from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
+from epistrel.orchestrator.repair.ladder import NARRATOR_RENDER as NARRATOR_REPAIR
+from epistrel.orchestrator.repair.ladder import (
+    REPAIR,
+    REPAIR_DROPPED,
+    Recheck,
+    RepairLadder,
+    RepairResult,
+    drop_plan,
+)
+from epistrel.orchestrator.repair.ladder import SAFE_FALLBACK as REPAIR_FALLBACK
 from epistrel.orchestrator.structured import clocking, multi, planner, stopping, turn_edges
+from epistrel.orchestrator.structured import copies as copy_check
 from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
@@ -425,6 +443,7 @@ from epistrel.orchestrator.structured import time_estimation as skipping
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
+    CLOCK_EFFECT_DROPPED,
     LATENT_HOLDER_REPAIRED,
     STRUCTURED,
     BeatDecl,
@@ -968,6 +987,16 @@ class TurnRead:
     """#623 (owner decision): the viewpoint the turn is delivered to; a narrated hidden State's
     value is verified at it, so one the viewpoint holds no belief about is repaired, not
     supported (hidden canon a perceived narration states stays #566's reveal)."""
+    placed: bool = False
+    """#1019: whether any character of the story has a placement (a placement row or a
+    ``present_at`` fact); with none, the whole cast is present."""
+    present_character_ids: tuple[str, ...] = ()
+    """#1019 (FR-MULTI-9): the turn's present set, sorted: the characters at the turn actor's
+    place as the turn starts (``core.epistemic.scene.present_at_turn``), fixed for the turn.
+    Roles, ``multi.not_present`` and the response read it; ``present``/``present_ids`` (the
+    scene line and ``## Scene``) keep the player's scene."""
+    name_words: frozenset[str] = frozenset()
+    """#1019: the words of the whole cast's names and aliases (the ladder's ``name_only``)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -1048,6 +1077,26 @@ async def _aliases(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> 
     return [str(r.alias) for r in found]
 
 
+async def _name_words(conn: AsyncConnection, story_id: str) -> frozenset[str]:
+    """#1019: the case-folded words of every cast member's name and its entity's aliases (the
+    player's included), read once per turn (not keyed: no generation reads them)."""
+    names = [
+        str(n)
+        for n in await conn.scalars(
+            select(characters.c.name).where(characters.c.story_id == story_id)
+        )
+    ]
+    names += [
+        str(a)
+        for a in await conn.scalars(
+            select(entity_aliases.c.alias)
+            .join(entities, entities.c.id == entity_aliases.c.entity_id)
+            .where(entities.c.story_id == story_id, entities.c.character_id.is_not(None))
+        )
+    ]
+    return name_words(names)
+
+
 def _addresses(text: str, names: Sequence[str]) -> bool:
     folded = f" {' '.join(text.casefold().split())} "
     return any(f" {n.casefold()} " in folded or f" {n.casefold()}," in folded for n in names)
@@ -1120,6 +1169,10 @@ async def read_turn(
     scene_doings = tuple(b.text for b in everyone if b.kind == "do")
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)
+    # #1019: the present set, anchored on the turn actor's place.
+    placed, present_set = await scene_loader.present_at_turn(
+        conn, story_id, actor.id, head, read_set=read_set
+    )
     before, _ = await _scene(lookup, story_id, head - 2)
     # By name: the scene lists them by id, which is random across runs (#154, NFR-DETERM-1).
     present = tuple(sorted(e.name for e in scene.present)) if scene is not None else ()
@@ -1174,6 +1227,9 @@ async def read_turn(
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
         characters=tuple(current.get(c.id, c) for c in cast_.render),
         steers=tuple(await author_directives.queued_steers(conn, story_id)),
+        placed=placed,
+        present_character_ids=tuple(sorted(present_set)),
+        name_words=await _name_words(conn, story_id),
     )
 
 
@@ -1195,6 +1251,8 @@ class Rendered:
     denied_introductions: int = 0
     latent_holder_repairs: int = 0
     """#750: the renders' latents whose named holder was repaired to ``canon``."""
+    clock_effects_dropped: int = 0
+    """#996: the renders' world-clock changes dropped after their correction."""
     narrator: bool = False
     model: str | None = None
     prompt_hash: str | None = None
@@ -1638,6 +1696,9 @@ class Checked:
     follow_up_verifier: Verifier | None = None
     repairs: list[RepairResult] = field(default_factory=list)
     """What the repair ladder made of each beat it corrected (#151), in beat order."""
+    repair_renders: list[bool] = field(default_factory=list)
+    """#1014: each render that ran the repair ladder, ``True`` when it ran a regeneration
+    (``turn_report.repair``)."""
     rejected_bindings: list[resolution.RejectedBinding] = field(default_factory=list)
     """The bindings of open thunks reconciliation rejected (#154), in claim order."""
     repair_verifiers: list[tuple[int, Verifier]] = field(default_factory=list)
@@ -2151,6 +2212,11 @@ async def _check_turn(
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
         verifier.introductions = introductions
+        # #979: the toward-another-character exception reads the turn's present set; the
+        # player's character counts when it is the turn actor (even unplaced).
+        verifier.present = frozenset(read.present_character_ids) | (
+            {read.actor.id} if read.actor.is_player else frozenset()
+        )
         # #198 (FR-CLOCK-19): a schedule statement is classified over the story's events.
         verifier.schedules = schedule_statements.Book(conn, story_id, turn)
         for earlier in answers_from:
@@ -2626,6 +2692,8 @@ async def _follow_up(
     checked.degradation += extra.degradation
     if narr.latent_holder_repairs and (LATENT_HOLDER_REPAIRED, "latent") not in checked.degradation:
         checked.degradation.append((LATENT_HOLDER_REPAIRED, "latent"))  # #750
+    if narr.clock_effects_dropped and (CLOCK_EFFECT_DROPPED, "state") not in checked.degradation:
+        checked.degradation.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
     checked.staged = extra.staged
     checked.follow_up_beats = frozenset(b.beat for b in extra.beats)
     checked.follow_up_verifier = extra.verifier
@@ -2802,6 +2870,10 @@ async def repair_turn(
     only: frozenset[int] | None = None,
     book: state_effects.Book | None = None,
     stage: TurnStage | None = None,
+    follow_up_render: bool = False,
+    before: Checked | None = None,
+    copies: copy_check.Scope | None = None,
+    copy_before: Checked | None = None,
 ) -> Checked:
     """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
     beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
@@ -2813,24 +2885,65 @@ async def repair_turn(
     released as the safe fallback, is left as it is. ``only`` (#174): the beats to look at (a
     sequential turn's earlier primaries were repaired before the next rendered). #187: a
     candidate's State effects are dry-run again with the turn's other beats (``book``,
-    ``stage``)."""
-    if not repair_on(configuration) or rendered.finish_reason == "fallback":
+    ``stage``). #1014 (FR-REPAIR-5): each render has its own ``repair.max_attempts``: the
+    narrator's beats are one render, the follow-up's another when ``follow_up_render`` (a turn
+    with several primaries), the rest the calling primary's (with the reactions it narrates);
+    then the drop rule runs over the whole of ``checked`` (``drop_fallbacks``), counting
+    ``before``'s beats (a staged turn's intent, for its outcome step). #1013 (FR-MULTI-8,11):
+    with ``copies`` (a turn with several primaries) each beat, in beat order and just before
+    its own repair, is also checked for a sentence another speaker already said
+    (``copies.find`` over ``copy_before``'s beats, the earlier renders', and ``checked``'s
+    beats before it, as repaired so far), and so is every repair candidate; a copied beat goes
+    to the ladder with its other violations (a deceptive or joking ``say`` too), or, with the
+    repair module off, is dropped (``ladder.copy_dropped``)."""
+    if rendered.finish_reason == "fallback":
         return checked
-    wanted = [
-        (b, found)
+    repairing = repair_on(configuration)
+    if not repairing and copies is None:
+        return checked
+
+    def copy_claims(beat: TurnBeat) -> list[CheckedClaim]:
+        """#1013: ``beat``'s copied sentences, as checked claims."""
+        if copies is None:
+            return []
+        earlier = [] if copy_before is None else [*copy_before.beats]
+        results = [*checked.repairs, *(() if copy_before is None else copy_before.repairs)]
+        exempt = {*copies.exempt, *(r.original.beat for r in results if r.fallback)}
+        pool = {b.beat: b for b in (*earlier, *checked.beats)}
+        found = copy_check.find(beat, pool.values(), player=copies.player, exempt=exempt)
+        return copy_check.claims_of(found, beat, operation_id)
+
+    def violations_of(beat: TurnBeat) -> list[CheckedClaim]:
+        copied = copy_claims(beat)
+        if not repairing:
+            return copied
+        if (
+            beat.kind == SAY
+            and beat.intent in UNREPAIRED_INTENTS
+            and not _hallucinated(checked, beat)
+        ):
+            return copied  # #1013: a deceptive or joking say is still checked for a copy
+        return [*_violations(checked, beat), *copied]
+
+    numbers = sorted(
+        b.beat
         for b in checked.beats
         if b.beat > 1
         and (only is None or b.beat in only)
         # #180: the co_author player's narration is checked by its own rules, never repaired.
         and not authority_rules.is_narrated(b)
-        and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS and not _hallucinated(checked, b))
-        and (found := _violations(checked, b))
-    ]
-    if not wanted:
+    )
+    if not repairing:
+        # #1013: the repair module off: a copied beat is dropped, every other one stands.
+        for number in numbers:
+            current = next((b for b in checked.beats if b.beat == number), None)
+            copied = [] if current is None else copy_claims(current)
+            if current is not None and copied:
+                dropped = repair_ladder.copy_dropped(current, copied)
+                _merge_repair(checked, dropped)
+                checked.degradation += dropped.degradation
         return checked
     settings = configuration.settings
-    async with db.connect() as conn:
-        detection = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
     sketches = dict(rendered.sketches)
     claims_made = [len(checked.checked)]
 
@@ -2865,6 +2978,8 @@ async def repair_turn(
         if found.verifier is not None:
             checked.repair_verifiers.append((rung, found.verifier))
         (made,) = found.beats
+        # #1013: a candidate that copies another speaker's line is rejected like any failure.
+        found.checked += copy_claims(made)
         if book is not None and book.on:
             # #187: the candidate's effects, folded with the turn's other beats'; #188: an
             # effect a repair adds stays under the turn's caps too (rewritten down to them).
@@ -2890,34 +3005,102 @@ async def repair_turn(
             return rendered.narrator_inputs or narrator_inputs
         return rendered.character_inputs
 
+    def render_of(beat: TurnBeat) -> str:
+        return render_key(beat, checked.follow_up_beats if follow_up_render else frozenset())
+
     async def output_ok(text: str) -> bool:
         return await output_passes(models, [text], context, budget=budget, render_ids=render_ids)
 
     policies = output_policies(context, render_ids)
-    ladder = RepairLadder(
-        db,
-        models,
-        story_id,
-        turn=read.turn,
-        read_set=read_set,
-        max_attempts=settings.repair.max_attempts,
-        recheck=recheck,
-        output_ok=output_ok,
-        fallback=fallback,
-        inputs_of=inputs_of,
-        sketches_of=sketches,
-        params=render_params(
-            ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
-            read.resolved.max_tokens,
-        ),
-        extraction_calls=1 if detection.extraction_on else 0,
-        check_calls=regeneration_cost(policies) - 1,
-    )
-    for beat, violations in wanted:
+    ladder: RepairLadder | None = None
+    for number in numbers:
+        beat = next((b for b in checked.beats if b.beat == number), None)
+        violations = [] if beat is None else violations_of(beat)
+        if beat is None or not violations:
+            continue
+        if ladder is None:
+            async with db.connect() as conn:
+                detection = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+            ladder = RepairLadder(
+                db,
+                models,
+                story_id,
+                turn=read.turn,
+                read_set=read_set,
+                max_attempts=settings.repair.max_attempts,
+                recheck=recheck,
+                output_ok=output_ok,
+                fallback=fallback,
+                inputs_of=inputs_of,
+                sketches_of=sketches,
+                params=render_params(
+                    ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
+                    read.resolved.max_tokens,
+                ),
+                extraction_calls=1 if detection.extraction_on else 0,
+                check_calls=regeneration_cost(policies) - 1,
+                render_of=render_of,
+                cast_names=read.names,
+                name_words=read.name_words,
+            )
         result = await ladder.run(beat, violations, budget)
         _merge_repair(checked, result)
         checked.degradation += result.degradation
+    if ladder is None:
+        drop_fallbacks(checked, stage, before)
+        return checked
+    regenerated = set(ladder.regenerated)
+    for render in ladder.renders:
+        checked.repair_renders.append(render in regenerated)
+        count_repair_render(render in regenerated)
+    drop_fallbacks(checked, stage, before)
     return checked
+
+
+CHARACTER_RENDER = "character"
+FOLLOW_UP_RENDER = "follow_up"
+"""#1014: the render keys ``repair_turn`` gives the ladder (with ``ladder.NARRATOR_RENDER``)."""
+
+
+def render_key(beat: TurnBeat, follow_up: frozenset[int] = frozenset()) -> str:
+    """#1014 (FR-REPAIR-5): the render a beat came from within one ``repair_turn`` call, each
+    with its own ``repair.max_attempts``: ``follow_up`` for a beat of ``follow_up`` (the
+    follow-up render's beats, given only when it is its own render), the narrator's for a
+    narrator beat, else the calling primary's (with the reactions it narrates)."""
+    if beat.beat in follow_up:
+        return FOLLOW_UP_RENDER
+    if beat.narrator or beat.kind == NARRATION:
+        return NARRATOR_REPAIR
+    return CHARACTER_RENDER
+
+
+def drop_fallbacks(
+    checked: Checked, stage: TurnStage | None = None, before: Checked | None = None
+) -> None:
+    """#1014 (FR-REPAIR-5): the drop rule over ``checked`` (``ladder.drop_plan``; ``before``'s
+    beats and repairs counted, never dropped): each fallback line whose speaker has a real line
+    in the turn, or already keeps one fallback line, leaves the turn (and the turn's stage, when
+    it was staged), reported ``repair_dropped``. The flat ``degradation`` keeps
+    ``safe_fallback`` only while a repair still reports it."""
+    plan = drop_plan(
+        checked.beats,
+        checked.repairs,
+        earlier=() if before is None else before.beats,
+        earlier_results=() if before is None else before.repairs,
+    )
+    if not plan:
+        return
+    for result, cause in plan:
+        number = result.original.beat
+        result.drop(cause)
+        _drop_beats(checked, {number})
+        if stage is not None and stage.get(number) is not None:
+            stage.drop(number)
+        if (REPAIR_DROPPED, cause) not in checked.degradation:
+            checked.degradation.append((REPAIR_DROPPED, cause))
+    fallback = (REPAIR_FALLBACK, REPAIR)
+    if not any(fallback in r.degradation for r in checked.repairs):
+        checked.degradation = [d for d in checked.degradation if d != fallback]
 
 
 async def _restamped(
@@ -3036,6 +3219,19 @@ def _repair_events(checked: Checked) -> list[tuple[str, Any]]:
         )
         found += [("render_rejected", r.event()) for r in result.rejected]
     return found
+
+
+def repair_totals(checked: Checked) -> dict[str, int]:
+    """#1014: ``turn_report.repair``: the renders that ran the ladder, those that ran a
+    regeneration, the regenerations, the fallback lines committed (after the drop rule) and
+    the fallback lines it dropped."""
+    return {
+        "renders": len(checked.repair_renders),
+        "renders_regenerated": sum(checked.repair_renders),
+        "regenerations": sum(r.attempts for r in checked.repairs),
+        "fallbacks": sum(1 for r in checked.repairs if r.fallback and r.drop_cause is None),
+        "dropped": sum(1 for r in checked.repairs if r.drop_cause is not None),
+    }
 
 
 def repairs_report(checked: Checked) -> list[dict[str, Any]]:
@@ -4328,6 +4524,7 @@ def _copy_checked(found: Checked) -> Checked:
         salient=list(found.salient),
         salient_characters=list(found.salient_characters),
         repairs=list(found.repairs),
+        repair_renders=list(found.repair_renders),
         rejected_bindings=list(found.rejected_bindings),
         repair_verifiers=list(found.repair_verifiers),
         step_sets=list(found.step_sets),
@@ -4350,6 +4547,7 @@ def _merge_checked(into: Checked, extra: Checked) -> Checked:
         dict.fromkeys([*into.salient_characters, *extra.salient_characters])
     )
     into.repairs += extra.repairs
+    into.repair_renders += extra.repair_renders
     into.rejected_bindings += extra.rejected_bindings
     into.repair_verifiers += extra.repair_verifiers
     into.step_sets += extra.step_sets
@@ -4373,6 +4571,7 @@ def _merged_rendered(renders: Sequence[Rendered]) -> Rendered:
         age_repairs=sum(r.age_repairs for r in renders),
         denied_introductions=sum(r.denied_introductions for r in renders),
         latent_holder_repairs=sum(r.latent_holder_repairs for r in renders),
+        clock_effects_dropped=sum(r.clock_effects_dropped for r in renders),
         narrator=any(r.narrator for r in renders),
         model=renders[-1].model or first.model,
         prompt_hash=renders[-1].prompt_hash or first.prompt_hash,
@@ -4455,6 +4654,9 @@ async def play(
     """#174: ``turn_report.multi``."""
     roles_state: list[roles_rt.TurnRoles] = []
     """#176: the turn's participation roles and reactive narration (per-character renders)."""
+    present_state: list[tuple[str, ...]] = []
+    """#1019: the response's ``present_character_ids`` (the turn's present set, sorted, without
+    the player's character and the actor)."""
     view: audience_rules.PlayerView = request.player_view or story.settings.player_view
     """#177: the player view the output is produced under (the request's, else the story's)."""
     input_qualifiers: list[perception.Qualifiers] = [perception.Qualifiers()]
@@ -5043,6 +5245,11 @@ async def play(
         )
         timing.assemble_s += time.perf_counter() - reading
         clock.add("plan", time.perf_counter() - reading)
+        present_state[:] = [
+            tuple(
+                c for c in read.present_character_ids if c != read.actor.id and c != read.player_id
+            )
+        ]
         facts = await runtime_facts(conn)
         stamped[:] = [captured.stamp(facts)]
         op.config_revisions = {
@@ -5395,6 +5602,7 @@ async def play(
         if multi.per_character(settings):
             turn_roles = roles_rt.resolve(
                 story.cast,
+                present_ids=read.present_character_ids,
                 present_names=read.present,
                 rendering=[p.id for p in order],
                 actor_id=read.actor.id,
@@ -5537,6 +5745,8 @@ async def play(
                     interjections=turn_roles is not None and turn_roles.interjections,
                     player_requests=split.requests_for(read_k.character.id),
                 )
+                # #994: the lines this prompt showed, for the commit's cite resolution.
+                knowing = replace(knowing, cite_lines=prompts.cite_lines(knowing, inputs))
                 char_render, n = await render_beats(
                     models,
                     inputs,
@@ -5581,6 +5791,7 @@ async def play(
                     age_repairs=repairs,
                     denied_introductions=denied,
                     latent_holder_repairs=sum(r.latent_holder_repairs for r, _ in renders),
+                    clock_effects_dropped=sum(r.clock_effects_dropped for r, _ in renders),
                     narrator=narrate and first,
                     model=calls.calls[-1].model if calls.calls else None,
                     prompt_hash=prompt_hash(messages),
@@ -5662,6 +5873,8 @@ async def play(
         starting: list[Record] = []
         """#175: the same-turn overlay a simultaneous primary is verified against: the input's
         and the narration's claims only, never another primary's."""
+        copy_scope = copy_check.Scope(player=tuple(t for t in (say, do) if t))
+        """#1013: the turn's copy check (used once the turn has several primaries)."""
         # #180: the co_author player's narrated beats are beats 2..k, before every render's.
         next_beat = 2 + len(split.narrated)
         read_k = read
@@ -5671,8 +5884,9 @@ async def play(
                 read_k = (
                     read if primary.id == read.character.id else replace(read, character=primary)
                 )
-                if sequential and read.present and primary.name not in read.present:
-                    # A named primary who is not in the scene renders with nothing perceived.
+                if primary.id not in read.present_character_ids:
+                    # A named primary who is not in the present set still renders (the consumer
+                    # asked); #1019: listed for one primary too.
                     report_multi.not_present.append(primary.id)
                 turn_stage.open_render(primary.id, next_beat)
                 if k > 0:
@@ -5687,6 +5901,9 @@ async def play(
                         None if simultaneous or merged is None else merged,
                     )
                 rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
+                if rendered_k.finish_reason == "fallback":
+                    # #1013: a render released as the safe fallback is never compared.
+                    copy_scope.exempt.update(b.beat for b in rendered_k.beats)
                 fresh = 0
                 if turn_roles is not None and rendered_k.finish_reason != "fallback":
                     # #176 (FR-MULTI-9,10): the reactions it narrates, judged; a reaction that
@@ -5835,6 +6052,10 @@ async def play(
                         ),
                         book=book,
                         stage=turn_stage,
+                        # #1013: with several primaries, each beat is checked for a copied line
+                        # against the earlier renders' (and its own render's earlier) beats.
+                        copies=copy_scope if len(order) > 1 else None,
+                        copy_before=merged,
                     )
                     # #638: a beat the ladder rewrote is decided again for any skip it brings.
                     await time_skips(read_k, checked_k, [] if merged is None else merged.beats)
@@ -5943,6 +6164,10 @@ async def play(
             ),
             book=book,
             stage=turn_stage,
+            # #1014: with several primaries the follow-up is its own render.
+            follow_up_render=sequential,
+            # #1013: the last primary's beats, then the follow-up's, checked for copied lines.
+            copies=copy_scope if sequential else None,
         )
         # #638: a beat the ladder rewrote is decided again for any skip it brings.
         await time_skips(read_k, checked, [])
@@ -5958,6 +6183,10 @@ async def play(
             report_multi.regenerated_beats = [
                 r.original.beat for r in checked.repairs if r.original.beat > 1
             ]
+            # #1013: the beats flagged ``copied_line`` (each once).
+            report_multi.copied = len(
+                {r.original.beat for r in checked.repairs if r.original.beat > 1 and r.copied}
+            )
         # #177 (FR-MULTI-3): the turn's concurrent commitments, reconciled on one timeline
         # after #175's adjudication (its settled pairs skipped), before the composition.
         firsts = [f for f in (turn_stage.render_of(p.id) for p in order) if f is not None]
@@ -6942,6 +7171,7 @@ async def play(
             ],
             depended=depended_pairs,
             mentions=await turn_edges.beat_mentions(conn, op.operation_id),
+            cite_lines={c.character_id: c.cite_lines for c in rendered.contexts},
         )
         if outcome_step:
             # #212: the intent's turn report stands; the completion adds its own section.
@@ -6978,8 +7208,8 @@ async def play(
         )
         report["budget"] = planner.budget_report(plan, budget)
         steps = _degradation(gated[0] if gated else None, rendered, checked)
-        report["degradation"] = [s.step for s in steps]
-        report["degradation_details"] = [{"step": s.step, "cause": s.cause} for s in steps]
+        report["degradation"] = list(dict.fromkeys(s.step for s in steps))
+        report["degradation_details"] = [s.payload() for s in steps]
         if regenerating is not None:
             # The variant this regenerate replaced (#126, #154): the feedback aggregates count a
             # regeneration of that variant's message from it.
@@ -7088,6 +7318,9 @@ async def play(
             ]
         if checked.repairs:
             report["repairs"] = repairs_report(checked)
+        if checked.repairs or checked.repair_renders:
+            # #1014 (FR-REPAIR-5): the turn's repair totals.
+            report["repair"] = repair_totals(checked)
         if books[0].on:
             # #187: what the turn declared, repaired and settled, and what it committed.
             repaired_states = [
@@ -7120,7 +7353,9 @@ async def play(
         )
         extraction.record_metrics([*checked.outcomes, *message_outcomes], checked.checked)
         for repaired in checked.repairs:
-            count_repair(repaired.rung, repaired.repair_class.value)
+            count_repair(
+                repaired.rung, repaired.repair_class.value, dropped=repaired.drop_cause is not None
+            )
         count_degradation(report["degradation"])  # #456
         if staged_turn[0] and illustration.queues and fixed.get("illustration"):
             # #265: a staged turn's accepted illustration points, queued at its completion.
@@ -7290,6 +7525,7 @@ async def play(
             attempts=1,
             structure_retries=retries,
             latent_holder_repairs=narr.latent_holder_repairs,
+            clock_effects_dropped=narr.clock_effects_dropped,
             narrator=True,
             model=calls.calls[-1].model if calls.calls else None,
             prompt_hash=prompt_hash(messages),
@@ -7338,6 +7574,8 @@ async def play(
             fallback=lite._fallback_lines(read_.inputs, cast_),
             narrator_inputs=inputs,
             book=book,
+            # #1014: the intent's beats count for the drop rule.
+            before=ctx.checked,
         )
         checked_out = await validate_perception(db, story_id, read_, checked_out, settings)
         return rendered_out, checked_out
@@ -7601,11 +7839,18 @@ async def play(
         steps = _degradation(
             outcome, released[0] if released else None, found[0] if found else None
         )
-        fields["degradation"] = [s.step for s in steps]
-        fields["degradation_details"] = steps
+        fields["degradation"] = list(dict.fromkeys(s.step for s in steps))
+        # #1014: a repair's per-beat entries for the beats the response shows.
+        fields["degradation_details"] = [
+            _step_of(d)
+            for d in visible_details([s.payload() for s in steps], beats, is_omniscient(viewpoint))
+        ]
         if multis and multi.per_character(settings):
             # #175: the mode the turn ran in, as requested (one primary included).
             fields["interaction_mode"] = multis[0].mode
+        if present_state:
+            # #1019: who Epistrel took as present (every structured mode).
+            fields["present_character_ids"] = list(present_state[0])
         if roles_state:
             # #176 (FR-MULTI-7,10, NFR-PERF-7 (6)).
             found_roles = roles_state[0]
@@ -7815,14 +8060,45 @@ def _degradation(
             extra.append((INTRODUCTION_DENIED, "allow_new_arrivals"))
         if rendered.latent_holder_repairs:
             extra.append((LATENT_HOLDER_REPAIRED, "latent"))
+        if rendered.clock_effects_dropped:
+            extra.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
     if checked is not None:
         extra += checked.degradation
     for step, cause in extra:
         if step not in seen:
             seen.add(step)
             steps.append(DegradationStep(step=step, cause=cause))
+    if checked is not None:
+        # #1014 (FR-REPAIR-5): the repair ladder's entries are per beat, by beat number (not
+        # once per step); the flat ``degradation`` list stays once per step.
+        per_beat = repair_details(checked)
+        covered = {(d.step, d.cause) for d in per_beat}
+        steps = [s for s in steps if (s.step, s.cause) not in covered] + per_beat
     # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
+
+
+def repair_details(checked: Checked) -> list[DegradationStep]:
+    """#1014: the repair ladder's per-beat ``degradation_details`` entries
+    (``RepairResult.detail``), by beat number."""
+    return [
+        _step_of(d)
+        for r in sorted(checked.repairs, key=lambda r: r.original.beat)
+        for d in r.detail()
+    ]
+
+
+def _step_of(entry: Mapping[str, Any]) -> DegradationStep:
+    violations = entry.get("violations")
+    return DegradationStep(
+        step=str(entry["step"]),
+        cause=str(entry["cause"]),
+        beat=entry.get("beat"),
+        character_id=entry.get("character_id"),
+        rung=entry.get("rung"),
+        violations=None if violations is None else tuple(violations),
+        kind=entry.get("kind"),
+    )
 
 
 def _before_steps(before: Checked | None) -> dict[int, list[int]]:

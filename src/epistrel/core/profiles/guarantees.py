@@ -514,7 +514,11 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         purposes=("image_prompt",),
         in_story=False,
         note="Writes an image prompt from what the image's audience perceived; the prompt then "
-        "passes the image-prompt policies before anything is generated (FR-IMG-2,3).",
+        "passes the image-prompt policies before anything is generated (FR-IMG-2,3). A subject "
+        "image's consumer-written prompt (FR-IMG-14, ADR-214) skips this step but not the "
+        "checks; Epistrel's evals and certification make no quality claim for it. Nor for how "
+        "alike a subject image's reference images keep its subject (FR-IMG-14, ADR-215): that "
+        "depends on the image model.",
     ),
     _row(
         "image_check",

@@ -38,8 +38,17 @@ The registry holds:
   series (FR-VERIFY-13: detection and checking are reported apart), counted at a turn's commit;
 - ``epistrel_repairs_total{rung,class}``: #151's repair ladder, one per corrected beat, counted
   at a turn's commit (``count_repair``): ``rung`` names the rung accepted (``narrowing``,
-  ``substitution``, ``regeneration``, ``safe_fallback``) and ``class`` its FR-REPAIR-4 class
+  ``substitution``, ``regeneration``, ``safe_fallback``; #1014: ``dropped`` for a fallback line
+  the drop rule removed, counted only there) and ``class`` its FR-REPAIR-4 class
   (``cosmetic``, ``substitution``, ``cascade``), both bounded enums;
+- ``epistrel_repair_regenerations_total{outcome}`` (#1014, FR-REPAIR-5): each regeneration the
+  ladder ran or gave up on, counted as it ends: ``accepted`` (its extraction-less acceptance
+  included), ``failed`` (unusable output, a model error or a rejected candidate),
+  ``skipped_max_attempts`` and ``skipped_budget`` (once per beat that wanted one and could not);
+- ``epistrel_repair_renders_total{regenerated}`` (#1014): every render that ran the repair
+  ladder, ``regenerated`` ``true`` when it ran at least one regeneration, so the per-render
+  regeneration rate is ``rate(..{regenerated="true"}) / rate(..)``. No story, character or
+  profile id is a label;
 - ``epistrel_verify_escalations_total{gate_reason,shape,flipped}`` and
   ``epistrel_verify_shadow_total{shape,agreed}``: #155's escalation records, counted at a
   turn's commit: the gate reason and the predicate shape (its four enum values joined by
@@ -255,6 +264,27 @@ REPAIR_RUNGS: dict[int, str] = {
 """The ``rung`` label of ``epistrel_repairs_total``: each rung's name (label values are enums,
 #44's rule)."""
 REPAIR_CLASSES = frozenset({"cosmetic", "substitution", "cascade"})
+REPAIR_DROPPED_RUNG = "dropped"
+"""#1014: the ``rung`` label of a fallback line the drop rule removed."""
+REPAIR_REGENERATIONS = Counter(
+    "epistrel_repair_regenerations",
+    "Repair regenerations, by outcome: accepted, failed (unusable output, model error or "
+    "rejected candidate), skipped_max_attempts, skipped_budget.",
+    ("outcome",),
+)
+REGENERATION_OUTCOMES = frozenset({"accepted", "failed", "skipped_max_attempts", "skipped_budget"})
+COPIED_LINES = Counter(
+    "epistrel_copied_lines",
+    "Beats of a turn with several primaries flagged as copying another speaker's line (#1013), "
+    "by outcome: regenerated (its one regeneration accepted) or dropped.",
+    ("outcome",),
+)
+COPIED_LINE_OUTCOMES = frozenset({"regenerated", "dropped"})
+REPAIR_RENDERS = Counter(
+    "epistrel_repair_renders",
+    "Renders that ran the repair ladder, by whether at least one regeneration ran.",
+    ("regenerated",),
+)
 
 
 VERIFY_ESCALATIONS = Counter(
@@ -312,12 +342,36 @@ def count_perception_repair(reason: str) -> None:
     PERCEPTION_REPAIRS.labels(reason=reason).inc()
 
 
-def count_repair(rung: int, repair_class: str) -> None:
-    """Count one corrected beat (``epistrel_repairs_total{rung,class}``); a rung or class
-    outside the ladder's is a programming error."""
+def count_repair(rung: int, repair_class: str, *, dropped: bool = False) -> None:
+    """Count one corrected beat (``epistrel_repairs_total{rung,class}``; #1014: a fallback line
+    the drop rule removed counts as ``rung="dropped"`` only); a rung or class outside the
+    ladder's is a programming error."""
     if rung not in REPAIR_RUNGS or repair_class not in REPAIR_CLASSES:
         raise ValueError(f"unknown repair rung {rung} or class {repair_class}")
-    REPAIRS.labels(rung=REPAIR_RUNGS[rung], **{"class": repair_class}).inc()
+    label = REPAIR_DROPPED_RUNG if dropped else REPAIR_RUNGS[rung]
+    REPAIRS.labels(rung=label, **{"class": repair_class}).inc()
+
+
+def count_regeneration(outcome: str) -> None:
+    """Count one regeneration outcome (``epistrel_repair_regenerations_total{outcome}``;
+    #1014); an outcome outside the four is a programming error."""
+    if outcome not in REGENERATION_OUTCOMES:
+        raise ValueError(f"unknown regeneration outcome {outcome}")
+    REPAIR_REGENERATIONS.labels(outcome=outcome).inc()
+
+
+def count_copied_line(outcome: str) -> None:
+    """Count one copied line's outcome (``epistrel_copied_lines_total{outcome}``; #1013); an
+    outcome outside the two is a programming error."""
+    if outcome not in COPIED_LINE_OUTCOMES:
+        raise ValueError(f"unknown copied-line outcome {outcome}")
+    COPIED_LINES.labels(outcome=outcome).inc()
+
+
+def count_repair_render(regenerated: bool) -> None:
+    """Count one render that ran the repair ladder (``epistrel_repair_renders_total``;
+    #1014)."""
+    REPAIR_RENDERS.labels(regenerated="true" if regenerated else "false").inc()
 
 
 TURN_DEGRADATION = Counter(
@@ -618,6 +672,8 @@ __all__ = [
     "BELIEF_TRANSITIONS_REFUSED",
     "BUDGET_REJECTED",
     "CHARACTERS_MODELED",
+    "COPIED_LINES",
+    "COPIED_LINE_OUTCOMES",
     "COULD_HAVE_KNOWN",
     "COULD_HAVE_KNOWN_FLAGS",
     "DIRECTOR_ORDER",
@@ -647,6 +703,8 @@ __all__ = [
     "QUARANTINES",
     "REPAIRS",
     "REPAIR_CLASSES",
+    "REPAIR_REGENERATIONS",
+    "REPAIR_RENDERS",
     "REPAIR_RUNGS",
     "REQUEST_BUCKETS",
     "RETIREMENTS",
@@ -660,9 +718,12 @@ __all__ = [
     "count_auto_points_dropped",
     "count_auto_queued",
     "count_budget_rejected",
+    "count_copied_line",
     "count_degradation",
     "count_perception_repair",
+    "count_regeneration",
     "count_repair",
+    "count_repair_render",
     "count_revalidation",
     "render_metrics",
     "router",

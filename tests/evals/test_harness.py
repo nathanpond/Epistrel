@@ -308,6 +308,10 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
             # (#936: so is the direct mode's example set, 5 cases a type.)
             short_set = suite.name in ("e12", "e12_direct")
             proven = Verdict.insufficient_evidence if short_set else Verdict.passed
+            # #1004 (ADR-209): E-03's judge is trusted on at least 200 labelled pairs; a
+            # 12-window sample on two seeds gives 48, so faithfulness is report only.
+            if suite.name == "e03":
+                proven = Verdict.report_only
             assert suite.verdict is proven or failing, suite
     # Every turn was a real one on a scratch story, under its case's eval scope and seed.
     assert played

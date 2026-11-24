@@ -260,7 +260,10 @@ jobs:
     # would triple the job's wall time.
     runs-on: ubuntu-latest
     # 18-30 min measured per preset, with ~10 min of runner variance; 30 cancelled it (#732).
-    timeout-minutes: 45
+    # v0.4.0 took 29, 44 and 40 min (standard, full, max); v0.4.1's max hit 45 and was cancelled
+    # (release run 45229678693 attempt 1), then passed in 44. A cancelled job fails `gate` and
+    # blocks the release, so 60 (as evals-zero-leak) leaves room for the variance (#1018).
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

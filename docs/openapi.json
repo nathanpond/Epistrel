@@ -7984,15 +7984,74 @@
         "type": "object"
       },
       "DegradationBody": {
-        "description": "A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`).",
+        "description": "A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`, and every\nother stage's). #1014 (FR-REPAIR-5): an entry the repair ladder made (`repair_deterministic`,\n`repair_unextracted`, `safe_fallback`, `repair_dropped`) is per beat and also carries the\nbeat, its speaker, the rung it ended at and what flagged it; other entries carry none of\nthese fields.",
         "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the beat's index in the turn (as committed; a dropped beat's as rendered). Absent on an entry that is not a repair's.",
+            "title": "Beat"
+          },
           "cause": {
             "title": "Cause",
             "type": "string"
           },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the beat's speaker; `null` for the narrator. Absent on an entry that is not a repair's.",
+            "title": "Character Id"
+          },
+          "rung": {
+            "anyOf": [
+              {
+                "enum": [
+                  "narrowing",
+                  "substitution",
+                  "regeneration",
+                  "safe_fallback",
+                  "state_settled",
+                  "dropped"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the rung the beat ended at (`state_settled`: a State finding's deterministic outcome; `dropped`: left out of the turn). Absent on an entry that is not a repair's.",
+            "title": "Rung"
+          },
           "step": {
             "title": "Step",
             "type": "string"
+          },
+          "violations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the codes of what flagged the beat, sorted: `contradicted`, `uncertain`, `unpermitted:<reason>` (#144's reason, e.g. `other_character_secret`), `think_leak`, `confabulation`, `resolution_conflict`, `hidden_conflict`, `hallucinated`, a State finding's tag, `unchecked`. Codes only, never text. Absent on an entry that is not a repair's.",
+            "title": "Violations"
           }
         },
         "required": [
@@ -9478,7 +9537,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -10241,7 +10300,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -11287,7 +11346,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -18723,7 +18782,7 @@
                             "anyOf": [
                               {
                                 "default": 0,
-                                "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                                "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                                 "maximum": 10.0,
                                 "minimum": 0.0,
                                 "title": "Max Attempts",
@@ -21211,7 +21270,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -21827,6 +21886,17 @@
             ],
             "title": "Poster Media Id"
           },
+          "prompt_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who wrote a generated image's prompt (#1017): `consumer` (its `source` is `generated_from_consumer_prompt`) or `engine` (`generated`; every image generated before #1017 reads `engine`); `null` for an upload or an extracted poster."
+          },
           "size": {
             "title": "Size",
             "type": "integer"
@@ -22233,6 +22303,17 @@
               }
             ],
             "title": "Poster Media Id"
+          },
+          "prompt_source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromptSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who wrote a generated image's prompt (#1017): `consumer` (its `source` is `generated_from_consumer_prompt`) or `engine` (`generated`; every image generated before #1017 reads `engine`); `null` for an upload or an extracted poster."
           },
           "size": {
             "title": "Size",
@@ -25843,7 +25924,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -28835,7 +28916,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -29712,7 +29793,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -31157,7 +31238,7 @@
                         "anyOf": [
                           {
                             "default": 0,
-                            "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                            "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                             "maximum": 10.0,
                             "minimum": 0.0,
                             "title": "Max Attempts",
@@ -32180,7 +32261,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -33008,7 +33089,7 @@
                       },
                       "max_attempts": {
                         "default": 0,
-                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                         "maximum": 10.0,
                         "minimum": 0.0,
                         "title": "Max Attempts",
@@ -33566,6 +33647,15 @@
         ],
         "title": "PromotionBody",
         "type": "object"
+      },
+      "PromptSource": {
+        "description": "Who wrote a generated image's prompt (#1017, ADR-214): ``consumer`` (the consumer's own\ntext, ``source = generated_from_consumer_prompt``) or ``engine`` (Epistrel's prompt writer,\n``source = generated``). An asset read derives it from ``source`` (``prompt_source_of``), so\nan image generated before #1017 reads ``engine``; an upload or extracted poster has none.",
+        "enum": [
+          "consumer",
+          "engine"
+        ],
+        "title": "PromptSource",
+        "type": "string"
       },
       "ProposalApprovedBody": {
         "description": "An approved proposal, the definition it declared, the declaration's slot (`position`,\n`N⁺k`; `slot` the full position) and its operation.",
@@ -37414,6 +37504,20 @@
             ],
             "title": "Player View"
           },
+          "present_character_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Present Character Ids"
+          },
           "previous_variant": {
             "title": "Previous Variant",
             "type": "integer"
@@ -38597,6 +38701,20 @@
               }
             ],
             "title": "Player View"
+          },
+          "present_character_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Present Character Ids"
           },
           "profile": {
             "anyOf": [
@@ -44424,7 +44542,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -46287,7 +46405,7 @@
                       },
                       "max_attempts": {
                         "default": 0,
-                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                         "maximum": 10.0,
                         "minimum": 0.0,
                         "title": "Max Attempts",
@@ -56395,11 +56513,12 @@
       },
       "SubjectImageRequest": {
         "additionalProperties": false,
-        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted) and ``n`` (1 to 4, default 1). No seed or size.",
+        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted), ``n`` (1 to 4, default 1) and an optional\n``aspect_ratio`` (#1012), exactly one of ``SUBJECT_ASPECT_RATIOS`` (``1:1``, ``2:3``,\n``3:2``, ``3:4``, ``4:3``, ``9:16``, ``16:9``; anything else is 422 at\n``body.aspect_ratio``). A given ratio is the request's own, so it wins over the\ndeployment's ``default_size`` and ``default_aspect_ratio`` and is sent instead of any size;\nomitted (or ``null``), the dimensions are the deployment default's, else ``1:1``. When the\nimage model cannot apply the ratio the image is still made: the job's applied parameters\nname ``aspect_ratio`` as dropped and the asset's ``width``/``height`` are what came back.\nAn optional ``prompt`` (#1017) is the whole image prompt, written by the consumer (1 to\n4,000 characters, not blank, no control character but newline and tab; not with ``style``:\n422 at ``body.prompt``; ``null`` means omitted). An optional ``reference_image_ids``\n(#1020) names 1 to 4 earlier subject images of the same subject (``check_references``). No\nseed or size.",
         "examples": [
           {
+            "aspect_ratio": "2:3",
             "n": 2,
-            "style": "oil painting, warm light",
+            "style": "oil painting, warm light, full-body, head to toe in frame",
             "subject": {
               "description": "Weathered fisherman, grey beard, yellow oilskin coat.",
               "label": "Contestant 7",
@@ -56408,6 +56527,18 @@
           }
         ],
         "properties": {
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The image's shape, exactly one of `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`. It wins over the deployment's default size and ratio; omitted, the deployment default applies (else `1:1`).",
+            "title": "Aspect Ratio"
+          },
           "content_rating": {
             "anyOf": [
               {
@@ -56427,6 +56558,37 @@
             "minimum": 1.0,
             "title": "N",
             "type": "integer"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The whole image prompt, written by the consumer (#1017; ADR-214): 1 to 4,000 characters, not blank, no control character but newline and tab. Epistrel writes no prompt and appends nothing; it removes written ages (`redact_ages`) and checks the result like a written prompt, judged by `subject.true_age`. Not with `style` (422 at `body.prompt`). Epistrel's evals and certification make no quality claim for a consumer prompt.",
+            "title": "Prompt"
+          },
+          "reference_image_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 4,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Earlier subject images of the same subject, by media asset id (#1020; ADR-215): 1 to 4 distinct ids, sent to the image model as reference images in this order so it draws the same person. Each must be a live image this principal generated with `POST /subject-images`, with the same `subject.true_age` it was generated with, and all must depict one subject, whose id the new images keep. Refused per index at `body.reference_image_ids.<n>`: `reference_duplicate`, `reference_not_subject_image` (an unknown id, another principal's, a story, catalog or uploaded asset, a candidate, a deleted image, a non-image), `reference_age_unknown`, `reference_age_mismatch`, `reference_subject_mismatch`. When the image model cannot take references the image is still made and its record says they were not applied. How consistent the person looks depends on the image model: Epistrel makes no quality claim.",
+            "title": "Reference Image Ids"
           },
           "style": {
             "anyOf": [
@@ -57434,6 +57596,14 @@
       "TurnSummaryModel": {
         "description": "A turn on the page and its reply; ``message`` is null for a reply-less turn.",
         "properties": {
+          "degradation_details": {
+            "description": "The turn's degradation steps with their causes, as its `respond` returned them (#1014, FR-REPAIR-5): a repair's per-beat entry only when the viewpoint sees the beat (`omniscient`: every one), a dropped beat's when it sees a beat of the same speaker in the turn. Absent when none, and on a turn stored before #1014 with no repair it reads as stored.",
+            "items": {
+              "$ref": "#/components/schemas/DegradationBody"
+            },
+            "title": "Degradation Details",
+            "type": "array"
+          },
           "incomplete": {
             "default": false,
             "description": "A staged turn still waiting on its external outcome or its outcome step (#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent otherwise.",
@@ -86311,7 +86481,7 @@
     },
     "/stories/{story_id}": {
       "delete": {
-        "description": "Remove every row of the story and nothing else (204). 423 `story_busy` while a turn runs (`reason: in_flight`) or a background job of the story runs (`reason: job_running`, `details.job_id`). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true` (the deletion is not repeated).",
+        "description": "Remove every row of the story and nothing else (204). 423 `story_busy` while a turn runs (`reason: in_flight`) or a background job of the story runs (`reason: job_running`, `details.job_id`), or when its commit waits past the lock timeout for a lock (`reason: lock_timeout`, with `Retry-After`; nothing is deleted). A retry under the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true` (the deletion is not repeated).",
         "operationId": "delete_story",
         "parameters": [
           {
@@ -106137,7 +106307,7 @@
     },
     "/subject-images": {
       "post": {
-        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age), then checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label and style never reach an operational log, metric or trace.",
+        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. `aspect_ratio` is optional and exactly one of `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9` (anything else, `5:4` included, is 422 at `body.aspect_ratio`): it wins over the deployment's `default_size` and `default_aspect_ratio` and reaches the image model as its ratio; omitted, the deployment default applies, else `1:1`. When the image model cannot apply it the image is still made: the job's applied parameters name `aspect_ratio` as dropped, and the asset's `width` and `height` are what came back. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age). Or the consumer writes the **whole prompt** in `prompt` (at most 4,000 characters, not blank, no control character but newline and tab; not with `style`, 422 at `body.prompt`): no `image_prompt` call is made, nothing is added to it (no guidance, age band or scene), and only its written ages are removed (422 at `body.prompt` when nothing is left); `subject.description` is still required and checked. Epistrel's evals and certification make **no quality claim** for a consumer prompt (ADR-214). **Reference images** (`reference_image_ids`, #1020, ADR-215): 1 to 4 distinct ids of earlier subject images, sent to the image model in that order as references so it draws the same person in the new scene (with `description` alone, `prompt`, `style` or `aspect_ratio`). Each must be a live image the caller generated here, made with the same `subject.true_age`, and all must depict one subject, whose id the new images keep in their `depicted_subjects`. Otherwise 422 `validation_error` before any model call, one `errors[]` entry per failing index at `body.reference_image_ids.<n>` with its reason as the entry's `type` (`details.reason` is the first's): `reference_duplicate`, `reference_not_subject_image` (an unknown id, another principal's asset, a story, catalog or uploaded image, a candidate, a deleted image or a non-image), `reference_age_unknown`, `reference_age_mismatch`, `reference_subject_mismatch`. When no endpoint of the image model takes references the image is still made, and its `generation_metadata` records the ids and `applied_parameters.references_applied: false`. How consistent the person looks depends on the image model: Epistrel makes no quality claim for it. Either prompt is checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated` (`generated_from_consumer_prompt` with `prompt`), `prompt_source` `engine` (`consumer` with `prompt`; also in its applied parameters), the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label, style and prompt never reach an operational log, metric or trace.",
         "operationId": "request_subject_images",
         "parameters": [
           {

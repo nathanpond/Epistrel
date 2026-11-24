@@ -29,6 +29,17 @@ no time passing (canon holds it unconscious, or, once placed at all, it is place
 (``check-perception-authority``).
 
 The stored scene is omniscient: a ``latent`` placement counts, since routing is authoritative.
+
+**The turn's present set** (#1019, FR-MULTI-9; ``present_for``, read by ``present_at_turn``):
+the characters placed at the **turn actor's** place as the turn starts (#137's placement row,
+else a ``present_at`` fact on the actor), read through ``KeyedLookup.scene`` with the actor as
+its anchor. The whole cast counts as present only in a story where no character has a
+placement at all (``core.projections.structured.story_placed``: a placement row or a
+``present_at`` fact, the player's and a benched character's included); an actor with no place
+in a placed story has no one else present. A sequestered benched character is never present
+(#831), a ``present``-benched one is (#832). Reactive narration (FR-MULTI-9) and the
+toward-another-character permission (#979) read it; the ``## Scene`` card keeps the player's
+scene.
 """
 
 from __future__ import annotations
@@ -60,7 +71,7 @@ from epistrel.core.input_versions import register_version_reader
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.projections.structured import covers, through
+from epistrel.core.projections.structured import SceneView, covers, story_placed, through
 from epistrel.core.propositions.vocabulary import (
     ADJACENT_TO,
     BARRIERS,
@@ -551,6 +562,62 @@ async def placed_elsewhere(
     return frozenset(c for c in scene.placements if c not in audience)
 
 
+# -- the turn's present set (#1019) ---------------------------------------------------------------
+
+
+def present_for(
+    scene: SceneView | None,
+    actor_entity_id: str | None,
+    *,
+    characters: Mapping[str, str],
+    cast: Iterable[str],
+    placed: bool,
+) -> frozenset[str]:
+    """#1019 (FR-MULTI-9): the character ids present with the turn actor (see the module
+    docstring). ``scene``: the scene anchored on the actor (``KeyedLookup.scene(...,
+    actor=actor_entity_id)``); ``characters``: each cast member's entity id → its character id
+    (``entities.character_id``; a cast member with no entity is never present in a placed
+    story); ``cast``: every character id the story can count as present (a sequestered benched
+    one left out), the whole-cast answer when ``placed`` is false (no character has ever been
+    placed). The set holds the actor's own character and the player's when they are there; the
+    caller drops whom it does not count."""
+    if not placed:
+        return frozenset(cast)
+    if scene is None or actor_entity_id is None or scene.location is None:
+        return frozenset()
+    return frozenset(characters[e.entity_id] for e in scene.present if e.entity_id in characters)
+
+
+async def present_at_turn(
+    conn: AsyncConnection,
+    story_id: str,
+    actor_character_id: str,
+    turn: int,
+    *,
+    read_set: StructuredReadSet | None = None,
+) -> tuple[bool, frozenset[str]]:
+    """#1019: whether the story has any placement (``story_placed``) and the present set of
+    narrative turn ``turn`` (``present_for``), as it starts (the scene as of ``turn - 1``) with
+    ``actor_character_id`` acting; read through ``KeyedLookup`` (``read_set`` when given)."""
+    from epistrel.core.errors import InvalidRequest
+
+    by_entity, rows = await _cast(conn, story_id)
+    absent = await absent_from_scene(conn, story_id, turn)
+    cast = [c for c in rows if c not in absent]
+    placed = await story_placed(conn, story_id)
+    if not placed:
+        return False, present_for(None, None, characters=by_entity, cast=cast, placed=False)
+    actor = next((e for e, c in by_entity.items() if c == actor_character_id), None)
+    if actor is None or turn - 1 < 0:
+        return True, frozenset()
+    lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
+    try:
+        found = await lookup.scene(story_id, as_of=turn - 1, actor=actor)
+    except InvalidRequest:
+        return True, frozenset()
+    return True, present_for(found, actor, characters=by_entity, cast=cast, placed=True)
+
+
 __all__ = [
     "PARTITIONS_MODULE",
     "PERCEPTION_INPUT",
@@ -565,6 +632,8 @@ __all__ = [
     "load_scene_state",
     "perception_gaps",
     "placed_elsewhere",
+    "present_at_turn",
+    "present_for",
     "recheck",
     "remember_level",
     "unconscious_kinds",

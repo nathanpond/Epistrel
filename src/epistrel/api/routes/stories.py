@@ -1550,8 +1550,10 @@ async def unarchive_story(
     description=(
         "Remove every row of the story and nothing else (204). 423 `story_busy` while a turn "
         "runs (`reason: in_flight`) or a background job of the story runs (`reason: "
-        "job_running`, `details.job_id`). A retry under the same `Idempotency-Key` is a 204 with "
-        "`Idempotent-Replay: true` (the deletion is not repeated)."
+        "job_running`, `details.job_id`), or when its commit waits past the lock timeout for a "
+        "lock (`reason: lock_timeout`, with `Retry-After`; nothing is deleted). A retry under "
+        "the same `Idempotency-Key` is a 204 with `Idempotent-Replay: true` (the deletion is "
+        "not repeated)."
     ),
 )
 async def delete_story(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> Response:

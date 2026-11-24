@@ -186,8 +186,9 @@ class Resumed(BaseModel):
 
 class RunConditions(BaseModel):
     """How the run's structured calls went to the model (#818): each story purpose's structured
-    mode, from the registry and the endpoint (``evals.run_conditions``); the structured
-    requests the trace saw, by schema and mode (``observed``); and of those, the
+    mode, from the registry and the endpoint (``evals.run_conditions``); this preset's
+    structured requests the trace saw, by schema and mode (``observed``; #988: not an earlier
+    preset's on the same certify trace); and of those, the
     parse-validate-retry requests by schema (retries included, judge calls excluded).
     ``observed`` and ``parse_validate_retry`` are ``None`` when nothing was traced
     (``--no-trace``); ``note`` says what the counts leave out."""

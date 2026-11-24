@@ -13,6 +13,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.evals import SUITES, CaseModel, Verdict
+from epistrel.evals.gate import Direction, Rule
+from epistrel.evals.judging import CALIBRATION_FLOOR, CALIBRATION_MIN_PAIRS
+from epistrel.evals.report import MetricResult
+from epistrel.evals.runner import trusted
 from epistrel.evals.suites.e03_consolidation import (
     FAITHFULNESS,
     JUDGE_AGREEMENT,
@@ -25,7 +29,9 @@ from epistrel.orchestrator.models.stub import StubAdapter
 from tests.eval.suite_support import SETS, assert_floors_pass, by_id, strict_verdict, stub_run
 
 pytestmark = pytest.mark.integration
-SAMPLE = 30
+SAMPLE = 50
+"""Windows a seed: two labelled pairs each, so 200 pairs over the two seeds, the judge's trust
+minimum (#1004: ``judging.CALIBRATION_MIN_PAIRS``)."""
 
 
 class Hallucinating(E03Suite):
@@ -108,3 +114,61 @@ async def test_e_03__untrusted_judge(pg_url: str, engine: AsyncEngine) -> None:
     assert "50.00%" in faithfulness.note
     assert "ADR-204" in faithfulness.note
     assert result.verdict is Verdict.report_only
+
+
+def _rows(agreement: float | None, pairs: int, seeds: int = 1) -> list[MetricResult]:
+    """E-03's agreement row (``pairs`` a seed over ``seeds``) and its floored faithfulness row."""
+    judged = MetricResult(
+        id=JUDGE_AGREEMENT,
+        rule=Rule.informational,
+        direction=Direction.at_least,
+        floor=None,
+        mean=agreement,
+        stdev=None,
+        sample_size=pairs,
+        seed_count=seeds,
+        per_seed=[] if agreement is None else [agreement] * seeds,
+        verdict=Verdict.report_only,
+    )
+    floored = MetricResult(
+        id=FAITHFULNESS,
+        rule=Rule.rate,
+        direction=Direction.at_least,
+        floor=0.98,
+        mean=1.0,
+        stdev=0.0,
+        sample_size=pairs // 2,
+        seed_count=seeds,
+        per_seed=[1.0] * seeds,
+        verdict=Verdict.passed,
+    )
+    return [judged, floored]
+
+
+def _faithfulness(rows: list[MetricResult]) -> MetricResult:
+    return next(m for m in rows if m.id == FAITHFULNESS)
+
+
+@pytest.mark.part("M11", "NFR-QUAL-3")
+def test_e_03__the_judge_needs_two_hundred_pairs() -> None:
+    """#1004 (#747's AC: "≥ 75% on ≥ 200 pairs"; ADR-209): perfect agreement on 199 labelled
+    pairs leaves faithfulness report only, with a note naming the shortfall; on 200 pairs it
+    keeps its verdict. The pairs count in total across seeds (100 a seed over two is 200).
+
+    Complements asserted: a missing agreement, and one measured on no pairs, are untrusted."""
+    assert CALIBRATION_MIN_PAIRS == 200
+    short = _faithfulness(trusted(_rows(1.0, 199), JUDGE_AGREEMENT, CALIBRATION_FLOOR))
+    assert short.verdict is Verdict.report_only
+    assert short.note is not None
+    assert "199 pairs" in short.note
+    assert "1 short" in short.note
+    for rows in (_rows(1.0, 200), _rows(1.0, 100, seeds=2)):
+        kept = _faithfulness(trusted(rows, JUDGE_AGREEMENT, CALIBRATION_FLOOR))
+        assert (kept.verdict, kept.note) == (Verdict.passed, None)
+    for rows in (_rows(None, 0), _rows(1.0, 0)):
+        untrusted = _faithfulness(trusted(rows, JUDGE_AGREEMENT, CALIBRATION_FLOOR))
+        assert untrusted.verdict is Verdict.report_only
+    missing = _faithfulness(trusted(_rows(1.0, 200)[1:], JUDGE_AGREEMENT, CALIBRATION_FLOOR))
+    assert missing.verdict is Verdict.report_only
+    assert missing.note is not None
+    assert "was not measured" in missing.note

@@ -26,6 +26,8 @@ from tests.eval.suite_support import (
 from tests.evals.support import stub_engine
 
 pytestmark = pytest.mark.integration
+SALIENCE_MODEL = "salience-routed"
+"""A model the run's dials route ``salience_detection`` to (#1004; the stub answers any)."""
 
 
 @pytest.mark.part("M4", "FR-COMMIT-3")
@@ -57,10 +59,14 @@ async def test_e_05(pg_url: str, engine: AsyncEngine) -> None:
 
 
 async def _played_bias(
-    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, preset: str
+    pg_url: str,
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    preset: str,
+    dials: dict[str, Any] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """E-05 on the stub under ``preset`` for one salient case: the ``(bias, routes)`` each
-    ``detect_salience`` call was played with."""
+    """E-05 on the stub under ``preset`` (with the run's ``dials``) for one salient case: the
+    ``(bias, routes)`` each ``detect_salience`` call was played with."""
     from epistrel.evals.suites import e05_salience
     from epistrel.orchestrator.commit.salience import detect_salience as original
 
@@ -81,6 +87,7 @@ async def _played_bias(
             engine=lib,
             sets_dir=SETS,
             cases={suite.name: cases},
+            dials=dials,
         )
     assert report.errors == [], report.errors
     return seen
@@ -93,14 +100,23 @@ async def test_e_05__m11_plays_the_presets_salience(
     """#748: E-05 plays salience as the run's preset configures it: Max's cases are read with
     ``salience_bias = recall`` and the route Max's profile gives ``salience_detection``.
 
+    #1004: Max routes ``salience_detection`` to ``"@strongest"``, which an eval run resolves to
+    the run's own model, so Max alone gives no route and the route half would pass with none.
+    The run's dials (``run --dial``, the scratch stories' overrides over the preset) name a
+    model for it, so the expected route is a real one and the played route must be it.
+
     Complement asserted: Full's are read with ``balanced`` (before #748 every preset was)."""
     from epistrel.evals.presets import PRESETS
     from epistrel.orchestrator.models.config import routes_of
     from epistrel.orchestrator.models.registry import SALIENCE_DETECTION
 
-    played = await _played_bias(pg_url, engine, monkeypatch, "max")
+    assert routes_of(PRESETS["max"].effective()).get(SALIENCE_DETECTION.name) is None
+    dials = {"models": {"purposes": {SALIENCE_DETECTION.name: {"model": SALIENCE_MODEL}}}}
+    played = await _played_bias(pg_url, engine, monkeypatch, "max", dials)
     assert played
-    want = routes_of(PRESETS["max"].effective()).get(SALIENCE_DETECTION.name)
+    want = routes_of(PRESETS["max"].effective(dials)).get(SALIENCE_DETECTION.name)
+    assert want is not None
+    assert want.model == SALIENCE_MODEL
     assert all(bias == "recall" for bias, _ in played), played
     assert all(routes.get(SALIENCE_DETECTION.name) == want for _, routes in played), played
 

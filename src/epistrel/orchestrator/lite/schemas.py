@@ -392,6 +392,31 @@ class DegradationStep:
 
     step: str
     cause: str
+    beat: int | None = None
+    """#1014 (FR-REPAIR-5): a repair's per-beat entry: the beat's index in the turn."""
+    character_id: str | None = None
+    """#1014: the beat's speaker (``None``: the narrator)."""
+    rung: str | None = None
+    """#1014: the rung the beat ended at (``ladder.RepairResult.rung_name``)."""
+    violations: tuple[str, ...] | None = None
+    """#1014: the codes of what flagged the beat (``ladder.violation_codes``)."""
+    kind: str | None = None
+    """#1014: the beat's kind, for the viewpoint filter only (never in the API)."""
+
+    def payload(self) -> dict[str, Any]:
+        """The ``turn_report.degradation_details`` entry: ``step`` and ``cause``, and a
+        repair's per-beat fields (#1014; ``character_id`` ``None`` for the narrator)."""
+        if self.beat is None:
+            return {"step": self.step, "cause": self.cause}
+        return {
+            "step": self.step,
+            "cause": self.cause,
+            "beat": self.beat,
+            "character_id": self.character_id,
+            "rung": self.rung,
+            "violations": list(self.violations or ()),
+            "kind": self.kind,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +490,10 @@ class RespondResult:
     reduced_characters: list[str] = field(default_factory=list)
     """#176 (NFR-PERF-7 (6)): the named primaries budget planning turned into reactive
     narration."""
+    present_character_ids: list[str] | None = None
+    """#1019 (FR-MULTI-9): a structured turn's present set (the characters at the turn actor's
+    place as it started; the whole cast in a story with no placements), sorted, without the
+    player's character and the actor; ``None`` for a Lite turn."""
     player_view: str | None = None
     """#177 (FR-RESP-13): the player view the result was produced under (``character`` or
     ``story``); ``None`` only in a result stored before #177."""

@@ -21,8 +21,10 @@ adapter, Mira's render scripted by name and the narrator's by its contract line.
   negative, on ``state_values`` and on the fold. Complement: with 600 gold the same purchase
   commits.
 - ``test_s_state_spend__refused_effects`` (#669): an effect on an unknown State, another story's
-  State, ``world_clock``, a ``delta`` on a text State and a character's effect on a hidden
-  State are each ``invalid_structure``; the narrator's effect on the hidden State commits.
+  State, a ``delta`` on a text State and a character's effect on a hidden State are each
+  ``invalid_structure``; the narrator's effect on the hidden State commits. (#996: a change to
+  ``world_clock`` is corrected once and then dropped, so the turn commits:
+  ``tests/integration/test_world_clock_effects.py``.)
 """
 
 from __future__ import annotations
@@ -363,8 +365,9 @@ async def test_s_state_spend__refused_effects(
     """#669 (#187): the turn contract refuses each structurally wrong State effect.
 
     Mira's render declares, one turn each: an effect on a State the story does not have, on
-    another story's State (``favor``, defined only in a second shop), on ``world_clock``, a
-    ``delta`` on a text State and an effect on the hidden ``suspicion``. Each is 503
+    another story's State (``favor``, defined only in a second shop), a ``delta`` on a text
+    State and an effect on the hidden ``suspicion`` (#996: ``world_clock`` is no longer
+    refused here; its change is corrected once, then dropped). Each is 503
     ``invalid_structure`` naming its error, and no value moves. Complement: the narrator's
     effect on ``suspicion`` commits."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
@@ -377,7 +380,6 @@ async def test_s_state_spend__refused_effects(
         refusals = [
             (es.effect("purse", delta=-5), "not one of the story's States"),
             (es.effect("favor", scope_key=cal, delta=-5), "not one of the story's States"),
-            (es.effect("world_clock", delta=30), "moves only by a time advance"),
             (es.effect("rumor", delta=1), "a delta applies to a number State"),
             (es.effect("suspicion", delta=1), "changes only through the narrator"),
         ]

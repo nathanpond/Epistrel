@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Targets | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `6c10d6b7da83` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — | — |
-| Standard | `70bb9a762af0` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Full | `38ccaf185a56` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Max | `a01e685fe120` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Lite | `2978d8cf6bfe` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — | — |
+| Standard | `3088dfacf0a3` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `e7a7c49f1170` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `571cf6f4ac2d` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 
@@ -37,6 +37,7 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-24 | `claude-haiku-5-5` | full | `e7a7c49f1170` | hosted | `e06` insufficient_evidence | — | — | — | — | — | — | insufficient_evidence | — | — | — | — | [insufficient_evidence](full-e7a7c49f1170-2026-11-24.md) |
 | 2026-11-22 | `claude-haiku-5-5` | standard | `ebc8df736fc3` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](standard-ebc8df736fc3-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22-2.md) |

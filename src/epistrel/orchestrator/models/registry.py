@@ -425,10 +425,10 @@ class GenerationInputs(InputSchema):
     may appear."""
 
 
-ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy"]
+ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy", "no_copy"]
 """What a repair constraint forbids (#151; shared with #154's reconciliation and #68's policy
-regeneration): asserting a claim, binding an open reference a certain way, or breaking an
-output policy."""
+regeneration): asserting a claim, binding an open reference a certain way, breaking an
+output policy, or (#1013) repeating a line another speaker already said in the turn."""
 
 
 class RepairConstraint(InputSchema):
@@ -1440,6 +1440,9 @@ class ImagePromptInputs(InputSchema):
     ] = ""
     purpose: Annotated[str, StringConstraints(max_length=200), C.CONSTRAINT] = ""
     """What the image is for (a catalog portrait, a story image at a position)."""
+    kind: Annotated[str, StringConstraints(max_length=32), C.CONSTRAINT] = ""
+    """The purpose's key (``primary``, ``gallery``, ``cover``, ``story``, ``subject``): a
+    subject image (#1012) adds the template's fixed head-in-frame line."""
     beats: Annotated[
         list[Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX)]], C.SCENE
     ] = Field(default_factory=list, max_length=200)

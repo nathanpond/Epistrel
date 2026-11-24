@@ -50,6 +50,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     before the first request, the ledger is compared with the database (stories a restored
     backup unerased are blocked) and the reapply starts in the background. A ledger that
     disagrees with the database refuses the start; an unreachable database does not.
+
+    The strict-schema warm-up (#941, ADR-212) starts last, as a background task, in the ``api``
+    and ``all`` modes; it is cancelled first at shutdown, before the model clients close.
     """
     epistrel: Engine = app.state.epistrel
     try:
@@ -87,9 +90,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await app.state.epistrel.start_workers()
     # ``/metrics`` reads the job, timer and worker gauges from this database at scrape (#74).
     metrics.GAUGES.bind(database_url(app.state.settings))
+    # The strict-schema warm-up (#941, ADR-212), in the background: readiness never waits on
+    # it. Only the processes that serve the API parse rewrites.
+    if app.state.settings.mode != "worker":
+        epistrel.warmup.start()
     try:
         yield
     finally:
+        await epistrel.warmup.stop()
         metrics.GAUGES.unbind()
         await app.state.epistrel.stop_workers()
         app.state.epistrel.bind(None)

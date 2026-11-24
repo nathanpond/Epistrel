@@ -9,11 +9,14 @@
   in one batch with no flush in between, so each later frame read the earlier resolutions from
   the pending rows; the equivalence shows it read what the per-belief path read.
 - **Complement:** another connection (another commit) never sees a batch's pending rows.
+- **A partition over ``SLICE_MAX``** (#1004): a holder with more stored beliefs than a slice holds
+  is read query by query, and ``_merged`` adds the pending rows to what the query found, cut at
+  ``limit``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from datetime import datetime
 from decimal import Decimal
@@ -24,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import pending
-from epistrel.core.enums import OperationKind, Provenance
+from epistrel.core.enums import BeliefKind, OperationKind, Provenance
 from epistrel.core.epistemic import exposure, partitions
 from epistrel.core.events import Operation
 from epistrel.core.ids import ULID_LENGTH, new_ulid
@@ -69,10 +72,10 @@ class _RolledBack(Exception):
     """Raised by a commit step after it read the rows: the transaction rolls back."""
 
 
-async def _exposed(engine: AsyncEngine) -> tuple[str, str, Any]:
+async def _exposed(engine: AsyncEngine, world: c.World | None = None) -> tuple[str, str, Any]:
     """Ann, told by Bobby where Cal was three times (one functional key, so each resolution
     contradicts or confirms the one before): the story, Ann and the claim a need names."""
-    w = await c.world(engine)
+    w = world if world is not None else await c.world(engine)
     await use_structured(engine, w.story_id)
     await store_overrides(engine, w.story_id, PARTITIONED)
     ann, bobby, cal = w.characters["Ann"], w.characters["Bobby"], w.people["Cal"]
@@ -129,12 +132,21 @@ async def _dump(conn: AsyncConnection, story_id: str, mark: str) -> dict[str, li
     return {name: sorted(repr(_normal(row, renamed)) for row in rows) for name, rows in raw.items()}
 
 
+Probe = Callable[[AsyncConnection, pending.Pending], Awaitable[None]]
+
+
 async def _resolved(
-    engine: AsyncEngine, story: str, witness: str, claim: Any, *, batched: bool
+    engine: AsyncEngine,
+    story: str,
+    witness: str,
+    claim: Any,
+    *,
+    batched: bool,
+    probe: Probe | None = None,
 ) -> tuple[dict[str, list[str]], pending.Pending | None, int]:
     """A turn whose commit resolves ``witness``'s need for ``claim``, batched or per belief; the
     rows it leaves (read in its transaction, then rolled back), its batch and how many it
-    resolved."""
+    resolved. ``probe`` runs in the batch after the pass, before anything flushes."""
     settings = await parts.partitioned(engine, story)
     found: dict[str, Any] = {}
     mark = new_ulid()
@@ -154,6 +166,8 @@ async def _resolved(
                     await exposure.resolve_needed(
                         conn, op, witness, [claim], budget=budget, settings=settings
                     )
+                    if batch is not None and probe is not None:
+                        await probe(conn, batch)
                     if batch is not None:
                         found["flushes"] = (batch.flushes, batch.guard_flushes)
                         found["held"] = sorted(batch.beliefs)
@@ -200,6 +214,57 @@ async def test_a_batched_commit_writes_what_the_per_belief_one_writes(engine: As
         assert batched[table] == single[table], table
     assert len(batched["beliefs"]) > 0
     assert len(batched["belief_transitions"]) > 0
+
+
+async def test_a_partition_over_the_slice_maximum_merges_the_pending_rows(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1004 (#754): a holder with more stored beliefs than ``SLICE_MAX`` (lowered here below
+    Ann's count) gets no slice, so a partition read inside the batch is a query whose answer
+    ``_merged`` joins with the pending rows. Every open first-order belief the pass left pending
+    is in that read, in id order, and ``limit`` cuts the merged view.
+
+    Complement asserted: the read took the large-partition path (the batch holds no slice for
+    Ann) and nothing flushed, so the pending rows came from the overlay, not the table."""
+    w = await c.world(engine)
+    story, ann, claim = await _exposed(engine, w)
+    for subject, place in (("Bobby", "kitchen"), ("Ann", "school")):
+        about = c.at(w.people[subject], w.places[place], None, None)
+        await parts.believe(engine, story, ann, about)
+    async with engine.connect() as conn:
+        stored = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM beliefs WHERE story_id = :s AND holder_character_id = :h"
+                ),
+                {"s": story, "h": ann},
+            )
+        ).scalar_one()
+    monkeypatch.setattr(partitions, "SLICE_MAX", stored - 1)
+    seen: dict[str, Any] = {}
+
+    async def probe(conn: AsyncConnection, batch: pending.Pending) -> None:
+        held = [
+            b
+            for b in partitions._pending_beliefs(conn, story, ann)
+            if b.kind is BeliefKind.FIRST_ORDER and partitions._held_row(b, None)
+        ]
+        seen["pending"] = sorted(b.id for b in held)
+        read = await partitions.partition(conn, story, ann)
+        seen["read"] = [b.id for b in read]
+        seen["first"] = [b.id for b in await partitions.partition(conn, story, ann, limit=1)]
+        seen["slice"] = batch.slices.get((story, ann), "none read")
+
+    _, batch, made = await _resolved(engine, story, ann, claim, batched=True, probe=probe)
+    assert batch is not None
+    assert made == 3
+    assert seen["slice"] is None  # over SLICE_MAX: the query path
+    assert seen["pending"], seen
+    assert set(seen["pending"]) <= set(seen["read"]), seen
+    assert seen["read"] == sorted(seen["read"])
+    assert len(seen["read"]) == len(seen["pending"]) + stored  # the stored rows and the pending
+    assert stored >= 2
+    assert seen["first"] == seen["read"][:1]
 
 
 # -- P-04's first multi-character turn ---------------------------------------------------------

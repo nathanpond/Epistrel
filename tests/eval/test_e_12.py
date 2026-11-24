@@ -450,6 +450,59 @@ async def test_e_12__direct_mode_calls_the_production_ladder(
     assert any("repair_turn reached" in e for e in result.errors), result.errors
 
 
+@pytest.mark.parametrize(
+    ("kind", "entry"), [("age_repair", "repair_ages"), ("composition_fallback", "compose_turn")]
+)
+async def test_e_12__direct_identity_cases_reach_the_production_entry_points(
+    pg_url: str,
+    engine: AsyncEngine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    entry: str,
+) -> None:
+    """#1004 (#937): an identity case reaches its production entry point: an ``age_repair``
+    case calls ``pipeline.repair_ages`` and a ``composition_fallback`` case calls
+    ``pipeline.compose_turn``, each spied on with a pass-through that calls the real one, and
+    the case counts as an identity observation.
+
+    Complement asserted: ``test_e_12__direct_mode_calls_the_production_ladder`` pins
+    ``pipeline.repair_turn`` the same way for the judged types."""
+    from epistrel.orchestrator.structured import pipeline
+
+    real = getattr(pipeline, entry)
+    calls: list[str] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(entry)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, entry, spy)
+    suite = SUITES[E12_DIRECT]
+    case = next(
+        c
+        for c in suite.load(SETS)
+        if isinstance(c, DirectCase) and c.type == kind and not c.id.endswith("-0006")
+    )
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite,
+            AdapterConfig(),
+            SEEDS[:1],
+            engine=lib,
+            sets_dir=SETS,
+            calibrate=True,
+            calibration_file=tmp_path / "judge-calibration.json",
+            cases={suite.name: [case]},
+        )
+    assert report.errors == [], report.errors
+    (result,) = report.suites
+    assert result.errors == [], result.errors
+    assert calls, f"{case.id} never reached pipeline.{entry}"
+    row = by_id(result)[direct_metric_id(kind)]
+    assert row.note == "identity (1 cases)", row.note
+
+
 def test_e_12__direct_verdict_rule() -> None:
     """#936: a direct row is judged by the relative rule: 299 non-tied pairs a seed is
     ``insufficient_evidence`` whatever the rate; at 300, mean + SD = 56 % fails."""

@@ -58,7 +58,7 @@ from epistrel.evals.suites.structured_turns import (
     render_problems,
     structure_problems,
 )
-from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, RespondResult
+from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, DegradationStep, RespondResult
 from epistrel.orchestrator.models.registry import GENERATION
 
 if TYPE_CHECKING:
@@ -238,7 +238,7 @@ class E06Suite(Suite):
             STRUCTURE: not problems,
             LENGTH: length_ok,
         }
-        causes = [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK]
+        causes = _fallback_causes(result.degradation_details)
         observations[RELEASED_FALLBACK] = bool(causes)
         repeated: bool | None = None
         if case.inputs.repeat:
@@ -284,6 +284,12 @@ class E06Suite(Suite):
     def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
         assert isinstance(case, ConformanceCase)  # noqa: S101 - load() validated it
         return {GENERATION.name: case.stub_answer}
+
+
+def _fallback_causes(details: Sequence[DegradationStep]) -> list[str]:
+    """The causes of the safe fallbacks a turn released, each once (#1014: the repair ladder's
+    entries are per beat)."""
+    return list(dict.fromkeys(d.cause for d in details if d.step == SAFE_FALLBACK))
 
 
 __all__ = [

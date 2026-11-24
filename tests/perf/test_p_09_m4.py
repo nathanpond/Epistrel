@@ -143,7 +143,8 @@ async def test_p_09__structured(
       does attempt the model repair.
     - The camp turn (salience, entailment, a model repair and a polish) under shrinking caps
       gives its optional work up in NFR-PERF-7's order: ``skip_polish``, then
-      ``repair_deterministic`` (the safe fallback), then ``entailment_safe_disposition``;
+      ``repair_deterministic`` (the safe fallback, dropped since the speaker's ``do`` stands:
+      ``repair_dropped``, #1014), then ``entailment_safe_disposition``;
       salience goes last (``salience_skipped``: every beat is texture, the ledger stays
       empty). A slow stub whose render leaves no time for the reserved extraction replaces the
       render by the safe fallback (``beat_replaced_safe_fallback``).
@@ -267,22 +268,15 @@ async def test_p_09__structured(
             await _detected(engine, story)
 
         # -- the degradation order: polish, then repairs, then entailment ------------------
+        # #1014 (FR-REPAIR-5): below 7 the camp say's fallback line is dropped, since the
+        # speaker's `do` stands (``repair_dropped``), so one beat is left and no polish is
+        # planned to skip.
         expected = {
             None: [],
             7: [planner.SKIP_POLISH],
-            6: [planner.SKIP_POLISH, planner.REPAIR_DETERMINISTIC, planner.SAFE_FALLBACK],
-            4: [
-                planner.SKIP_POLISH,
-                planner.REPAIR_DETERMINISTIC,
-                planner.SAFE_FALLBACK,
-                planner.ENTAILMENT_SAFE_DISPOSITION,
-            ],
-            3: [
-                planner.SKIP_POLISH,
-                planner.REPAIR_DETERMINISTIC,
-                planner.SAFE_FALLBACK,
-                planner.ENTAILMENT_SAFE_DISPOSITION,
-            ],
+            6: [planner.REPAIR_DETERMINISTIC],
+            4: [planner.REPAIR_DETERMINISTIC, planner.ENTAILMENT_SAFE_DISPOSITION],
+            3: [planner.REPAIR_DETERMINISTIC, planner.ENTAILMENT_SAFE_DISPOSITION],
         }
         for cap, ladder in expected.items():
             edu = await camp_story(client, engine)
@@ -296,6 +290,7 @@ async def test_p_09__structured(
             turn = answer.json()
             _accounted(turn)
             assert _ladder(turn) == ladder, (cap, turn["degradation"])
+            assert (planner.REPAIR_DROPPED in turn["degradation"]) is (cap in (3, 4, 6))
             # Salience is the last optional work given up: only at the minimum.
             assert (planner.SALIENCE_SKIPPED in turn["degradation"]) is (cap == 3)
             counts = turn["call_counts"]

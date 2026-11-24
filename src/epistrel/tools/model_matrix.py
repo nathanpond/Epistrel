@@ -119,7 +119,12 @@ from epistrel.core.stories import CharacterSpec, StorySpec, create_story_from
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.embeddings.service import EmbeddingService
-from epistrel.orchestrator.lite.schemas import SAFE_FALLBACK, PlayerInputBody, RespondRequest
+from epistrel.orchestrator.lite.schemas import (
+    SAFE_FALLBACK,
+    DegradationStep,
+    PlayerInputBody,
+    RespondRequest,
+)
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.capability import (
     CapabilityReport,
@@ -403,7 +408,7 @@ class RespondDriver:
         return TurnCalls(
             result.model_calls,
             designed_calls(sum(result.budget.reserved.values())),
-            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            _fallback_causes(result.degradation_details),
             result.budget.max_calls,
         )
 
@@ -486,7 +491,7 @@ class StructuredDriver:
         return TurnCalls(
             result.model_calls,
             designed_calls(sum(result.budget.reserved.values())),
-            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            _fallback_causes(result.degradation_details),
             result.budget.max_calls,
         )
 
@@ -599,7 +604,7 @@ class ThreeCharacterDriver:
                 renders=renders,
                 director=self.variant == "director",
             ),
-            [d.cause for d in result.degradation_details if d.step == SAFE_FALLBACK],
+            _fallback_causes(result.degradation_details),
             result.budget.max_calls,
             planning={k: v for k, v in planning.items() if v},
             steps=result.degradation,
@@ -1779,3 +1784,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
+
+
+def _fallback_causes(details: Sequence[DegradationStep]) -> list[str]:
+    """The causes of the safe fallbacks a turn released, each once (#1014: the repair ladder's
+    entries are per beat)."""
+    return list(dict.fromkeys(d.cause for d in details if d.step == SAFE_FALLBACK))

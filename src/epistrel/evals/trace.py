@@ -264,7 +264,12 @@ class CallTrace:
         self.pending: list[dict[str, Any]] = []
         self.structured: dict[str, dict[str, int]] = {}
         """#818: this session's structured requests by schema and ``structured_mode``, judge
-        calls excluded (``Report.run_conditions``)."""
+        calls excluded. A certify session plays every preset, so each preset's report takes
+        the part played since its run started (``counts``, #988; ``Report.run_conditions``)."""
+
+    def counts(self) -> dict[str, dict[str, int]]:
+        """A copy of ``structured`` as it is now: the baseline a preset's run subtracts (#988)."""
+        return {schema: dict(modes) for schema, modes in self.structured.items()}
 
     # -- what send hands over ----------------------------------------------------------------
 

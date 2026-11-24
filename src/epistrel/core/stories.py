@@ -72,6 +72,7 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, ownership, pause, providers
@@ -101,6 +102,7 @@ from epistrel.core.errors import (
     ViewpointUnresolved,
 )
 from epistrel.core.events import Operation
+from epistrel.core.events.operation import lock_timed_out, story_lock_busy
 from epistrel.core.events.registry import EventPayload
 from epistrel.core.events.types import (
     CastMember,
@@ -2120,6 +2122,12 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     The story's ``memories`` partition is dropped after the commit, by the
     ``memory_partition_drop`` job enqueued in the same transaction (#865; the hourly sweep
     catches any the job misses).
+
+    #947: a lock wait past ``operation.LOCK_TIMEOUT`` in the deletion's commit (the story row,
+    or a table lock its partitions' detach waits on; SQLSTATE 55P03 only) is 423
+    ``story_busy`` (``reason: lock_timeout``, ``Retry-After``) as a turn's commit is, and
+    nothing is deleted: the operation is story-less, so ``Operation.commit`` does not map it.
+    Any other database error is unchanged.
     """
     async with db.connect() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
@@ -2160,10 +2168,15 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
         provenance=Provenance.CONSUMER,
         bumps_revision=False,
     )
-    async with op:
-        op.append("story_deleted", StoryDeletedEvent(story_id=story_id))
-        op.add_commit_step(remove)
-        await op.commit()
+    try:
+        async with op:
+            op.append("story_deleted", StoryDeletedEvent(story_id=story_id))
+            op.add_commit_step(remove)
+            await op.commit()
+    except DBAPIError as exc:
+        if lock_timed_out(exc):
+            raise story_lock_busy(story_id) from exc
+        raise
     return removed
 
 

@@ -54,7 +54,49 @@ the render's own character as the giver ("Jenni hands Cal the key." in Jenni's r
 character's own observable action: permitted with basis ``own``. The player's character only
 receives the item. Anything else about the player's character is unchanged: "Cal picks up the
 key" (Cal acting), "Cal takes the key from Jenni" (no giver is named for a taking: the taker
-acts) and a hand-over by another character all stay ``player_character``.
+acts) and a hand-over by another character all stay ``player_character``. #979 subsumes it in
+the toward-another-character exception (below); its giver and unmodeled-item conditions carry
+over.
+
+**The toward-another-character exception** (FR-VERIFY-11; #979, ADR-218, the owner's option
+(a), widened to present characters). A character's render may state its own observable action
+that takes the player's character, or another modeled character present with it, as its object,
+recipient or target ("Maren slides a mug of cider toward Wren", "Malik leans toward Ethan"). A
+claim qualifies when all of these hold:
+
+- the asserter is a ``character`` render, not the reactive fallback (``Asserter.fallback``: a
+  reactive render's claim re-run as the narrator's own render never gets it), and the claim is
+  affirmed, on a ``do`` or ``say`` beat (``PermissionFacts.channel``; never ``think``) and
+  present-time (``PermissionFacts.current``: its valid time does not end before the turn starts;
+  a past action is history);
+- it names exactly one modeled character besides the render's own (qualifiers count, as
+  everywhere: a third named character denies), and that character is the player's or one in the
+  turn's present set (``PermissionFacts.present``: #1019's ``core.epistemic.scene.present_for``,
+  anchored on the turn actor's place, plus the turn actor when it is the player's character; the
+  render's own character must be in it too, so an off-scene primary acts toward no one). With no
+  present set given (``None``), only the player's character qualifies;
+- its shape is one of ``TOWARD_OTHER_PREDICATES``: ``holds`` of the other character, of an item
+  no modeled character is, whose detected transfer names the render's own character as the giver
+  (#519's hand-over), and ``spoke_to`` with the other character as object, both basis ``own``
+  (canonized as today); ``present_at`` of the render's own character with the other character as
+  object (its own position beside them), basis ``action_texture``; or a **free relation** (a
+  ``Layer.AUTO`` predicate the extraction backstop registered with the weakest semantics) whose
+  subject is the render's own character and whose object is the other character, with a name in
+  ``OWN_POSITION_RELATIONS`` or whose first token, lemmatized (``action_verb``: a suffix table and
+  an irregulars map, no NLP dependency), is in ``OBSERVABLE_ACTION_VERBS`` ("slides_cup_to",
+  "gives_nod_to", "turns_toward", "serves_drink_to", "leans_toward"), basis ``action_texture``.
+
+``action_texture`` is texture that is never canonized (``Verifier.canon_requests`` skips it), and
+no permitted claim of this rule is the speaker's own backstory (``Permitted.toward``, which
+``orchestrator.epistemic.speech.own_backstory`` reads). Everything else stays denied: a claim
+whose subject is the player's character ("Wren is tired", "Wren picks up the key", "Wren takes
+the key from Maren") or the other character ("Ethan is nervous"), the other's attributes,
+relationships or backstory even with the render's character as subject ("Maren is Wren's
+sister", a free relation such as ``is_sister_of``, ``loves`` or ``remembers``), an action toward a
+modeled character who is not present ("Malik nods to Carlos" with Carlos at the other camp), and
+any claim of a render other than the acting character's. Locked canon, a State change and the
+resolution exemption are decided before it; protected content still denies. A director pass and
+reactive narration are unchanged.
 
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
@@ -108,6 +150,7 @@ author-locked canon still win.
 
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
 backstory within its constraints), ``co_author`` (#180), ``bench_present`` (#832),
+``action_texture`` (#979, never canonized),
 ``texture`` (incidental scene texture, an unmodeled person included), ``arrival``, ``world``
 (a director's world fact), ``identity`` (#171), ``author`` or ``resolution``. An
 **arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
@@ -129,6 +172,7 @@ Log lines carry counts and codes only (invariant 3).
 from __future__ import annotations
 
 import logging
+import re
 import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -139,7 +183,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import RecordProvenance
-from epistrel.core.propositions.model import Polarity, Predicate, PredicateOwner, Proposition
+from epistrel.core.propositions.model import (
+    Instant,
+    Layer,
+    Polarity,
+    Predicate,
+    PredicateOwner,
+    Proposition,
+)
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
@@ -207,6 +258,10 @@ class Basis(StrEnum):
     """#649 (FR-RESP-14, ADR-177): a fact about another character the asserting character holds
     through an ``author_fiat`` acquisition (ADR-174): it may state it, as it could a fact it
     perceived or was told."""
+    ACTION_TEXTURE = "action_texture"
+    """#979 (ADR-218): a render's own observable action toward the player's character or a
+    present character, as a free relation or its own position beside them: texture, never
+    canonized."""
 
 
 REACTIVE_PREDICATES: frozenset[str] = frozenset({"spoke", "spoke_to"})
@@ -222,6 +277,75 @@ BENCH_PRESENT_PREDICATES: frozenset[str] = frozenset({"holds", "located_at", "pr
 """What the narrator or a primary may establish about a character benched ``present`` (#832):
 its non-speech observable actions, what it holds and where it is. Never that it spoke."""
 
+TOWARD_OTHER_PREDICATES: frozenset[str] = frozenset({"holds", "spoke_to", "present_at"})
+"""#979: the core predicates of the toward-another-character exception (see the module
+docstring): ``holds`` of the other character through the render's own hand-over (the giver),
+``spoke_to`` the other character, and ``present_at`` the other character (its own position)."""
+
+OBSERVABLE_ACTION_VERBS: frozenset[str] = frozenset(
+    {
+        "slide",
+        "give",
+        "hand",
+        "pass",
+        "pour",
+        "serve",
+        "offer",
+        "nod",
+        "wave",
+        "smile",
+        "look",
+        "glance",
+        "turn",
+        "lean",
+        "step",
+        "sit",
+        "stand",
+        "walk",
+        "gesture",
+        "point",
+        "touch",
+        "hug",
+        "speak",
+        "talk",
+        "say",
+        "tell",
+        "ask",
+        "whisper",
+        "call",
+        "reply",
+        "answer",
+    }
+)
+"""#979 (owner, round three): the lemmatized first tokens of a free relation that is the
+render's own observable action toward another character (``action_verb``)."""
+
+OWN_POSITION_RELATIONS: frozenset[str] = frozenset(
+    {"present_with", "beside", "next_to", "near", "with"}
+)
+"""#979 (owner, round two): free relations that state the render's own position beside another
+character."""
+
+IRREGULAR_VERBS: Mapping[str, str] = {
+    "gave": "give",
+    "given": "give",
+    "sat": "sit",
+    "stood": "stand",
+    "slid": "slide",
+    "spoke": "speak",
+    "spoken": "speak",
+    "told": "tell",
+    "said": "say",
+    "leant": "lean",
+}
+"""#979: the irregular forms ``action_verb`` maps to an ``OBSERVABLE_ACTION_VERBS`` lemma."""
+
+TOWARD_CHANNELS: frozenset[str] = frozenset({"do", "say"})
+"""#979: the beat channels the toward-another-character exception applies on (never ``think``)."""
+
+_TOKENS = re.compile(r"_+|(?<=[a-z])(?=[A-Z])")
+_SUFFIXES = ("ing", "ed", "es", "s")
+
 
 @dataclass(frozen=True, slots=True)
 class Asserter:
@@ -236,6 +360,9 @@ class Asserter:
     """#598 (from #518): the character a ``co_author`` asserter's beat narrates, whose own
     change-cued action may change its fluents (``orchestrator.verify.verifier.mover_of``). Not
     part of the asserter's identity: the permission check reads the claim's subject."""
+    fallback: bool = field(default=False, compare=False)
+    """#979: a ``character`` asserter that is a reactive render's claim re-run as the narrator's
+    own render (``_reactive``); it never gets the toward-another-character exception."""
 
     def __post_init__(self) -> None:
         if self.kind in ("character", "reactive", "player", "co_author") and not self.character_id:
@@ -271,6 +398,9 @@ class SubjectOwner:
 class Permitted:
     basis: Basis
     ok: Literal[True] = True
+    toward: bool = field(default=False, compare=False)
+    """#979: permitted by the toward-another-character exception (an action toward another
+    character, never the speaker's own backstory)."""
 
     def code(self) -> str:
         return f"permitted:{self.basis.value}"
@@ -339,6 +469,16 @@ class PermissionFacts:
     bench_present: frozenset[str] = frozenset()
     """#832 (FR-MULTI-14): the characters benched ``present`` as the claim's turn starts (by
     character id; see "The present-bench exception")."""
+    present: frozenset[str] | None = None
+    """#979: the turn's present set (by character id; the turn actor added when it is the
+    player's character), as the verifier passes it in; ``None`` when not given (then only the
+    player's character counts as present). See "The toward-another-character exception"."""
+    channel: str | None = None
+    """#979: the claim's beat channel (``do``, ``say``, ``think``, ...), as the verifier passes
+    it in; ``None`` when not given (no channel restriction)."""
+    current: bool = True
+    """#979: the claim's valid time does not end before its turn starts (``facts_for`` reads it
+    for a character's render)."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -419,9 +559,13 @@ def permission(
         return _reactive(claim, asserter, subject_owner, facts, modeled, name)
     own = asserter.character_id
     others = [e for e in modeled if e.character_id != own]
-    if asserter.kind == "character" and _hands_over(claim, facts, own):
-        # #519: the hand-over exception (see the module docstring).
-        return _texture(facts, Basis.OWN)
+    if asserter.kind == "character" and not _bench_present(claim, facts, others, name):
+        # #979 (subsuming #519's hand-over): the toward-another-character exception (see the
+        # module docstring); the present-bench exception is decided first, as before.
+        toward = _toward(claim, asserter, facts, others, name)
+        if toward is not None:
+            found = _texture(facts, toward)
+            return Permitted(found.basis, toward=True) if isinstance(found, Permitted) else found
     mine = next((e for e in facts.entities.values() if e.character_id == own), None)
     if asserter.kind in ("player", "co_author") and (mine is None or mine.is_player):
         # Player input for the player's own character (FR-AUTH-3: input for a character the
@@ -476,8 +620,10 @@ def _reactive(
     if any(e.is_player and e.character_id != reactor for e in modeled):
         return Denied(Reason.PLAYER_CHARACTER)
     if subject_owner.character_id != reactor:
-        # Not about the reactor: the narrator's own render's rules.
-        return permission(claim, Asserter("character", asserter.character_id), subject_owner, facts)
+        # Not about the reactor: the narrator's own render's rules (#979: as a fallback, which
+        # never gets the toward-another-character exception).
+        narrator = Asserter("character", asserter.character_id, fallback=True)
+        return permission(claim, narrator, subject_owner, facts)
     presence = name == "present_at" and facts.placed
     if name not in REACTIVE_PREDICATES and not presence:
         return Denied(Reason.OTHER_CHARACTER_SECRET)
@@ -503,26 +649,96 @@ def _bench_present(
     )
 
 
-def _hands_over(claim: Proposition, facts: PermissionFacts, own: str | None) -> bool:
-    """#519: ``claim`` is an affirmed ``holds`` of the player's character, of an item no
-    modeled character is, handed over by the render's own character (``facts.giver``)."""
-    if facts.predicate is None or facts.predicate.name != "holds" or facts.giver is None:
-        return False
-    if claim.polarity is not Polarity.AFFIRMED or claim.object_id is None:
-        return False
-    giver = facts.entities.get(facts.giver)
+def action_verb(name: str) -> str | None:
+    """#979: the ``OBSERVABLE_ACTION_VERBS`` lemma of a relation name's first token (split on
+    ``_`` and camelCase), or ``None``: the token itself, an irregular form (``IRREGULAR_VERBS``),
+    or the token with ``-ing``, ``-ed``, ``-es`` or ``-s`` stripped (in that order), tried as is,
+    with a doubled final consonant undone and with ``e`` added (glances → glance, nodded → nod,
+    passes → pass)."""
+    tokens = [t for t in _TOKENS.split(name) if t]
+    if not tokens:
+        return None
+    word = tokens[0].casefold()
+    if word in OBSERVABLE_ACTION_VERBS:
+        return word
+    if word in IRREGULAR_VERBS:
+        return IRREGULAR_VERBS[word]
+    for suffix in _SUFFIXES:
+        if not word.endswith(suffix) or len(word) <= len(suffix) + 1:
+            continue
+        stem = word[: -len(suffix)]
+        candidates = [stem, f"{stem}e"]
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            candidates.append(stem[:-1])
+        for candidate in candidates:
+            if candidate in OBSERVABLE_ACTION_VERBS:
+                return candidate
+    return None
+
+
+def _counts_present(character_id: str | None, facts: PermissionFacts, *, player: bool) -> bool:
+    if facts.present is None:
+        return player
+    return character_id in facts.present
+
+
+def _toward(
+    claim: Proposition,
+    asserter: Asserter,
+    facts: PermissionFacts,
+    others: Sequence[EntityInfo],
+    name: str | None,
+) -> Basis | None:
+    """#979: the basis ``claim`` is permitted with under the toward-another-character exception
+    (see the module docstring), or ``None`` when it does not qualify."""
+    own = asserter.character_id
+    predicate = facts.predicate
+    if asserter.kind != "character" or asserter.fallback or own is None or predicate is None:
+        return None
+    if claim.polarity is not Polarity.AFFIRMED or claim.object_id is None or not facts.current:
+        return None
+    if facts.channel is not None and facts.channel not in TOWARD_CHANNELS:
+        return None
+    if len(others) != 1:
+        return None
+    (other,) = others
+    if not _counts_present(other.character_id, facts, player=other.is_player):
+        return None
+    if facts.present is not None and own not in facts.present:
+        return None  # an off-scene render acts toward no one
     subject = facts.entities.get(claim.subject_id)
-    item = facts.entities.get(claim.object_id)
-    return (
-        giver is not None
-        and own is not None
-        and giver.character_id == own
-        and subject is not None
-        and subject.is_player
-        and subject.character_id != own
-        and (item is None or not item.modeled)
-        and set(_argument_ids(claim)) == {claim.subject_id, claim.object_id}
-    )
+    target = facts.entities.get(claim.object_id)
+    if subject is None:
+        return None
+    if name == "holds":
+        # #519's hand-over, to the other character: an item no modeled character is.
+        giver = None if facts.giver is None else facts.entities.get(facts.giver)
+        handed = (
+            giver is not None
+            and giver.character_id == own
+            and subject.character_id == other.character_id
+            and (target is None or not target.modeled)
+            and set(_argument_ids(claim)) == {claim.subject_id, claim.object_id}
+        )
+        return Basis.OWN if handed else None
+    if subject.character_id != own or target is None or target.character_id != other.character_id:
+        return None
+    if name == "spoke_to":
+        return Basis.OWN
+    if name == "present_at":
+        return Basis.ACTION_TEXTURE
+    free = predicate.layer is Layer.AUTO and name is not None
+    if free and (name in OWN_POSITION_RELATIONS or action_verb(str(name)) is not None):
+        return Basis.ACTION_TEXTURE
+    return None
+
+
+def _current(claim: Proposition, turn_start: int) -> bool:
+    """#979: whether ``claim``'s valid time reaches its turn's start (``turn_start``, a
+    story-minute): an open end, or one after it."""
+    time = claim.valid_time
+    end = time.until if isinstance(time, Instant) else time.definite()[1]
+    return end is None or end > turn_start
 
 
 def _texture(facts: PermissionFacts, basis: Basis) -> Permission:
@@ -650,6 +866,19 @@ async def facts_for(
     benched = await bench_states(
         conn, story_id, before_turn=None if through_position is None else through_position[0]
     )
+    current = True
+    if (
+        asserter is not None
+        and asserter.kind == "character"
+        and through_position is not None
+        and any(e.modeled and e.character_id != asserter.character_id for e in known.values())
+    ):
+        # #979: a past action toward another character is history (the exception is
+        # present-time only); the turn's start as its clock reads it.
+        from epistrel.core.resolution.context import load_time_basis
+
+        basis = await load_time_basis(conn, story_id)
+        current = _current(claim, basis.at((through_position[0], 0)))
     return PermissionFacts(
         entities=known,
         predicate=predicate,
@@ -661,6 +890,7 @@ async def facts_for(
         resolves=resolves,
         giver=giver,
         bench_present=frozenset(c for c, b in benched.items() if b.mode == PRESENT),
+        current=current,
     )
 
 
@@ -681,6 +911,8 @@ class _Call:
     resolves: str | None = None
     giver: str | None = None
     fiat_known: bool = False
+    present: frozenset[str] | None = None
+    channel: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -717,6 +949,8 @@ async def check(
     resolves: str | None = None,
     giver: str | None = None,
     fiat_known: bool = False,
+    present: frozenset[str] | None = None,
+    channel: str | None = None,
 ) -> Permission | None:
     """``claim``'s permission for ``asserter`` over the story's structured data, its canon
     reads keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The
@@ -724,7 +958,9 @@ async def check(
     names the open thunk the claim resolves (the resolution exemption); ``giver`` the entity a
     detected transfer names as handing the item over (the hand-over exception); ``fiat_known``
     (#649) that the asserting character holds the claim through an ``author_fiat``
-    acquisition, as the verifier read it from its beliefs."""
+    acquisition, as the verifier read it from its beliefs; ``present`` and ``channel`` (#979)
+    the turn's present set and the claim's beat channel (the toward-another-character
+    exception)."""
     if await options_for(conn, story_id) is None:
         return None
     facts = await facts_for(
@@ -740,6 +976,8 @@ async def check(
     )
     if fiat_known:
         facts = replace(facts, fiat_known=True)
+    if present is not None or channel is not None:
+        facts = replace(facts, present=present, channel=channel)
     found = permission(claim, asserter, owner_of(claim, facts), facts)
     if remember:
         _remember(
@@ -755,6 +993,8 @@ async def check(
                 resolves,
                 giver,
                 fiat_known,
+                present,
+                channel,
             ),
         )
     return found
@@ -782,6 +1022,8 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             resolves=call.resolves,
             giver=call.giver,
             fiat_known=call.fiat_known,
+            present=call.present,
+            channel=call.channel,
         )
         if again is None or again.code() != call.code:
             log.debug("rebase re-check: a permission changed (%d checked)", len(calls))
@@ -794,9 +1036,14 @@ register_rebase_check(recheck)
 
 __all__ = [
     "CO_AUTHOR_PREDICATES",
+    "IRREGULAR_VERBS",
     "LOCKED_FIELDS",
+    "OBSERVABLE_ACTION_VERBS",
+    "OWN_POSITION_RELATIONS",
     "PLACEMENT_PREDICATES",
     "PRECEDENCE",
+    "TOWARD_CHANNELS",
+    "TOWARD_OTHER_PREDICATES",
     "Asserter",
     "AsserterKind",
     "Basis",
@@ -808,6 +1055,7 @@ __all__ = [
     "Permitted",
     "Reason",
     "SubjectOwner",
+    "action_verb",
     "arrival_policy",
     "character_infos",
     "check",

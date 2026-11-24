@@ -6,18 +6,29 @@ Only under ``multi_character.renders = per_character``: under ``combined`` (ever
 in a Lite story the stored roles are accepted and inert, and a request's ``roles`` or
 ``reactive_interjections`` is 422 (``refuse``).
 
-**Resolution** (``resolve``, when the turn renders): every present character (#161's co-located
-set: the scene's present names; with no placements, the whole cast) gets its role for the turn
-(``core.epistemic.roles.resolve_roles``); the planner's reduced primaries are ``reactive``
-(``reduced``), its deferred fixed primaries stay ``primary`` and are not narrated. The player's
+**Resolution** (``resolve``, when the turn renders): every present character gets its role for
+the turn (``core.epistemic.roles.resolve_roles``). #1019 (FR-MULTI-9): the present set is the
+characters placed at the **turn actor's** place as the turn starts
+(``core.epistemic.scene.present_for``, ``TurnRead.present_character_ids``); the whole cast only
+in a story where no character has a placement at all, and no one else with an actor that has no
+place in a placed story. A character the consumer names in ``render_character_ids`` renders
+even when it is not present (``turn_report.multi.not_present`` lists it) and counts as present
+only as a renderer, never as a reactor for others. ``## Others present`` (``others_present``)
+keeps listing the reactive characters of the player's scene (``TurnRead.present``). The
+planner's reduced primaries are ``reactive`` (``reduced``), its deferred fixed primaries stay
+``primary`` and are not narrated. The player's
 character and a non-player actor have none. ``turn_report.roles`` = ``{cid: {role, source}}`` and
 the response's ``roles`` are the oracle; a request's ``primary`` override names a character to
 render (``promoted``, after the named ones).
 
 **Reactions** (``collect``, ``apply``): a primary's render declares reactions on its ``reactions``
 channel (``render.ReactionDecl``), and ``core.epistemic.roles.prose_reactions`` finds those its
-``do`` prose narrates (the sentence is taken out of the primary's beat; a beat left empty becomes
-the reaction). Each is judged (``roles.judge``): accepted, it becomes its own beat after the
+``do`` prose narrates of **any** cast member (#1019; the sentence is taken out of the primary's
+beat; a beat left empty becomes the reaction, or is dropped when the reaction is). Each is
+judged (``roles.judge``). #1019: a reaction of a character outside the present set is dropped
+``not_present`` and staged as ``render_rejected`` (constraint ``{"kind": "reaction", "reason":
+"not_present"}``, attempt 0, rung 1, at the primary's beat); it never reaches the repair ladder
+and is no ``degradation_details`` entry. accepted, it becomes its own beat after the
 primary's (a ``do``, or a brief interjection's ``say`` with ``intent = unspecified``) attributed
 to the reactor with ``narrated_by`` = the primary, which does not count against
 ``render.max_beats``; a reaction that needs a render of its own **escalates** the reactor (at
@@ -45,7 +56,7 @@ lines carry ids and counts only (invariant 3).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -79,6 +90,8 @@ log = logging.getLogger(__name__)
 
 REACTION_REJECTED = "reaction"
 """The ``render_rejected`` constraint kind of a dropped narrated reaction (#176)."""
+NOT_PRESENT = "not_present"
+"""#1019: the drop reason of a reaction of a character outside the turn's present set."""
 OBSERVABLE = frozenset({"say", "do", "narration"})
 
 
@@ -144,6 +157,9 @@ class TurnRoles:
     max_words: int = rules.INTERJECTION_MAX_WORDS
     player_id: str | None = None
     rendering: set[str] = field(default_factory=set)
+    listed: dict[str, RoleOf] = field(default_factory=dict)
+    """#1019: the roles of the player's scene (``TurnRead.present``), which ``## Others
+    present`` keeps listing; ``roles`` (the present set's) judge the reactions."""
     reduced: tuple[str, ...] = ()
     deferred: list[dict[str, Any]] = field(default_factory=list)
     escalation_deferred: list[dict[str, Any]] = field(default_factory=list)
@@ -179,8 +195,14 @@ class TurnRoles:
         ]
 
     def others_present(self) -> list[str]:
-        """The ``## Others present`` lines: ``<name> (id <id>)``."""
-        return [f"{self.names.get(c, c)} (id {c})" for c in self.reactive()]
+        """The ``## Others present`` lines: ``<name> (id <id>)``, of the player's scene
+        (#1019: ``listed``)."""
+        listed = [
+            c
+            for c, r in self.listed.items()
+            if r.role == rules.REACTIVE and c not in self.rendering
+        ]
+        return [f"{self.names.get(c, c)} (id {c})" for c in listed]
 
     def defer(self, character_id: str, reason: str, needed: str | None) -> None:
         if any(e["character_id"] == character_id for e in self.escalation_deferred):
@@ -216,6 +238,7 @@ class TurnRoles:
 def resolve(
     cast: Sequence[CastEntry],
     *,
+    present_ids: Collection[str],
     present_names: Sequence[str],
     rendering: Sequence[str],
     actor_id: str,
@@ -226,35 +249,46 @@ def resolve(
     deferred: Sequence[str] = (),
     deferred_fixed: Sequence[str] = (),
 ) -> TurnRoles:
-    """The turn's roles (see the module docstring)."""
+    """The turn's roles (see the module docstring): ``present_ids`` is the turn's present set
+    (#1019), ``present_names`` the player's scene's names (``## Others present``; empty: the
+    whole cast)."""
     stored = stored_of(cast, story)
     player_id = next((c.id for c in cast if c.is_player), None)
     wanted = set(present_names)
-    present = [c.id for c in cast if not c.is_player and (not wanted or c.name in wanted)]
+    listed = [c.id for c in cast if not c.is_player and (not wanted or c.name in wanted)]
+    present = [c.id for c in cast if not c.is_player and c.id in present_ids]
     excluded = {actor_id} | ({player_id} if player_id else set())
-    found = rules.resolve_roles(
-        present=present,
-        named=[*rendering, *deferred],
-        stored=stored,
-        overrides=getattr(request, "roles", None),
-        excluded=excluded,
-        minors=[c.id for c in cast if c.minor],
-    )
+
+    def assign(among: Sequence[str]) -> dict[str, RoleOf]:
+        found = rules.resolve_roles(
+            present=among,
+            named=[*rendering, *deferred],
+            stored=stored,
+            overrides=getattr(request, "roles", None),
+            excluded=excluded,
+            minors=[c.id for c in cast if c.minor],
+        )
+        for cid in reduced:
+            if cid in found or cid in among:
+                found[cid] = RoleOf(
+                    rules.REACTIVE, rules.REDUCED, stored.get(cid, Participation()).fixed
+                )
+        for cid in deferred:
+            if cid in found:
+                found[cid] = RoleOf(
+                    rules.PRIMARY,
+                    rules.FIXED if cid in deferred_fixed else rules.DEFAULT,
+                    cid in deferred_fixed,
+                )
+        return found
+
+    found = assign(present)
     for cid in reduced:
-        if cid in found or cid in present:
-            found[cid] = RoleOf(
-                rules.REACTIVE, rules.REDUCED, stored.get(cid, Participation()).fixed
-            )
-            PRIMARIES_REDUCED.inc()
-    for cid in deferred:
         if cid in found:
-            found[cid] = RoleOf(
-                rules.PRIMARY,
-                rules.FIXED if cid in deferred_fixed else rules.DEFAULT,
-                cid in deferred_fixed,
-            )
+            PRIMARIES_REDUCED.inc()
     return TurnRoles(
         roles=found,
+        listed=found if listed == present else assign(listed),
         present=frozenset([*present, *rendering]),
         names={c.id: c.name for c in cast},
         interjections=interjections_of(story, request),
@@ -304,11 +338,8 @@ def collect(
                 reacts_to=trigger,
             )
         )
-    others = {
-        roles.names[c]: c
-        for c in roles.names
-        if c != primary and c in roles.present | ({roles.player_id} if roles.player_id else set())
-    }
+    # #1019: any cast member's name (an off-scene one's reaction is dropped ``not_present``).
+    others = {roles.names[c]: c for c in roles.names if c != primary}
     for beat in own:
         if beat.kind != "do":
             continue
@@ -353,6 +384,9 @@ def apply(
             roles.dropped[bound.reason] = roles.dropped.get(bound.reason, 0) + 1
             if bound.reason == rules.FIXED_ROLE:
                 roles.defer(cid, rules.FIXED_ROLE, None)
+            if bound.reason == NOT_PRESENT:
+                # #1019: staged as ``render_rejected`` at the primary's beat; never repaired.
+                roles.rejected.append((_unplaced(reaction, beats), NOT_PRESENT))
         elif bound.outcome is Outcome.ACCEPT:
             kind = bound.kind
         else:
@@ -427,6 +461,24 @@ def apply(
         )
     out.sort(key=lambda b: b.beat)
     return out, escalate
+
+
+def _unplaced(reaction: Reaction, beats: Sequence[TurnBeat]) -> TurnBeat:
+    """#1019: a ``not_present`` reaction as its ``render_rejected`` record's beat: the prose
+    beat it was cut from, else its trigger, else the narrating primary's first beat."""
+    number = reaction.beat if reaction.beat is not None else reaction.reacts_to
+    if number is None:
+        number = min(
+            (b.beat for b in beats if b.character_id == reaction.narrated_by and not b.narrator),
+            default=1,
+        )
+    return TurnBeat(
+        kind="do",
+        beat=number,
+        text=reaction.text,
+        character_id=reaction.character_id,
+        narrated_by=reaction.narrated_by,
+    )
 
 
 def asserter_of(beats: Mapping[int, TurnBeat]) -> Callable[[Any], Asserter | None]:
@@ -567,6 +619,7 @@ def rejected_events(roles: TurnRoles | None) -> list[tuple[str, Any]]:
 
 
 __all__ = [
+    "NOT_PRESENT",
     "REACTION_REJECTED",
     "TurnRoles",
     "apply",

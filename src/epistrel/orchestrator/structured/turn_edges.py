@@ -6,8 +6,10 @@ transaction, after canon, the utterances, routing and the dependences:
 - **asserts**: each ``say`` utterance to each proposition it carries (a lie included: its
   target is the proposition, never a fact);
 - **causes**: a ``think``/``do`` beat whose claim ``depend()`` consumed (#146) to the fact it
-  resolved; a ``think`` beat to each fact it ``cites`` (#166); a ``state_changes`` row the turn
-  wrote to each canon fact its effect's #189 preconditions read
+  resolved; a ``think`` beat to each fact it ``cites`` (#166: a fact id, or, #994, the text of
+  a ``## Canon`` line its prompt showed, copied: ``prompt.resolve_cites`` over the render's
+  ``cite_lines``, so a line the character never saw never becomes an edge); a
+  ``state_changes`` row the turn wrote to each canon fact its effect's #189 preconditions read
   (``core.states.preconditions.reads_at``);
 - **presupposes**: a narrator or ``do`` claim #142 verified ``supported`` without depending on
   it, to the facts its verdict rests on, or to the State an owner lookup read (#191's
@@ -38,6 +40,7 @@ from epistrel.core.states import preconditions
 from epistrel.core.tables.events import events
 from epistrel.core.tables.states import state_changes
 from epistrel.core.verify.rules import VerdictKind
+from epistrel.orchestrator.structured.prompt import resolve_cites
 
 SAY, DO, THINK, NARRATION = "say", "do", "think", "narration"
 ENTITY_MENTION = "entity_mention"
@@ -70,11 +73,13 @@ async def turn_edges(
     utterances: Sequence[tuple[str, int, Sequence[tuple[str, Proposition]]]],
     depended: Sequence[tuple[Any, Any]] = (),
     mentions: Mapping[int, Sequence[str]] | None = None,
+    cite_lines: Mapping[str, Mapping[str, frozenset[str]]] | None = None,
 ) -> int:
     """Derive and write the turn's edges (see the module docstring); answers how many were
     offered. ``utterances``: each ``say`` utterance's id, beat and stored propositions;
     ``depended``: each (checked claim, its ``Dependence``); ``mentions``: each beat's resolved
-    entity mentions (``beat_mentions``; else the beats' own)."""
+    entity mentions (``beat_mentions``; else the beats' own); ``cite_lines``: each rendering
+    character's shown lines (``CharacterContext.cite_lines``, #994), by character id."""
     story_id = str(op.story_id)
     variant = int(op.turn_variant or 0)
 
@@ -132,7 +137,10 @@ async def turn_edges(
             DependencyEdgeType.CAUSES,
             "events",
             event,
-            [str(c) for c in beat.cites],
+            resolve_cites(
+                [str(c) for c in beat.cites],
+                (cite_lines or {}).get(str(beat.character_id or ""), {}),
+            ),
             position=at(beat.beat),
             source_event_ids=(event,),
         ):

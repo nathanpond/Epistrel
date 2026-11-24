@@ -206,7 +206,8 @@ async def speech_committed(
 
 def own_backstory(c: CheckedClaim) -> bool:
     """Whether ``c`` is a sincere claim about the speaker itself that canon left open and #144
-    permitted as the speaker's own (see the module docstring)."""
+    permitted as the speaker's own (see the module docstring); #979: never one the
+    toward-another-character exception permitted."""
     result = c.result
     if result is None or result.speech is None or result.self_attested:
         return False
@@ -219,6 +220,7 @@ def own_backstory(c: CheckedClaim) -> bool:
         and result.kind is VerdictKind.NOVEL
         and isinstance(result.permission, Permitted)
         and result.permission.basis is Basis.OWN
+        and not result.permission.toward  # #979: an action toward another, not backstory
     )
 
 

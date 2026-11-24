@@ -2,8 +2,9 @@
 (FR-IMG-14; #830).
 
 A consumer describes a subject that exists in no Epistrel story or catalog (its appearance, the
-true age it declares and a label naming who it is) and gets ``n`` images of it through the
-catalog image path's safety checks. The answer is 202 ``{job_id, status: queued}`` with
+true age it declares and a label naming who it is), optionally writes the whole image prompt
+itself (``prompt``, #1017), and gets ``n`` images of it through the catalog image path's safety
+checks. The answer is 202 ``{job_id, status: queued}`` with
 ``Location: /image-jobs/{id}``; ``GET /image-jobs/{id}`` reports the job and, once it is
 ``completed``, its ``asset_ids`` and ``failures``. Each stored image is a live media asset owned by
 the caller, kept until it is deleted (``DELETE /media/{id}``) or its owner is offboarded, and
@@ -19,6 +20,7 @@ from fastapi import status as http_status
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.orchestrator.images.params import SUBJECT_ASPECT_RATIOS
 from epistrel.orchestrator.images.targets.subject import (
     SUBJECT_N_MAX,
     SubjectImageRequest,
@@ -48,10 +50,38 @@ GENERATE = (
     "age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable "
     "characters, not unique); the label and true age are the depicted-subject declaration. "
     "`style` (at most 1,000 characters) and `content_rating` (default: the deployment's "
-    "default rating, read now) are optional; no seed or size is taken. The prompt is written "
+    "default rating, read now) are optional; no seed or size is taken. `aspect_ratio` is "
+    "optional and exactly one of "
+    + ", ".join(f"`{r}`" for r in SUBJECT_ASPECT_RATIOS)
+    + " (anything else, `5:4` included, is 422 at `body.aspect_ratio`): it wins over the "
+    "deployment's `default_size` and `default_aspect_ratio` and reaches the image model as its "
+    "ratio; omitted, the deployment default applies, else `1:1`. When the image model cannot "
+    "apply it the image is still made: the job's applied parameters name `aspect_ratio` as "
+    "dropped, and the asset's `width` and `height` are what came back. The prompt is written "
     "by the `image_prompt` purpose from the description, the true age's apparent age band, "
-    "the style and the rating's image guidance (the image model never receives the true age), "
-    "then checked **before any generation**, together with the description and style, against "
+    "the style and the rating's image guidance (the image model never receives the true age). "
+    "Or the consumer writes the **whole prompt** in `prompt` (at most 4,000 characters, not "
+    "blank, no control character but newline and tab; not with `style`, 422 at "
+    "`body.prompt`): no `image_prompt` call is made, nothing is added to it (no guidance, age "
+    "band or scene), and only its written ages are removed (422 at `body.prompt` when nothing "
+    "is left); `subject.description` is still required and checked. Epistrel's evals and "
+    "certification make **no quality claim** for a consumer prompt (ADR-214). "
+    "**Reference images** (`reference_image_ids`, #1020, ADR-215): 1 to 4 distinct ids of "
+    "earlier subject images, sent to the image model in that order as references so it draws "
+    "the same person in the new scene (with `description` alone, `prompt`, `style` or "
+    "`aspect_ratio`). Each must be a live image the caller generated here, made with the "
+    "same `subject.true_age`, and all must depict one subject, whose id the new images keep "
+    "in their `depicted_subjects`. Otherwise 422 `validation_error` before any model call, "
+    "one `errors[]` entry per failing index at `body.reference_image_ids.<n>` with its reason "
+    "as the entry's `type` (`details.reason` is the first's): `reference_duplicate`, "
+    "`reference_not_subject_image` (an unknown id, another principal's asset, a story, "
+    "catalog or uploaded image, a candidate, a deleted image or a non-image), "
+    "`reference_age_unknown`, `reference_age_mismatch`, `reference_subject_mismatch`. When "
+    "no endpoint of the image model takes references the image is still made, and its "
+    "`generation_metadata` records the ids and `applied_parameters.references_applied: "
+    "false`. How consistent the person looks depends on the image model: Epistrel makes no "
+    "quality claim for it. Either prompt is "
+    "checked **before any generation**, together with the description and style, against "
     "the global and the rating's image-prompt policies, the seeded minors policy included, "
     "judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for "
     "figures and passes the image-output check in private staging; one that fails is never "
@@ -59,8 +89,10 @@ GENERATE = (
     "`completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at "
     "least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored "
     "image is a **live** media asset owned by the caller with `origin: subject`, `source: "
-    "generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, "
-    "label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays "
+    "generated` (`generated_from_consumer_prompt` with `prompt`), `prompt_source` `engine` "
+    "(`consumer` with `prompt`; also in its applied parameters), the rating's current version "
+    "and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never "
+    "purges it while it is live (ADR-186): it stays "
     "until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), "
     "and it can be named in a story character's `images`.\n\n"
     "Refused before any job, reservation or provider call: 422 `validation_error` for a body "
@@ -71,8 +103,8 @@ GENERATE = (
     "policy (its audit row names the subject's id, never its label), 503 `model_unavailable` "
     "when the check cannot reach its model; 409 `image_limit_reached` or 422 "
     "`images_disabled` from the deployment's daily image limit. Idempotent under "
-    "`Idempotency-Key` (deployment-scoped). The description, label and style never reach an "
-    "operational log, metric or trace."
+    "`Idempotency-Key` (deployment-scoped). The description, label, style and prompt never "
+    "reach an operational log, metric or trace."
 )
 
 

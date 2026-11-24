@@ -447,7 +447,11 @@ class Repair(ProfileModel):
     """Repair and polish (FR-PROF-2)."""
 
     max_attempts: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(default=0, ge=0, le=10)
-    """Repair attempts of the structured pipeline's repair ladder (FR-REPAIR)."""
+    """Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations
+    each render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the
+    reactions it narrates, an escalated reactor's and, with several primaries, the follow-up's
+    each have their own), within the turn's call budget and deadline. ``0`` turns the ladder
+    off."""
     implication_threshold: Annotated[int, BEHAVIORAL, PROSPECTIVE, RELEVANT] = Field(
         default=2, ge=0, le=10
     )

@@ -86,7 +86,7 @@ PURPOSE_TEXT: Final[Mapping[str, str]] = {
     "gallery": "a catalog character's gallery image",
     "cover": "a scenario's cover image",
     "story": "a story image of a moment, as its viewer perceived it",
-    "subject": "a portrait of a subject described by the consumer",
+    "subject": "an image of a subject described by the consumer",
 }
 PURPOSE_RATIOS: Final[Mapping[str, str]] = {
     "primary": "1:1",
@@ -433,7 +433,8 @@ def merge_negative(*sources: str | None) -> str | None:
 
 def prompt_inputs(view: PerceivedView, *, instruction: str = "") -> ImagePromptInputs:
     """``image_prompt``'s payload: the subjects (label, description, band, base prompt), the
-    scene, the style, the guidance and the purpose, and a story image's location, perceived beats
+    scene, the style, the guidance and the purpose (its text, and its key as ``kind``: a subject
+    image's adds the head-in-frame line, #1012), and a story image's location, perceived beats
     (the nearest ``STORY_BEATS_CHARS`` kept) and framing. Never a parameter, a reference, an
     add-on or an id."""
     return ImagePromptInputs(
@@ -450,6 +451,7 @@ def prompt_inputs(view: PerceivedView, *, instruction: str = "") -> ImagePromptI
         visual_style=view.visual_style or "",
         rating_image_guidance=view.rating_image_guidance,
         purpose=PURPOSE_TEXT.get(view.purpose, view.purpose),
+        kind=view.purpose,
         beats=list(capped_beats(view.beats)),
         location=view.location or "",
         camera=view.camera_framing or "",

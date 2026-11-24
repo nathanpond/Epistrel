@@ -48,7 +48,12 @@ reason is recorded); ``surface`` lets the beat stand and lists the claim in the 
 ``uncertain``: an undecided claim is never a silent ``supported``. One case is surfaced
 whatever the profile says (#479, ADR-163): an extraction claim that did not normalize only
 because a weak relation names something untracked (``orchestrator.verify.extraction.surfaces``;
-the caller passes ``unnormalizable(..., disposition="surface")``).
+the caller passes ``unnormalizable(..., disposition="surface")``). #978 (ADR-219): an extraction
+claim that did not normalize only because a mention names nothing the story holds, under any
+relation, takes ``pass`` whatever the profile says (``orchestrator.verify.extraction.passes``;
+``unnormalizable(..., disposition="pass")``): the beat stands, the verdict is recorded
+(``uncertain``, ``unresolved_entity``, disposition ``pass``), and nothing is listed in
+``uncertain_claims`` or sent to repair. ``pass`` is never a profile's ``safe_disposition``.
 
 **Novelty is not permission** (FR-VERIFY-11,12; #144). Every claim that ends ``novel`` and
 names its asserter (``verify(..., asserter=...)``) passes ``core.verify.permission`` before it
@@ -232,7 +237,10 @@ from epistrel.orchestrator.verify.gate import (
 
 log = logging.getLogger(__name__)
 
-SafeDisposition = Literal["repair", "surface"]
+ProfileDisposition = Literal["repair", "surface"]
+"""A profile's ``verification.safe_disposition``."""
+SafeDisposition = Literal["repair", "surface", "pass"]
+"""A result's disposition: ``pass`` (#978) is the extraction layer's own, never a profile's."""
 Source = Literal["deterministic", "entailment"]
 ObjectiveRelation = Literal["true", "false", "unresolved"]
 
@@ -371,7 +379,7 @@ class VerifyConfig:
     level: str = "off"
     entailment_gate: float = 1.0
     entailment_min_confidence: float = 0.6
-    safe_disposition: SafeDisposition = "repair"
+    safe_disposition: ProfileDisposition = "repair"
     entailment_max_records: int = VerifySettings().entailment_max_records
     neighborhood_max_facts: int = VerifySettings().neighborhood_max_facts
     clock: bool = False
@@ -1926,7 +1934,8 @@ class Verifier:
         """A claim #140's ``normalize`` could not turn into a proposition: ``uncertain`` with
         its reason, which takes the safe disposition directly (there is no normalized claim to
         show the model), or ``disposition`` when the caller names one (#479, ADR-163: an
-        extraction claim whose weak relation names something untracked is surfaced);
+        extraction claim whose weak relation names something untracked is surfaced; #978,
+        ADR-219: an extraction claim whose mention names nothing the story holds passes);
         ``None`` when the story's verification is off."""
         if not self.config.on:
             return None

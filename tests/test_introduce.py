@@ -31,7 +31,12 @@ from epistrel.core.verify.normalize import (
 )
 from epistrel.core.verify.rules import VerdictReason
 from epistrel.orchestrator.models.registry import ExtractedClaim
-from epistrel.orchestrator.verify.extraction import extraction_sketch, surfaces
+from epistrel.orchestrator.verify.extraction import (
+    extraction_sketch,
+    passes,
+    surfaces,
+    tracked_relation,
+)
 from tests import verify_support as vs
 
 BASIS = TimeBasis(minute_zero=vs.year(2020), epoch=datetime(2000, 1, 1, tzinfo=UTC))
@@ -304,3 +309,125 @@ def test_declared_and_extraction_claims_surface_detector_findings_do_not() -> No
     assert not surfaces(replace(own, merged=("detector",)))
     assert not surfaces(replace(own, category="protected_content"))
     assert not surfaces(replace(own, unnormalized=said("Maren", "knows", "the ferryman")))  # type: ignore[arg-type]
+
+
+# -- #978 (ADR-219): an extraction claim whose mention names nothing the story holds passes ----
+
+KEY_A = "01JA00000000000000000000K1"
+KEY_B = "01JA00000000000000000000K2"
+TWO_KEYS = dataclasses.replace(
+    CAST,
+    index=EntityIndex(
+        [
+            EntityEntry(MAREN, "person", "Maren", "feminine", character_id=MAREN),
+            EntityEntry(WREN, "person", "Wren", "feminine", character_id=WREN),
+            EntityEntry(KEY_A, "item", "the brass key", descriptors=("key",)),
+            EntityEntry(KEY_B, "item", "the iron key", descriptors=("key",)),
+        ]
+    ),
+)
+
+
+def extraction(found: Normalized, relation: str = "located_at") -> DetectedClaim:
+    assert isinstance(found, Unnormalizable), found
+    return DetectedClaim(
+        span=(1, 0, 10),
+        layer="extraction",
+        category="extracted",
+        channel="do",
+        speaker=MAREN,
+        unnormalized=found,
+        sketch=ClaimSketch(subject_text="", relation_text=relation, declared=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "obj"),
+    [
+        ("ring of keys", "located_at", "by the hearth"),  # the E-06 evidence: an ``any`` slot
+        ("Maren", "knows", "the ferryman"),  # a person slot never mints
+        ("Maren", "looks_up_from", "wiping_down_the_bar"),  # a weak relation, as #479
+        ("Maren", "talks_about", "the Crossroads Inn"),  # an unknown proper name
+        ("Maren", "looks_up_from", "it"),  # a pronoun with no antecedent
+    ],
+)
+def test_an_untracked_mention_is_marked_and_passes(
+    subject: str, relation: str, obj: str | None
+) -> None:
+    found = said(subject, relation, obj)
+    assert isinstance(found, Unnormalizable), found
+    assert (found.reason, found.touches_character, found.untracked_mention) == (
+        VerdictReason.UNRESOLVED_ENTITY,
+        False,
+        True,
+    )
+    assert passes(extraction(found, relation))
+
+
+@pytest.mark.parametrize(
+    ("subject", "relation", "obj"),
+    [
+        ("the stranger", "knows", "Wren"),  # the player's character, under a core relation
+        ("the stew", "pleases", "Wren"),  # and under a weak one
+    ],
+)
+def test_a_mention_touching_another_character_does_not_pass(
+    subject: str, relation: str, obj: str | None
+) -> None:
+    """#978: ``touches_character`` is recorded under a registered relation too."""
+    found = said(subject, relation, obj)
+    assert isinstance(found, Unnormalizable), found
+    assert found.touches_character
+    assert not found.untracked_mention
+    assert not passes(extraction(found, relation))
+
+
+def test_an_ambiguous_mention_does_not_pass() -> None:
+    found = normalize(
+        ClaimSketch(
+            subject_text="the key", relation_text="located_at", object_text="Ohio", declared=True
+        ),
+        MAREN,
+        3,
+        registry=vs.REGISTRY,
+        context=TWO_KEYS,
+        basis=BASIS,
+        introduce=Introductions(),
+    )
+    assert isinstance(found, Unnormalizable), found
+    assert found.reason is VerdictReason.UNRESOLVED_ENTITY
+    assert found.resolution is not None
+    assert found.resolution.candidates
+    assert not found.untracked_mention
+    assert not passes(extraction(found))
+
+
+def test_an_empty_mention_or_another_reason_does_not_pass() -> None:
+    bare = Unnormalizable(VerdictReason.UNRESOLVED_ENTITY, "no_mention")  # no resolver ran
+    assert not bare.untracked_mention
+    other = said("Maren", "dead", "the world")  # an object on a predicate that takes none
+    assert isinstance(other, Unnormalizable)
+    assert other.reason is VerdictReason.ARGUMENT_TYPE
+    assert not other.untracked_mention
+
+
+@pytest.mark.parametrize(
+    "relation", ["holds", "has", "carries", "owns", "consumed", "quantity", "time_is"]
+)
+def test_a_tracked_relation_does_not_pass(relation: str) -> None:
+    assert tracked_relation(relation)
+    found = said("ring of keys", "located_at", "by the hearth")
+    assert not passes(extraction(found, relation))
+
+
+def test_only_an_extraction_finding_of_its_own_passes() -> None:
+    """A declared claim (surfaced as #479), a detector finding, a claim merged with one, and
+    protected content never pass."""
+    own = extraction(said("ring of keys", "located_at", "by the hearth"))
+    assert passes(own)
+    assert passes(replace(own, merged=("declared",)))
+    assert not passes(replace(own, layer="declared", category="declared"))
+    assert not passes(replace(own, layer="detector", category="possession"))
+    assert not passes(replace(own, merged=("detector",)))
+    assert not passes(replace(own, category="protected_content"))
+    assert not passes(replace(own, unnormalized=None))

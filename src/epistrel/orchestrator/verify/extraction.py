@@ -47,7 +47,12 @@ passes #144's permission check, a protected-content hit with ``protected=True``)
 not normalize takes ``Verifier.unnormalizable`` (``uncertain``, never a guess, FR-PROP-12)
 with the safe disposition, except an extraction finding of its own that is uncertain only
 because a weak relation names something no entity holds: it is surfaced, not repaired
-(``surfaces``; #479, ADR-163).
+(``surfaces``; #479, ADR-163). #978 (ADR-219, the owner's option (a)): an extraction finding
+that is uncertain only because a mention names nothing the story holds, under any relation
+but a tracked one (``passes``), is scene texture: it takes ``pass``, decided before
+``surfaces``. The beat stands, the verdict is recorded (``uncertain``, ``unresolved_entity``,
+disposition ``pass``), and the claim is neither surfaced nor repaired; it contributes no
+constraint to the ladder, and other claims of its beat are repaired as before.
 A claim leaking another character's private thought (#172: the thought side index or the
 inner-state check, ``DetectedClaim.think_leak``) takes ``Verifier.leaked`` (always repaired,
 ``think_leak``), and a ``recall`` claim ``Verifier.verify_recall`` (grounded, or a confabulation).
@@ -90,7 +95,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity, Proposition
-from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.registry import Registry, auto_name, load
 from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import (
@@ -123,6 +128,7 @@ from epistrel.core.verify.detect import (
     shape_hash,
 )
 from epistrel.core.verify.normalize import (
+    RELATION_ALIASES,
     ClaimSketch,
     Unnormalizable,
     normalize,
@@ -760,6 +766,13 @@ class CheckedClaim:
 
 
 SURFACE: SafeDisposition = "surface"
+PASSED: SafeDisposition = "pass"
+TRACKED_RELATIONS: frozenset[str] = frozenset(
+    {"holds", "held_by", "owns", "consumed", "quantity", "time_is", "time_of_day_band"}
+)
+"""#978: the relations the story tracks as possession, transfer, quantity or time (the core
+predicates of #148's possession, transfer, consumption, quantity and time detectors, by name,
+through ``RELATION_ALIASES``): an extraction claim in one of them never ``passes``."""
 SAY_CHANNEL = "say"
 SURFACED_LAYERS: frozenset[str] = frozenset({"declared", "extraction"})
 """The layers whose untracked weak-relation claims are surfaced; a detector's risk claims
@@ -783,6 +796,38 @@ def surfaces(claim: DetectedClaim) -> bool:
         and not claim.protected
         and found is not None
         and found.untracked_weak
+    )
+
+
+def tracked_relation(relation: str) -> bool:
+    """Whether ``relation`` names one of the ``TRACKED_RELATIONS`` (by its auto name, then
+    ``RELATION_ALIASES``: "has" is ``holds``)."""
+    try:
+        name = auto_name(relation)
+    except InvalidRequest:
+        return False
+    return RELATION_ALIASES.get(name, name) in TRACKED_RELATIONS
+
+
+def passes(claim: DetectedClaim) -> bool:
+    """Whether an unnormalized claim passes silently (#978, ADR-219, the owner's option (a)):
+    an extraction finding of its own (no detector also found it, no protected content), not in
+    a tracked relation (``tracked_relation``: possession, transfer, quantity, time), that is
+    uncertain only because a mention names nothing the story holds
+    (``Unnormalizable.untracked_mention``: the resolver found nothing for a non-empty
+    mention, with no candidates, and no other argument is another modeled character or the
+    player's), under a weak relation or a registered one alike. An entity the story does not
+    have has no record, so nothing in canon can contradict the claim, and repairing it only
+    destroys scene texture. It applies on every preset, whatever the profile's
+    ``safe_disposition``."""
+    found = claim.unnormalized
+    return (
+        claim.layer == "extraction"
+        and "detector" not in claim.merged
+        and not claim.protected
+        and found is not None
+        and found.untracked_mention
+        and not (claim.sketch is not None and tracked_relation(claim.sketch.relation_text))
     )
 
 
@@ -856,7 +901,9 @@ async def verify_detected(
             continue
         if claim.proposition is None:
             reason = claim.unnormalized or Unnormalizable(VerdictReason.UNRESOLVED_ENTITY)
-            disposition: SafeDisposition | None = SURFACE if surfaces(claim) else None
+            disposition: SafeDisposition | None = (
+                PASSED if passes(claim) else SURFACE if surfaces(claim) else None
+            )
             checked.append(
                 CheckedClaim(
                     claim,

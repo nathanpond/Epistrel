@@ -11,8 +11,9 @@ hosted provider, each id becomes a URL the provider can read:
   ``DATA_URL_MAX_SIDE`` px on its longest side and ``DATA_URL_MAX_BYTES`` bytes, in its stored
   media type.
 
-An asset that does not exist, is a candidate, or is not an image is refused with
-``ImageRequestInvalid`` (``reason`` ``reference_not_found`` / ``reference_not_image``).
+An asset that does not exist, is a candidate, is no longer ``live`` (deleted since the request
+was checked, #1020), or is not an image is refused with ``ImageRequestInvalid`` (``reason``
+``reference_not_found`` / ``reference_not_image``).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from epistrel.core.errors import ConfigMissing, MediaNotFound, SigningKeyMissing
 from epistrel.core.media import assets
 from epistrel.core.media.signing import Signer
 from epistrel.core.media.store import BlobStore
-from epistrel.core.tables.media import MediaKind
+from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.orchestrator.images.errors import ImageRequestInvalid
 
 DATA_URL_MAX_SIDE = 1_024
@@ -134,6 +135,10 @@ class MediaReferences:
             asset = await assets.get(self.db(), media_id)
         except MediaNotFound:
             raise ImageRequestInvalid(reason="reference_not_found") from None
+        if asset.state != MediaState.LIVE:
+            # #1020: ``assets.get`` reads retired rows too; a reference deleted since the
+            # request was checked is not sent.
+            raise ImageRequestInvalid(reason="reference_not_found")
         if asset.kind != MediaKind.IMAGE:
             raise ImageRequestInvalid(reason="reference_not_image")
         settings = await assets.read_media_settings(self.db())

@@ -6370,9 +6370,14 @@ class Engine:
         output check run on every image, and a failing one is never stored. Each passing image
         is a live media asset owned by the caller (``origin: subject``), kept until it is
         deleted or its owner is offboarded (ADR-186) and usable as a story character's image.
+        Optional ``reference_image_ids`` (#1020, ADR-215) send 1 to 4 earlier subject images of
+        the same subject to the image model as references, and the new images keep their
+        subject's id (``subject_images.check_references``).
         Refused before any job, reservation or provider call: 409 ``not_configured`` without
         an image adapter, 409 ``image_check_unconfigured`` while an image-output policy applies
-        and ``image_check`` is unset, 422 for an unknown or retired ``content_rating`` (the
+        and ``image_check`` is unset, 422 for a reference that is not the caller's live subject
+        image of the same true age and subject (before any model call), 422 for an unknown or
+        retired ``content_rating`` (the
         deployment default is read now), 503 ``image_prompt_unavailable``, 422
         ``guardrail_violation`` (its audit row names the subject's id, never its label) or 503
         ``model_unavailable`` from the prompt check, and 409 ``image_limit_reached`` or 422
@@ -6383,6 +6388,8 @@ class Engine:
         async def run(_: RequestContext) -> subject_images.SubjectImagesQueued:
             await image_jobs.require_generation(self.models, self.db)
             async with self.db.connect() as conn:
+                # #1020: the references are judged first, so a refused one costs no model call.
+                references = await subject_images.check_references(conn, request, principal)
                 rating = await subject_images.subject_rating(conn, request.content_rating)
             deployment = await self._image_deployment()
             consumer = subject_images.prompt_override(request, deployment)
@@ -6393,6 +6400,7 @@ class Engine:
                     n=request.n,
                     size=consumer.size,
                     aspect_ratio=None if consumer.size is not None else consumer.aspect_ratio,
+                    reference_image_ids=() if references is None else references.ids,
                 )
             else:
                 view = subject_images.subject_view(request, rating.guidance, deployment)
@@ -6403,8 +6411,10 @@ class Engine:
                     n=request.n,
                     size=built.size,
                     aspect_ratio=None if built.size is not None else built.aspect_ratio,
+                    reference_image_ids=built.reference_image_ids,
                 )
-            subject_id = new_ulid()
+            # #1020: images made from references keep their subject's id.
+            subject_id = new_ulid() if references is None else references.subject_id
             prepared = await image_jobs.prepare_image_job(
                 self.image_runtime(),
                 ImageJobKind.SUBJECT,

@@ -43,6 +43,7 @@ from epistrel.core.ratings import RatingFields, create_rating
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
+from epistrel.orchestrator.images.errors import ImageRequestInvalid
 from epistrel.orchestrator.images.jobs import MINORS_POLICY_ID
 from epistrel.orchestrator.images.port import AppliedParameters, ImageRequest, SubmitResult
 from epistrel.orchestrator.images.targets.subject import SubjectImageRequest, SubjectSpec
@@ -872,3 +873,331 @@ async def test_i_30__m9_offboarding(pg_url: str, tmp_path: Path) -> None:
                 assert await asset_state(db, images["k"]) == "live"
         finally:
             await db.dispose()
+
+
+# -- reference images (#1020) -----------------------------------------------------------------
+
+SCENE_PROMPT = "The same fisherman on the beach at night, lighting a fire, head to toe in frame."
+
+
+class ReferenceStub(StubImageGenerator):
+    """A stub image adapter that reports what it did with reference images, as the OpenRouter
+    adapter does: applied when its endpoint takes them (``takes_references``), else dropped
+    (``input_references`` named, ``references_applied: false``) with the image still made."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.takes_references = True
+
+    async def submit(self, request: ImageRequest, idempotency_key: str | None) -> SubmitResult:
+        result = await super().submit(request, idempotency_key)
+        refs = request.reference_images
+        takes = self.takes_references
+        applied = AppliedParameters(
+            requested={"n": request.n, "reference_image_ids": list(refs)},
+            sent={"input_references": len(refs)} if refs and takes else {},
+            references_applied=None if not refs else takes,
+            dropped_parameters=("input_references",) if refs and not takes else (),
+        )
+        return replace(result, applied_parameters=applied)
+
+
+async def run_completed(app: SubjectApp, payload: dict[str, Any], size: tuple[int, int]) -> str:
+    """Request, run and read a one-output job that completes; its asset id."""
+    app.generator.script.append(Outputs(n=1, size=size))
+    accepted = await app.request(payload)
+    assert accepted.status_code == 202, accepted.text
+    job_id = accepted.json()["job_id"]
+    assert (await app.run(job_id))["image_job"] == "completed"
+    [asset_id] = (await app.job(job_id))["asset_ids"]
+    return str(asset_id)
+
+
+async def clone_asset(
+    engine: AsyncEngine,
+    asset_id: str,
+    *,
+    job_kind: str = "subject",
+    story_id: str | None = None,
+    **changes: Any,
+) -> str:
+    """A hand-built copy of ``asset_id``'s row (and of its job, as ``job_kind``) with
+    ``changes``: the story, catalog, candidate and age-unknown rows the guardrails refuse."""
+    from epistrel.core.ids import new_ulid
+    from epistrel.core.tables.images import image_jobs
+    from epistrel.core.tables.media import media_assets
+
+    status = {"subject": "completed", "story": "promoted", "catalog": "candidates_ready"}
+    async with engine.begin() as conn:
+        asset = dict(
+            (await conn.execute(media_assets.select().where(media_assets.c.id == asset_id)))
+            .one()
+            ._mapping
+        )
+        job = dict(
+            (
+                await conn.execute(
+                    image_jobs.select().where(image_jobs.c.id == asset["source_job_id"])
+                )
+            )
+            .one()
+            ._mapping
+        )
+        job.update(
+            id=new_ulid(),
+            kind=job_kind,
+            status=status[job_kind],
+            story_id=story_id,
+            idempotency_key=None,
+        )
+        await conn.execute(image_jobs.insert().values(**job))
+        asset.update(id=new_ulid(), source_job_id=job["id"], **changes)
+        await conn.execute(media_assets.insert().values(**asset))
+    return str(asset["id"])
+
+
+def reference_errors(response: httpx.Response) -> list[tuple[str, str]]:
+    status, code, details = error_of(response)
+    assert (status, code) == (422, "validation_error"), response.text
+    found = [(str(e["field"]), str(e["type"])) for e in details["errors"]]
+    assert details["field"] == found[0][0]
+    assert details["reason"] == found[0][1]
+    return found
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_references(
+    image_settings: Settings, engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#1020: a subject request naming an earlier subject image in ``reference_image_ids`` sends
+    it to the image model as a reference (the stub records the ids it was handed, in order),
+    and the new asset records ``generation_metadata.reference_image_ids`` and
+    ``applied_parameters.references_applied: true``; it keeps the reference's subject id, so
+    one subject's images list together; the job's ``origin`` holds the ids. It works on both
+    prompt paths (with a consumer ``prompt`` and ``aspect_ratio``, and with ``style``), and
+    the ``image_prompt`` call carries no id. With an image model that cannot take references the
+    image is still made, and the record says ``references_applied: false`` with
+    ``input_references`` dropped. A reference deleted after the check is refused by the
+    resolver (``reference_not_found``). Only ids and counts reach the logs.
+
+    Complement asserted: a request without references mints a new subject id and sends none
+    (``references_applied`` null)."""
+    caplog.set_level(logging.DEBUG)
+    generator = ReferenceStub()
+    async with subject_app(image_settings, engine, generator=generator) as app:
+        await app.configure()
+        base = await run_completed(app, body(prompt=CONSUMER_PROMPT, aspect_ratio="2:3"), (64, 96))
+        base_asset = await app.asset(base)
+        assert base_asset["generation_metadata"]["applied_parameters"]["references_applied"] is None
+        subject_id = base_asset["depicted_subjects"][0]["id"]
+        second = await run_completed(app, body(prompt=SCENE_PROMPT, aspect_ratio="2:3"), (64, 97))
+        other_subject = (await app.asset(second))["depicted_subjects"][0]["id"]
+        assert other_subject != subject_id
+
+        app.guard.reset()
+        accepted = await app.request(
+            body(prompt=SCENE_PROMPT, aspect_ratio="2:3", reference_image_ids=[base])
+        )
+        assert accepted.status_code == 202, accepted.text
+        job_id = accepted.json()["job_id"]
+        app.generator.script.append(Outputs(n=1, size=(64, 98)))
+        assert (await app.run(job_id))["image_job"] == "completed"
+        sent = app.generator.requests[-1].request
+        assert list(sent.reference_images) == [base]
+        assert sent.aspect_ratio == "2:3"
+        assert ip.prompt_calls(app.guard) == []
+        assert (await job_origin(engine, job_id))["reference_image_ids"] == [base]
+        [made] = (await app.job(job_id))["asset_ids"]
+        asset = await app.asset(made)
+        assert asset["depicted_subjects"][0]["id"] == subject_id
+        assert asset["depicted_subjects"][0]["true_age"] == TRUE_AGE
+        metadata = asset["generation_metadata"]
+        assert metadata["reference_image_ids"] == [base]
+        assert metadata["applied_parameters"]["references_applied"] is True
+
+        # The engine-written path, with two references of one subject, in the order sent.
+        app.guard.reset()
+        both = await run_completed(
+            app, body(style="oil painting", reference_image_ids=[made, base]), (64, 99)
+        )
+        assert list(app.generator.requests[-1].request.reference_images) == [made, base]
+        [written] = ip.prompt_calls(app.guard)
+        assert base not in ip.rendered(written)
+        assert made not in ip.rendered(written)
+        assert (await app.asset(both))["depicted_subjects"][0]["id"] == subject_id
+
+        # No endpoint takes references: made all the same, recorded as not applied.
+        generator.takes_references = False
+        dropped = await run_completed(app, body(reference_image_ids=[base]), (64, 100))
+        found = (await app.asset(dropped))["generation_metadata"]
+        assert found["reference_image_ids"] == [base]
+        assert found["applied_parameters"]["references_applied"] is False
+        assert "input_references" in found["applied_parameters"]["dropped_parameters"]
+        generator.takes_references = True
+
+        # The library takes the field too.
+        ctx = RequestContext(principal=OWNER, idempotency_key=f"ref-lib-{secrets.token_hex(4)}")
+        request = SubjectImageRequest(
+            subject=SubjectSpec(**subject()), reference_image_ids=[base], n=1
+        )
+        queued = await app.lib.request_subject_images(ctx, request)
+        app.generator.script.append(Outputs(n=1, size=(64, 101)))
+        assert (await app.run(queued.job_id))["image_job"] == "completed"
+        assert list(app.generator.requests[-1].request.reference_images) == [base]
+
+        # A reference deleted after the request was checked is not sent.
+        resolver = app.lib.models.images.references
+        assert resolver is not None
+        assert (await resolver.resolve(second)).startswith("data:image/png;base64,")
+        deleted = await app.client.delete(f"/media/{second}", headers=HEADERS)
+        assert deleted.status_code == 204, deleted.text
+        with pytest.raises(ImageRequestInvalid) as gone:
+            await resolver.resolve(second)
+        assert gone.value.reason == "reference_not_found"
+
+        plain = await run_completed(app, body(), (64, 102))
+        assert list(app.generator.requests[-1].request.reference_images) == []
+        plain_asset = await app.asset(plain)
+        assert plain_asset["depicted_subjects"][0]["id"] not in (subject_id, other_subject)
+        assert (
+            plain_asset["generation_metadata"]["applied_parameters"]["references_applied"] is None
+        )
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert CANARY not in logged
+    assert LABEL not in logged
+    assert "data:image" not in logged
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_references_refused(image_settings: Settings, engine: AsyncEngine) -> None:
+    """#1020: a reference that is not the caller's live subject image is 422
+    ``reference_not_subject_image`` at ``body.reference_image_ids.<n>``, with **no** job,
+    ``image_prompt`` call or generation call: an unknown id, a story image's asset, a catalog
+    image's asset, a candidate, an upload, another principal's subject image and a deleted one.
+    A true age other than the reference's is ``reference_age_mismatch``; a subject asset with no
+    recorded true age is ``reference_age_unknown``; two references of different subjects are
+    ``reference_subject_mismatch`` at the second. Every failing index is reported, in order.
+    ``[]``, five ids and a duplicate are 422 too.
+
+    Complement asserted: the same request naming a valid reference is accepted (202)."""
+    async with subject_app(image_settings, engine) as app:
+        upload = (await uploaded(app.client, png(nonce=secrets.token_hex(6)), headers=HEADERS))[
+            "id"
+        ]
+        await app.configure()
+        base = await run_completed(app, body(), (70, 90))
+        other = await run_completed(app, body(), (70, 91))
+        theirs = await run_completed(app, body(), (70, 92))
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE media_assets SET owner_principal = 'p-someone-else' WHERE id = :a"),
+                {"a": theirs},
+            )
+        deleted = await run_completed(app, body(), (70, 93))
+        assert (await app.client.delete(f"/media/{deleted}", headers=HEADERS)).status_code == 204
+        story = await create(app.client, story_body("Ada", "Wren-1020"))
+        story_image = await clone_asset(
+            engine, base, job_kind="story", story_id=story["story_id"], origin=None
+        )
+        catalog_image = await clone_asset(engine, base, job_kind="catalog", origin=None)
+        candidate = await clone_asset(engine, base, state="candidate")
+        declared = (await app.asset(base))["depicted_subjects"][0]
+        ageless = await clone_asset(
+            engine, base, depicted_subjects=[{k: v for k, v in declared.items() if k != "true_age"}]
+        )
+
+        app.guard.reset()
+        jobs_before = await subject_jobs(engine)
+        calls_before = len(app.generator.requests)
+        not_subject = [
+            "01NOSUCHASSET0000000000000",
+            story_image,
+            catalog_image,
+            candidate,
+            upload,
+        ]
+        refused = await app.request(body(reference_image_ids=not_subject[:4]))
+        assert reference_errors(refused) == [
+            (f"body.reference_image_ids.{n}", "reference_not_subject_image") for n in range(4)
+        ]
+        for one in (upload, theirs, deleted):
+            assert reference_errors(await app.request(body(reference_image_ids=[one]))) == [
+                ("body.reference_image_ids.0", "reference_not_subject_image")
+            ]
+        older = {"subject": subject(true_age=20), "reference_image_ids": [base]}
+        assert reference_errors(await app.request(older)) == [
+            ("body.reference_image_ids.0", "reference_age_mismatch")
+        ]
+        assert reference_errors(await app.request(body(reference_image_ids=[ageless]))) == [
+            ("body.reference_image_ids.0", "reference_age_unknown")
+        ]
+        mixed = await app.request(body(reference_image_ids=[base, other]))
+        assert reference_errors(mixed) == [
+            ("body.reference_image_ids.1", "reference_subject_mismatch")
+        ]
+        several = await app.request(body(reference_image_ids=[base, story_image, base, ageless]))
+        assert reference_errors(several) == [
+            ("body.reference_image_ids.1", "reference_not_subject_image"),
+            ("body.reference_image_ids.2", "reference_duplicate"),
+            ("body.reference_image_ids.3", "reference_age_unknown"),
+        ]
+        consumer = await app.request(body(prompt=SCENE_PROMPT, reference_image_ids=[story_image]))
+        assert reference_errors(consumer)[0][1] == "reference_not_subject_image"
+        for ids, kind in (([], "too_short"), ([base] * 5, "too_long")):
+            status, code, details = error_of(await app.request(body(reference_image_ids=ids)))
+            assert (status, code, details["field"]) == (
+                422,
+                "validation_error",
+                "body.reference_image_ids",
+            )
+            assert details["errors"][0]["type"] == kind
+        assert await subject_jobs(engine) == jobs_before
+        assert len(app.generator.requests) == calls_before
+        assert ip.prompt_calls(app.guard) == []
+
+        accepted = await app.request(body(reference_image_ids=[base]))
+        assert accepted.status_code == 202, accepted.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_references_minor(image_settings: Settings, engine: AsyncEngine) -> None:
+    """#1020: a subject declared 15 with a reference generated at 15 is not refused for its
+    age: the request is accepted (202), the minors check judged it with the subject at age 15,
+    and the reference is sent. The safety path is unchanged: a sexualizing description at 15
+    with the same reference is refused by the minors policy before any generation.
+
+    Complement asserted: the same reference under a declared age of 16 is
+    ``reference_age_mismatch``."""
+    benign = "A child in a red raincoat jumping in puddles, whole figure in frame."
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        young = {"subject": subject(true_age=MINOR_AGE), "prompt": benign}
+        base = await run_completed(app, young, (72, 90))
+        app.guard.reset()
+        recognise_sexual(app.guard, UNSAFE)
+        again = await run_completed(app, {**young, "reference_image_ids": [base]}, (72, 91))
+        assert list(app.generator.requests[-1].request.reference_images) == [base]
+        assert (await app.asset(again))["depicted_subjects"][0]["true_age"] == MINOR_AGE
+        minors_checks = [
+            payload(c)
+            for c in safety_calls(app.guard)
+            if SUBJECTS_HEADING in payload(c) and benign in payload(c)
+        ]
+        assert minors_checks
+        assert all(f"- subject_1: age {MINOR_AGE}" in p for p in minors_checks)
+
+        calls = len(app.generator.requests)
+        unsafe = {
+            "subject": subject(true_age=MINOR_AGE),
+            "prompt": f"A figure {UNSAFE}.",
+            "reference_image_ids": [base],
+        }
+        assert refused_by(await app.request(unsafe)) == [MINORS_POLICY_ID]
+        older = {"subject": subject(true_age=16), "prompt": benign, "reference_image_ids": [base]}
+        assert reference_errors(await app.request(older)) == [
+            ("body.reference_image_ids.0", "reference_age_mismatch")
+        ]
+        assert len(app.generator.requests) == calls

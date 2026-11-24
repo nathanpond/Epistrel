@@ -45,7 +45,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186, 214 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186, 214, 215 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 017, 129, 158, 162 |
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199, 206 |
@@ -278,7 +278,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
 | 212 | Slow strict grammars are warmed at start-up, in the background | Amended | 213 |
 | 213 | A strict schema over 16 union-typed parameters goes as parse-validate-retry | Current | — |
-| 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Current | — |
+| 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Amended | 215 |
+| 215 | A subject image may take earlier subject images of its subject as reference images | Current | — |
 
 ---
 
@@ -2501,6 +2502,7 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-214 — A consumer may write a subject image's whole prompt, under the same guardrails
 **Status:** Accepted. Amends FR-IMG-14 (where a subject image's prompt comes from).
+**Amended by:** ADR-215 — a subject image request may also name earlier subject images as reference images, under guardrails of their own (Epistrel-generated subject images of the caller only, the same true age and the same subject).
 **Context:** FR-IMG-14's subject images had their prompt written by the `image_prompt` purpose from the consumer's description, the true age's apparent age band, an optional style and the rating's image guidance. Consumers could steer it only through `style`, and the written prompt sometimes dropped what they asked for (#1012's cropped heads). While triaging #1012 on 2026-11-23 the owner decided to "let the consumer control the entire image generation prompt rather than these tight limits … We can still put guardrails on it", and on minors, "don't refuse": the checks judge the prompt by the declared true age, as they judge an engine-written one.
 **Decision:** The owner's decision, applied by #1017 (no new FR ID).
 - **Scope: subject images only.** `POST /subject-images` (and the library's `request_subject_images`) takes an optional `prompt`: 1 to 4,000 characters, not blank, no control character but newline and tab. It cannot be sent with `style`: the prompt is the whole prompt (422 at `body.prompt`). Catalog image requests still refuse a `prompt`. Story images already took a consumer prompt (#263, `generated_from_consumer_prompt`), and this ADR does not change them.
@@ -2520,6 +2522,31 @@ Tuning and its exit certification come after every milestone that may change a p
 - A consumer prompt can ask for anything the policies allow. The quality of what comes back is the consumer's to tune.
 - `MODEL_CALL_REVISION` stays 6, with #1017 named in its docstring and the snapshot re-taken for the new `jobs.PROMPT_SOURCE` constant: the engine-written path sends exactly what it did, and the consumer path makes no `image_prompt` call.
 - Tests: `tests/test_subject_consumer_prompt.py` (validation, redaction, `prompt_source`, a catalog request refusing `prompt`) and `tests/integration/test_i_30_m9.py` (`test_i_30__m9_consumer_prompt`, `_refused` and `_minor`: no writer call, the redacted prompt sent, the same refusal as `style`, a failed output stored nowhere, a 15-year-old subject judged at 15, no log line). The live check, 10 subject requests at `2:3` with a consumer full-body prompt and the whole head visible in at least 9, is the owner's.
+
+---
+
+### ADR-215 — A subject image may take earlier subject images of its subject as reference images
+**Status:** Accepted. Amends ADR-214 (what a subject image request may carry beside its prompt) and FR-IMG-14.
+**Context:** The owner, 2026-11-23 (#1020): "generate a character image, get it and the character seed, and then in the future use that character seed to generate images of that character in other settings or performing other actions." A numeric seed cannot do that: it repeats an image only for the same prompt and model. Reference images can: the image model gets earlier images of the subject and draws that person in the new scene. Epistrel already sends references for story and catalog images (`images.references`, the OpenRouter adapter's `input_references` routing), and the deployment's image model takes up to 10. `POST /subject-images` was the one image path that could not take them. A reference image is a way to put a person's likeness into a new image, so the owner set its limits in planning (round three, 2026-11-23): only images Epistrel itself generated as subject images, only the caller's own, and only under the true age they were generated with.
+**Decision:** The owner's decision, applied by #1020 (no new FR ID; FR-IMG-14 amended).
+- **The field.** `POST /subject-images` (and `Engine.request_subject_images`) takes an optional `reference_image_ids`: 1 to 4 media asset IDs (`port.MAX_REFERENCE_IMAGES`, below the model's 10 to bound cost and data-URL size). `[]` and five IDs are 422; `null` means omitted. It works with `description` alone, with `prompt` (ADR-214), with `style` and with `aspect_ratio`.
+- **Epistrel-generated subject images only.** Each ID must be a `live` image asset owned by the request's principal, with `origin` `subject`, `source` `generated` or `generated_from_consumer_prompt` and `source_job_id` naming a `subject` job. Anything else (an unknown ID, another principal's asset, a story or catalog image, an upload, a candidate, a deleted image, a non-image) is 422 at `body.reference_image_ids.<n>` with reason `reference_not_subject_image`: one reason for all of them, so the answer does not reveal that another principal's asset exists.
+- **The same true age.** The recorded true age is the asset's `depicted_subjects[0].true_age`, which every subject image already stores, so there is no new field and no migration. A request whose `subject.true_age` differs is `reference_age_mismatch`; an asset without a recorded age is `reference_age_unknown` (kept as a defensive reason: every subject image records one). A minor's references are not refused for age: like the prompt (ADR-214), the request is judged by its declared age.
+- **The same subject.** All references must share `depicted_subjects[0].id` (else `reference_subject_mismatch` at the first ID that differs from index 0's, checked only once every ID passed its own checks), and the new job takes that subject ID instead of minting one, so one subject's images list together. The label is the request's and need not match.
+- **Before any model call.** The checks run at enqueue, before the content rating is read and before any `image_prompt` call, so a refused request costs nothing. A duplicate is `reference_duplicate`. Every failing index is reported (one `errors[]` entry each, its reason as the entry's `type`; `details.reason` is the first's).
+- **The existing reference path.** The IDs go into the job's `reference_image_ids` in the order sent (and into its `origin`); the adapter resolves them to signed or data URLs and routes them as it does for story and catalog images. `image_prompt` receives no ID or reference line, and the subject view keeps no seed and no base appearance prompt. A reference deleted between the request and the provider call is refused by the resolver (`MediaReferences.resolve` now checks `live`, since `assets.get` reads retired rows too), failing that attempt with `reference_not_found`. When no endpoint of the model takes references the image is still made, and `generation_metadata.applied_parameters.references_applied` is `false`, the rule #1012 uses for an unsupported ratio. The asset records the IDs in `generation_metadata.reference_image_ids`.
+- **The safety path is unchanged.** #257's prompt check with the declared true age, figure classification and #258's output check on every output. The checks read text, and outputs only: a reference image is not re-checked, because it passed the output check when it was made. Its content rating need not match the request's; the new image is checked under the request's rating.
+- **Content.** Only IDs and counts reach logs, metrics and traces; no image bytes or URLs beyond what the reference path already logs.
+**Alternatives considered:**
+- A numeric "character seed": it repeats an image only for the same prompt and model, which is not what the owner asked for.
+- Any live image the caller can read as a reference (uploads, story and catalog images): it would let a likeness from an upload into a subject image under an age the consumer chooses. The owner limited references to images Epistrel generated under the guardrails.
+- A separate column for the recorded true age, with a migration: `depicted_subjects[0].true_age` already holds it.
+- A separate ADR from ADR-214's line of decisions: the issue asked for an amendment of S2's ADR, and the log's rules make an amendment a later ADR that names the clause it changes.
+**Consequences:**
+- docs/03 FR-IMG-14 gains an *[amended by ADR-215]* marker; `docs/openapi.json` documents `reference_image_ids` and its refusals; `docs/guarantees.md`'s `image_prompt` note states that Epistrel makes no quality claim for how alike references keep a subject.
+- A subject image's references can be deleted later; later assets keep the IDs they were made from as history, not as links.
+- `MODEL_CALL_REVISION` stays 6: no model call changes. The `image_prompt` payload carries no reference, and a request without references sends exactly what it did.
+- Tests: `tests/test_subject_references.py` (the field's bounds, each reason and its precedence, the subject check, the view and the origin) and `tests/integration/test_i_30_m9.py` (`test_i_30__m9_references`, `_refused` and `_minor`: the references reach the stub adapter in order and are recorded applied or not applied, every refusal with no job, `image_prompt` call or generation call, a 15-year-old judged at 15). The live check (5 base-and-scene pairs, at least 4 recognisably the same person, judged by eye) is the owner's.
 
 ---
 

@@ -16240,3 +16240,36 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Change:** `POST /subject-images` takes an optional `prompt`, the consumer's whole image prompt. No `image_prompt` call is made. The prompt is sent minus its written ages, with nothing appended, under the same prompt check, figure classification and output check. A minor's prompt is judged by true age, not refused. Assets record `prompt_source`, and a consumer-prompt subject asset has `source = generated_from_consumer_prompt`. Evals and certification make no quality claim for a consumer prompt.
   **Why:** The owner's decision of 2026-11-23 while triaging #1012 (#1017).
   **Affects:** any later plan that assumes every subject image prompt is engine-written or eval-covered: the M12 image stories sharing the $2 cap (#1012, #1020), M13 Audit's image and invariant-3 reviews, and the Console's subject-image form (a `prompt` field and a `prompt_source` display).
+
+## /n8-exec M12 — 2026-11-24 (continued: #1020)
+
+- **Decision (#1020, Discretion):** References are judged by `subject.check_references`, one query over `media_assets` joined to `image_jobs` (live, owned by the principal, image, `origin = subject`, `source` `generated` or `generated_from_consumer_prompt`, job `kind = subject`), called from `Engine.request_subject_images` after `require_generation` and before `subject_rating`, so a refused request makes no `image_prompt` or generation call. Per index the precedence is duplicate, not-subject-image, age unknown, age mismatch; the subject check runs only when every id passed, at the first id whose `depicted_subjects[0].id` differs from index 0's.
+  **Why:** The plan's sim lines. One query keeps it cheap. Another principal's asset gets the same reason as an unknown id, so nothing leaks.
+  **Issue:** #1020
+- **Decision (#1020, Discretion):** Duplicates are refused in `check_references` (`reference_duplicate`, at the duplicate's index), not in the pydantic model. The field itself only bounds the count (`min_length=1` gives `too_short` for `[]`, `max_length=MAX_REFERENCE_IMAGES` gives `too_long`). The ids are `StrictStr` with no syntax check. The API's NUL guard (`api.validation`) and the Engine's `refuse_nul` already refuse a NUL, so the lookup needs no filter for it.
+  **Why:** A pydantic list validator can't report its error at the duplicate's index with a custom type. The engine-level check also reports every failing index in one 422, as the plan asks.
+  **Issue:** #1020
+- **Decision (#1020, Discretion):** With references, the job's `subject_id` is the references' subject id instead of a new ULID. So the safety path's `InlineSubject`, the job target and the asset's declaration all carry it, and the label stays the request's. The ids go on `PerceivedSubject.reference_image_ids` through `subject_view`, so `write_image_prompt` returns them as `built.reference_image_ids` (its debug line logs only the count). On the consumer-prompt path they go straight into `ImageJobRequest.reference_image_ids`. `job_origin` gains `reference_image_ids` (`[]` without any). Order is kept as sent.
+  **Why:** The plan's key links and sim lines. `prompt_inputs` never carries references, so `image_prompt`'s payload is unchanged.
+  **Issue:** #1020
+- **Decision (#1020, Discretion):** `MediaReferences.resolve` refuses a non-`live` asset with `reference_not_found`. Story and catalog references are already filtered to live ones when their views are built, so this only changes a reference retired between the build and the provider call.
+  **Why:** The plan's pass-2 line (`assets.get` returns retired rows too).
+  **Issue:** #1020
+- **Decision (#1020, deviation from a planner path):** The plan named `tests/image_subject_support.py` for the stub's reference capability flag. That file is #266's depicted-subject helper for story and catalog fixtures, and it has no subject-image stub. I added `ReferenceStub` (a `StubImageGenerator` subclass with a `takes_references` flag, reporting `references_applied` and dropping `input_references` the way the OpenRouter adapter does) to `tests/integration/test_i_30_m9.py`, next to #1012's `RatioDropper`. The story, catalog, candidate and age-unknown rows the refusal test needs are hand-built copies of a real subject asset and job (`clone_asset`).
+  **Why:** That is the existing pattern for adapter capability in this file. A shared helper with one user adds nothing.
+  **Issue:** #1020
+- **Decision (#1020, Discretion):** No new code was needed for recording. `generation_metadata.reference_image_ids` and `applied_parameters.references_applied` already come from the job runner and are already on the asset read model (`MediaAsset.generation_metadata`). The integration test asserts both, plus `false` with `input_references` dropped when the stub can't take references.
+  **Why:** The plan's recording line: "surfaced on the asset read model if they are not already". They already were.
+  **Issue:** #1020
+- **Decision (#1020, ADR form):** The plan says S2's ADR gets an amendment entry and no separate ADR. The log header lets a decision amend an earlier ADR only through a later ADR naming the clause it changes, with an **Amended by** line on the earlier one. ADR-213 amending ADR-212 is the precedent. So the amendment is ADR-215 ("Amends ADR-214 … and FR-IMG-14"), and ADR-214 gains `**Amended by:** ADR-215 — …`. FR-IMG-14 carries `[amended by ADR-215]`, and the no-quality-claim sentence sits beside S2's in the guarantee table's `image_prompt` note. Indexes, `docs/guarantees.md` and `docs/openapi.json` were regenerated. No `## Ad-hoc` entry, per the plan.
+  **Why:** That is the only amendment form the log's own rules allow, and it keeps the log append-only.
+  **Issue:** #1020
+- **Decision (#1020):** `MODEL_CALL_REVISION` stays 6, with no docstring sentence and no re-snapshot. `tests/test_model_call_revision.py` passes unchanged. No guarded constant or prompt string moved, the `image_prompt` payload never carries references, and a request without references sends exactly what it did.
+  **Why:** Brief step 6 applies only when a model call changes, and none did.
+  **Issue:** #1020
+- **Decision (#1020):** Red-first: with the four `src/` files stashed, `test_i_30__m9_references` failed with `AssertionError: {"error":{"code":"validation_error","message":"Extra inputs are not permitted","details":{"field":"body.reference_image_ids",…"type":"extra_forbidden"}]}}}` / `assert 422 == 202` (`1 failed`). It passes with them restored.
+  **Why:** The test plan's red-first run.
+  **Issue:** #1020
+- **Decision (#1020):** The live check AC is left unchecked, and the Console follow-up is drafted for the orchestrator, not filed. Both are per the orchestrator's brief: no hosted or paid call, and no Console issue from this agent.
+  **Why:** Orchestrator instructions.
+  **Issue:** #1020

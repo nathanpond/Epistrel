@@ -15946,3 +15946,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#1000, Discretion):** the existing `test_the_embedding_is_pinned_before_any_story_when_configured` is renamed `test_pin_embedding_probes_once_and_pins_only_when_configured`. It calls `scenes.pin_embedding` directly and asserts no ordering. Red-first: with `mut970` on `PYTHONPATH`, `uv run pytest -q -p mut970 tests/evals/test_partition_drain.py tests/eval/test_q_03.py` gives 1 failed, 7 passed. The failure is `[embedding]`: `assert ['pin_embedding'] == ['pin_embeddi..., 'pin_first']`. Without it, 8 pass.
   **Why:** the planner's discretion line.
   **Issue:** #1000
+- **Decision (#998, AC3 amended by the orchestrator):** AC3 says both tests fail with `mut953b`. That can't hold for the stopped-case test, because `mut953b` only swallows `delete_all`'s exceptions and a `Stopped` case already discards the cleanup error, so the mutant changes nothing that test sees. The test is shown red on `mut998skip` instead (`delete_all` does nothing). AC3 is checked with that amendment in the issue body.
+  **Why:** the AC's purpose is that each test catches a real regression of its own behaviour. `mut998skip` is that regression for the stopped-case path. This is a low-cost ambiguity, not a blocker.
+  **Issue:** #998

@@ -19,8 +19,8 @@ cites exactly one canon fact.
 
 **Constraints** (``Constraint``) are typed ``{kind, text, cites}``: ``do_not_assert`` (a
 contradicted or undecided claim: "do not assert that …"; an unpermitted one: "do not introduce
-facts about …", with the reason), ``avoid_binding`` (#154) and ``policy`` (#68's output
-policies).
+facts about …", with the reason), ``avoid_binding`` (#154), ``policy`` (#68's output
+policies) and ``no_copy`` (#1013: a line another speaker already said in the turn).
 
 **Classification** (``classify``, FR-REPAIR-4). From the rung that was accepted and the
 neighborhood's size (its facts, memories excluded): rung 4 (the safe fallback), or a
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
-ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy"]
+ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy", "no_copy"]
 
 DEFAULT_CASCADE_THRESHOLD = 5
 """A neighborhood of more facts than this is a ``cascade`` (FR-REPAIR-4)."""

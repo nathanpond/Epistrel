@@ -245,6 +245,10 @@ UNPERMITTED = "unpermitted"
 HALLUCINATION = "hallucination"
 """#166: the repair tag of a first-person claim with no legitimate basis (FR-VERIFY-10)."""
 RESOLUTION_CONFLICT = "resolution_conflict"
+COPIED_LINE = "copied_line"
+"""#1013 (FR-MULTI-8,11): the repair tag of a ``say`` or ``do`` sentence that repeats, word for
+word after normalization, a sentence another speaker already said in the turn
+(``orchestrator.structured.copies``): regenerated once, else dropped."""
 THINK_LEAK = "think_leak"
 """#172: the repair tag of a claim that repeats or narrates another character's private thought
 (the thought side index or the inner-state check; FR-TURN-3, NFR-PRIV-1)."""
@@ -489,6 +493,9 @@ class VerifyResult:
     schedule: schedules.Statement | None = None
     """#198 (FR-CLOCK-19): a ``scheduled`` claim's classification: a create, a change or a
     report (``core.world_clock.schedule_statements``)."""
+    copied_from: tuple[int, str] | None = None
+    """#1013 (FR-MULTI-8,11): the copied sentence's source, ``(beat, speaker id)``: always
+    repaired (``COPIED_LINE``), whatever the disposition."""
 
     @property
     def schedule_kind(self) -> str | None:
@@ -555,8 +562,8 @@ class VerifyResult:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
         and not permitted (``repair_tag``); under partitions (#166) a hallucination always
         (unless surfaced), and never a sincere error, a lie or a joke; #187: a State finding
-        always."""
-        if self.state_finding is not None:
+        always; #1013: a copied line always."""
+        if self.state_finding is not None or self.copied_from is not None:
             return True
         if self.think_leak is not None or self.confabulated:
             return True  # #172: under every profile (the channel is private)
@@ -578,9 +585,11 @@ class VerifyResult:
         ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
         for a first-person claim with no legitimate basis (#166); #187: a State finding's tag
         (``state_constraint``, ``effect_unresolved``, ``state_undeclared``: a ``state_change``
-        denial)."""
+        denial); #1013: ``copied_line`` for a copied sentence."""
         if self.state_finding is not None:
             return self.state_finding.tag
+        if self.copied_from is not None:
+            return COPIED_LINE
         if self.think_leak is not None:
             return THINK_LEAK
         if self.confabulated:
@@ -626,6 +635,17 @@ class VerifyResult:
             ({"cause": RESOLUTION_CONFLICT} if self.resolution_conflict else {})
             | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
             | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
+            | (
+                {
+                    "cause": COPIED_LINE,
+                    "copied_from": {
+                        "beat": self.copied_from[0],
+                        "character_id": self.copied_from[1],
+                    },
+                }
+                if self.copied_from is not None
+                else {}
+            )
             | ({"recall": self.recall.payload()} if self.recall is not None else {})
             | (
                 {"cause": self.state_finding.tag, "state": self.state_finding.payload()}
@@ -2641,6 +2661,7 @@ async def story_verifier(
 
 __all__ = [
     "BUILT_IN_PARAMS",
+    "COPIED_LINE",
     "ENTAILMENT_BUDGET",
     "ENTAILMENT_RULE",
     "ENTAILMENT_UNAVAILABLE",

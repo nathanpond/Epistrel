@@ -35,7 +35,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
 | FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
-| FR-MULTI | §16 | 043, 054, 126 |
+| FR-MULTI | §16 | 043, 054, 126, 216 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
@@ -274,12 +274,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Partly superseded | 210 |
 | 208 | An owner waiver lets one named version release without current certification records | Current | — |
 | 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
-| 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Current | — |
+| 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Amended | 216 |
 | 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
 | 212 | Slow strict grammars are warmed at start-up, in the background | Amended | 213 |
 | 213 | A strict schema over 16 union-typed parameters goes as parse-validate-retry | Current | — |
 | 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Amended | 215 |
 | 215 | A subject image may take earlier subject images of its subject as reference images | Current | — |
+| 216 | A line copied from another speaker in the same turn is regenerated once, else dropped | Current | — |
 
 ---
 
@@ -2420,6 +2421,7 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-210 — The repair budget is per render, and a failed beat beside its speaker's real line is dropped
 **Status:** Accepted. Amends ADR-010 (the safe fallback as the last rung) and ADR-207 (M12 carries no requirements).
+**Amended by:** ADR-216 — a beat that copies another speaker's line in a turn with several primaries is a violation of its own (`copied_line`): one regeneration, else it is dropped (`repair_dropped`, cause `copied_line`), and the drop rule's post-pass counts it neither way.
 **Context:** #1014, from real use (a consumer's simulated two-character conversation under Full, 2026-11-23). Three of six reply beats were *"Ethan Brooks changes the subject."*, one speaker had the line as both a `do` and a `say` next to a real `say`, and the consumer could not tell why any beat was flagged. #151's ladder counted `repair.max_attempts` per ladder, and a ladder spanned more than one render: the narrator's render shared the first primary's, and the last primary's shared the follow-up's. Full's `max_attempts: 1` then meant one regeneration for two renders, and every other flagged beat went to the fallback line, which FR-REPAIR-3 and the ladder released whatever else its speaker said.
 **Decision:** The owner's decisions at the triage of #1014 (2026-11-23), applied by #1014 (FR-REPAIR-5, new; FR-REPAIR-3 notes it).
 - **Budget per render.** `repair.max_attempts` counts each render's regenerations: the narrator's, each primary's (with the reactions it narrates), each escalated reactor's and, with several primaries, the follow-up's. A turn with one character render (`combined`) keeps one budget for the characters and the follow-up, and the narrator's is its own. A time-stop repair, an outcome-step repair and `regenerate` keep a ladder of their own, as before. The setting's range, default and preset values are unchanged; Full's 1 now means one per render. The turn's call budget (`try_optional`, or a due-event stop's reserved slot) and deadline still decide whether a regeneration starts.
@@ -2547,6 +2549,26 @@ Tuning and its exit certification come after every milestone that may change a p
 - A subject image's references can be deleted later; later assets keep the IDs they were made from as history, not as links.
 - `MODEL_CALL_REVISION` stays 6: no model call changes. The `image_prompt` payload carries no reference, and a request without references sends exactly what it did.
 - Tests: `tests/test_subject_references.py` (the field's bounds, each reason and its precedence, the subject check, the view and the origin) and `tests/integration/test_i_30_m9.py` (`test_i_30__m9_references`, `_refused` and `_minor`: the references reach the stub adapter in order and are recorded applied or not applied, every refusal with no job, `image_prompt` call or generation call, a 15-year-old judged at 15). The live check (5 base-and-scene pairs, at least 4 recognisably the same person, judged by eye) is the owner's.
+
+---
+
+### ADR-216 — A line copied from another speaker in the same turn is regenerated once, else dropped
+**Status:** Accepted. Amends ADR-210 (what the repair ladder drops, and why) and FR-MULTI-8,11.
+**Context:** #1013, from real use (a consumer's three-character `respond` turn under Full, 2026-11-23): two characters said word-for-word the same three sentences, and a third repeated the first of them. In `sequential` mode a later primary's context holds the beats the earlier primaries staged (#174), so the later render copied the earlier line; nothing compared a render's beats with what other speakers had said in the turn. (The off-scene speaker and the bare-name narrowing from the same report are #1019.)
+**Decision:** The owner's decision at the triage of #1013 (2026-11-23): "a copied line is regenerated once; if that fails it is dropped, and the character stays silent rather than getting the fallback". Applied by #1013 (no new FR ID; FR-MULTI-8 and FR-MULTI-11 amended).
+- **The check** (`orchestrator.structured.copies`). In a structured turn with several primaries, each `say` and `do` beat (a narrated reaction is its reactor's) is compared with every earlier `say` and `do` beat of another speaker in the turn, as staged: an earlier primary's repaired text, the beats before it in its own render, and in `simultaneous` mode the primaries earlier in request order. A sentence (the narrowing rung's split, `core.repair.rungs.sentences`) is a copy when its normalized form (NFKC, curly quotes straightened, case-folded, hyphens and dashes as spaces, other punctuation stripped, an apostrophe inside a word kept, white space collapsed) equals a normalized sentence of such a beat and it has at least 5 words (`[\w']+` runs). Not compared: a character's own earlier line, a sentence that is also the player's input, the player's input and `co_author` narration, narrator beats, fallback lines, adjudication attempt lines and a render released as the safe fallback. Single-primary turns and Lite are unchanged.
+- **Placement.** The check runs on each beat just before its own repair: after each primary's verification in `sequential` mode, on each primary's pre-adjudication repair in `simultaneous` mode, and for the last primary and the follow-up in the whole-turn repair, in beat order. Every repair candidate's re-check runs it too. A flag whose source is later dropped or regenerated stands. `regenerate` (#154) replays the whole turn, so it runs the same check over the new variant's beats.
+- **The repair.** A copy is a synthetic checked claim of its beat (verdict `uncertain`, `VerifyResult.copied_from = (beat, speaker id)`, repair tag `copied_line`, claim id `{op}:copied:{beat}:{n}`), sent to the ladder with the beat's other violations and kept out of `turn_report.verify`. It skips rungs 1 and 2 and gets exactly one regeneration whatever `repair.max_attempts` is, carrying every constraint of the beat plus `no_copy` ("Do not repeat what {name} just said; respond in your own words.", naming the speaker of the copied sentence from the render's cast, quoting none of the line). The regeneration draws on the render's attempts and the turn's budget (ADR-210). With no attempt left, no budget, an unusable output, a model error, or a candidate that still copies or fails any other check, the beat is dropped (`repair_dropped`, cause `copied_line`), never the safe fallback line, whether or not its speaker has another line; with the repair module off it is dropped directly. A deceptive or joking `say` is not exempt. A copy with a State finding keeps the State deterministic rung's outcome for its effect, built without the copied text; only the prose is dropped. A non-copy beat whose candidate copies is rejected as a candidate and goes to its next rung, reported with `copied_line` added to its `violations`.
+- **Reporting.** A dropped copy's `degradation_details` entry (ADR-210's per-beat shape) has `violations: ["copied_line"]`; it replaces any `repair_deterministic` entry of that beat, and ADR-210's post-pass counts the dropped copy neither as accepted nor as failed. `render_rejected` and `verify_verdict` carry the copy's verdict with `cause: copied_line` and `copied_from: {beat, character_id}` (ids only). `turn_report.multi.copied` counts the flagged beats (always present, 0 when none), and copy-driven regenerations count in `regenerated_beats` too. `epistrel_copied_lines_total{outcome}` counts `regenerated` and `dropped`. A primary whose every beat was dropped stays in `message_rendered`'s primaries and `turn_report.multi.order`.
+**Alternatives considered:**
+- The safe fallback line for a failed copy: the owner chose silence, and ADR-210 already drops a fallback beside a real line.
+- A prompt instruction alone ("do not repeat the others"): the copy came despite the shared context, and an instruction cannot be checked.
+- Fuzzy matching (edit distance, embeddings): it would catch paraphrase too and needs a threshold; exact normalized sentences catch #1013's copies and near-copy, and the 5-word floor keeps everyday short replies.
+**Consequences:**
+- A turn with several primaries may send one more `regeneration` call per copied beat, within its budget. `MODEL_CALL_REVISION` stays 6, with #1013 named in its docstring (the `no_copy` constraint is a Python-held prompt string).
+- Under a character viewpoint, a dropped copy's per-beat entry shows only when that viewpoint sees another beat of the same speaker (ADR-210's filter); the omniscient history read always shows it.
+- docs/03 FR-MULTI-8 and FR-MULTI-11 gain *[amended by ADR-216]* markers; I-12's M12 part gates them.
+- Tests: `tests/test_copied_lines.py` (normalization, the 5-word floor, the sentence split, what is compared, the claim, the one regeneration and the drop) and `tests/integration/test_i_12.py` (`test_i_12__m12_copied_lines`, `_complements` and `_simultaneous`).
 
 ---
 

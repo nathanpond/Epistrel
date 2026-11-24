@@ -425,10 +425,10 @@ class GenerationInputs(InputSchema):
     may appear."""
 
 
-ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy"]
+ConstraintKind = Literal["do_not_assert", "avoid_binding", "policy", "no_copy"]
 """What a repair constraint forbids (#151; shared with #154's reconciliation and #68's policy
-regeneration): asserting a claim, binding an open reference a certain way, or breaking an
-output policy."""
+regeneration): asserting a claim, binding an open reference a certain way, breaking an
+output policy, or (#1013) repeating a line another speaker already said in the turn."""
 
 
 class RepairConstraint(InputSchema):

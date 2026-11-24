@@ -273,6 +273,13 @@ REPAIR_REGENERATIONS = Counter(
     ("outcome",),
 )
 REGENERATION_OUTCOMES = frozenset({"accepted", "failed", "skipped_max_attempts", "skipped_budget"})
+COPIED_LINES = Counter(
+    "epistrel_copied_lines",
+    "Beats of a turn with several primaries flagged as copying another speaker's line (#1013), "
+    "by outcome: regenerated (its one regeneration accepted) or dropped.",
+    ("outcome",),
+)
+COPIED_LINE_OUTCOMES = frozenset({"regenerated", "dropped"})
 REPAIR_RENDERS = Counter(
     "epistrel_repair_renders",
     "Renders that ran the repair ladder, by whether at least one regeneration ran.",
@@ -351,6 +358,14 @@ def count_regeneration(outcome: str) -> None:
     if outcome not in REGENERATION_OUTCOMES:
         raise ValueError(f"unknown regeneration outcome {outcome}")
     REPAIR_REGENERATIONS.labels(outcome=outcome).inc()
+
+
+def count_copied_line(outcome: str) -> None:
+    """Count one copied line's outcome (``epistrel_copied_lines_total{outcome}``; #1013); an
+    outcome outside the two is a programming error."""
+    if outcome not in COPIED_LINE_OUTCOMES:
+        raise ValueError(f"unknown copied-line outcome {outcome}")
+    COPIED_LINES.labels(outcome=outcome).inc()
 
 
 def count_repair_render(regenerated: bool) -> None:
@@ -657,6 +672,8 @@ __all__ = [
     "BELIEF_TRANSITIONS_REFUSED",
     "BUDGET_REJECTED",
     "CHARACTERS_MODELED",
+    "COPIED_LINES",
+    "COPIED_LINE_OUTCOMES",
     "COULD_HAVE_KNOWN",
     "COULD_HAVE_KNOWN_FLAGS",
     "DIRECTOR_ORDER",
@@ -701,6 +718,7 @@ __all__ = [
     "count_auto_points_dropped",
     "count_auto_queued",
     "count_budget_rejected",
+    "count_copied_line",
     "count_degradation",
     "count_perception_repair",
     "count_regeneration",

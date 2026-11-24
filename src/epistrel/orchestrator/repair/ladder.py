@@ -80,6 +80,22 @@ a fallback line (a ``think``, a ``latent`` and a State finding's deterministic b
 count). When every beat of the speaker failed, its first fallback line is kept and the others
 are dropped (``duplicate_fallback``).
 
+**Copied lines** (#1013, FR-MULTI-8,11; ``orchestrator.structured.copies``): a ``say`` or ``do``
+beat flagged ``copied_line`` (a sentence another speaker already said in the turn) skips rungs 1
+and 2 and gets exactly **one** regeneration, whatever ``repair.max_attempts`` is, with every
+constraint of the beat plus ``no_copy`` ("Do not repeat what {name} just said; respond in your
+own words.", naming the speaker of the copied sentence from the render's cast names). The
+regeneration draws on the render's attempts and the turn's budget: with no attempt left, no
+budget, an unusable output, a model error, or a candidate that is still a copy or fails any
+other check, the beat is **dropped** (``repair_dropped``, cause ``copied_line``; it replaces any
+``repair_deterministic``), never the fallback line, and the drop rule's post-pass counts it
+neither way. A copy with a State finding keeps the State deterministic rung's outcome for its
+effect, built without the copied text (a refused attempt's line, an unnarrated change's line);
+only the prose is dropped. A non-copy beat whose candidate copies is rejected like any failing
+candidate, and its per-beat entry adds ``copied_line`` to its ``violations``
+(``RepairResult.flagged``). ``copy_dropped`` drops a copied beat with no ladder (the repair
+module off). ``epistrel_copied_lines_total{outcome}`` counts ``regenerated`` and ``dropped``.
+
 **What comes out** (``RepairResult``): the accepted beat (``None`` for a dropped one) at the
 original beat's position with its new claims (a claim rung 2 rewrote restates canon and is
 never canonized, ``restates``), the rung, the attempts, every rejected text
@@ -147,7 +163,7 @@ from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
-from epistrel.observability.metrics import count_regeneration
+from epistrel.observability.metrics import count_copied_line, count_regeneration
 from epistrel.orchestrator.budget import REPAIR as BUDGET_REPAIR
 from epistrel.orchestrator.budget import STOP as BUDGET_STOP
 from epistrel.orchestrator.budget import TurnBudget
@@ -182,6 +198,7 @@ from epistrel.orchestrator.structured.render import (
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
     CONFABULATION,
+    COPIED_LINE,
     HALLUCINATION,
     RESOLUTION_CONFLICT,
     THINK_LEAK,
@@ -215,9 +232,14 @@ REPAIR = "repair"
 REPAIR_DROPPED = "repair_dropped"
 """Degradation (#1014): a beat that became the fallback line was dropped instead, because its
 speaker has a real line in the turn (``SPEAKER_HAS_LINE``) or already keeps one fallback line
-(``DUPLICATE_FALLBACK``)."""
+(``DUPLICATE_FALLBACK``); #1013: a copied line whose one regeneration failed or could not run
+(``COPIED_LINE``)."""
 SPEAKER_HAS_LINE = "speaker_has_line"
 DUPLICATE_FALLBACK = "duplicate_fallback"
+COPY_CONSTRAINT = "Do not repeat what {name} just said; respond in your own words."
+"""#1013: the ``no_copy`` constraint of a copied line's regeneration."""
+COPY_SOURCE_FALLBACK = "the other character"
+"""#1013: how ``COPY_CONSTRAINT`` names a source speaker the render's cast does not name."""
 REPAIR_STEPS = frozenset({REPAIR_DETERMINISTIC, REPAIR_UNEXTRACTED, SAFE_FALLBACK, REPAIR_DROPPED})
 """The degradation steps the ladder reports per beat (``RepairResult.detail``)."""
 RUNG_NAMES: dict[int, str] = {
@@ -401,7 +423,21 @@ class RepairResult:
     """#1014: the beat became the stored fallback line (``_fallback_line`` made its text)."""
     drop_cause: str | None = None
     """#1014: why the drop rule removed the fallback line (``SPEAKER_HAS_LINE`` or
-    ``DUPLICATE_FALLBACK``); ``None`` when it was not dropped by it."""
+    ``DUPLICATE_FALLBACK``); #1013: ``COPIED_LINE`` for a dropped copy; ``None`` when it was not
+    dropped."""
+    flagged: set[str] = field(default_factory=set)
+    """#1013: codes a rejected candidate added to what flagged the beat (``copied_line``)."""
+
+    @property
+    def copied(self) -> bool:
+        """#1013: whether the beat, or a candidate for it, was flagged ``copied_line``."""
+        return COPIED_LINE in self.codes
+
+    @property
+    def codes(self) -> list[str]:
+        """#1014: the codes of what flagged the beat (``violation_codes``), with #1013's
+        ``flagged``."""
+        return sorted({*violation_codes(self.violations), *self.flagged})
 
     def restates(self, claim: Proposition) -> bool:
         """Whether ``claim`` is one rung 2 rewrote to canon's value: it restates canon, so it is
@@ -457,7 +493,7 @@ class RepairResult:
         (``None``: the narrator), the rung it ended at and the codes of what flagged it. Its
         ``kind`` is for the viewpoint filter only. Codes and ids only, never text."""
         steps = [d for d in self.degradation if d[0] in REPAIR_STEPS]
-        codes = violation_codes(self.violations)
+        codes = self.codes
         return [
             {
                 "step": step,
@@ -701,6 +737,7 @@ class RepairLadder:
         extraction_calls: int,
         check_calls: int,
         render_of: RenderOf | None = None,
+        cast_names: Mapping[str, str] | None = None,
     ) -> None:
         self.db = db
         self.models = models
@@ -717,6 +754,8 @@ class RepairLadder:
         self.extraction_calls = extraction_calls
         self.check_calls = check_calls
         self.render_of: RenderOf = render_of or (lambda _: None)
+        self.cast_names: Mapping[str, str] = cast_names or {}
+        """#1013: the render's cast names, for a copied line's ``no_copy`` constraint."""
         self.used: dict[Hashable, int] = {}
         """#1014: the regenerations each render has used."""
         self.renders: list[Hashable] = []
@@ -788,7 +827,12 @@ class RepairLadder:
             props = [f.proposition for f in (*contradicted.values(), *neighbors.values())]
             props += [v.claim.proposition for v in violations if v.claim.proposition is not None]
             names = await _names(conn, self.story_id, props)
-            constraints = tuple([await self._constraint(v, registry, names) for v in violations])
+            made = [await self._constraint(v, registry, names) for v in violations]
+            # #1013: one ``no_copy`` line per source speaker, however many sentences it copied.
+            copies = list(dict.fromkeys(c for c in made if c.kind == "no_copy"))
+            constraints = tuple(
+                [*(c for c in made if c.kind != "no_copy"), *copies] if copies else made
+            )
             redactions = tuple(
                 (v.claim.span[1], v.claim.span[2])
                 for v in violations
@@ -816,6 +860,10 @@ class RepairLadder:
     ) -> Constraint:
         claim = v.claim.proposition
         cites = tuple(v.result.evidence_ids()) if v.result is not None else ()
+        if v.result is not None and v.result.copied_from is not None:
+            # #1013: names the source speaker only; the rejected text already carries the line.
+            source = self.cast_names.get(v.result.copied_from[1]) or COPY_SOURCE_FALLBACK
+            return Constraint("no_copy", COPY_CONSTRAINT.format(name=source))
         if v.result is not None and v.result.state_finding is not None:
             # #187: the finding's own line (a character's names no value it may not know).
             return Constraint("do_not_assert", v.result.state_finding.line)
@@ -879,6 +927,8 @@ class RepairLadder:
         attempts = 0
         violating = {i for v in violations if (i := _declared_index(v)) is not None}
         stating = state_findings(violations)
+        copied = [v for v in violations if v.result is not None and v.result.copied_from]
+        flagged: set[str] = set()
         render = self.render_of(beat)
         if render not in self.renders:
             self.renders.append(render)
@@ -927,6 +977,7 @@ class RepairLadder:
                 recheck=recheck,
                 sketches=list(chosen),
                 fallback=fallback,
+                flagged=flagged,
             )
 
         async def attempt(
@@ -957,12 +1008,18 @@ class RepairLadder:
                 return None
             found = await self.recheck(candidate, chosen, backstop, rung)
             if found.violations:
+                if any(
+                    c.result is not None and c.result.copied_from is not None
+                    for c in found.violations
+                ):
+                    flagged.add(COPIED_LINE)  # #1013
                 reject(found.violations)
                 return None
             return found
 
-        # Rung 1: narrowing (#187: never for a State finding, which no rewording fixes).
-        if beat.kind in DETERMINISTIC_KINDS and not stating:
+        # Rung 1: narrowing (#187: never for a State finding, which no rewording fixes; #1013:
+        # nor for a copied line).
+        if beat.kind in DETERMINISTIC_KINDS and not stating and not copied:
             spans = self._spans(beat, violations, sketches)
             text = None if spans is None else narrow(beat.text, spans)
             if text is not None:
@@ -977,7 +1034,7 @@ class RepairLadder:
                 if found is not None:
                     return result(NARROWING, found.beat, found, kept)
         # Rung 2: substitution.
-        if beat.kind in DETERMINISTIC_KINDS and not stating:
+        if beat.kind in DETERMINISTIC_KINDS and not stating and not copied:
             swapped = self._substitution(beat, violations, sketches, context)
             if swapped is not None:
                 text, chosen = swapped
@@ -993,15 +1050,8 @@ class RepairLadder:
                 degradation.append((REPAIR_DETERMINISTIC, "max_attempts"))
                 count_regeneration("skipped_max_attempts")
                 break
-            cost = self.regeneration_cost
             held = budget.held
-            stopping = any(f.tag == TIME_STOP for f in stating)
-            if stopping and budget.named.get(BUDGET_STOP, 0) >= cost:
-                # #636: a due-event stop's regeneration is planned work (its reserved slot).
-                budget.draw(BUDGET_STOP)
-                budget.hold(cost)
-            elif not budget.try_optional(BUDGET_REPAIR, cost):
-                # Optional work (#156): never a reserved call, and only while it could start.
+            if not self._reserve(budget, stating):
                 degradation.append((REPAIR_DETERMINISTIC, "budget"))
                 count_regeneration("skipped_budget")
                 break
@@ -1033,7 +1083,23 @@ class RepairLadder:
                     degradation.append((REPAIR_UNEXTRACTED, "budget"))
                 if clock_drops:
                     degradation.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
+                if copied:
+                    count_copied_line("regenerated")
                 return result(REGENERATION, found.beat, found, chosen)
+            if copied:
+                break  # #1013: exactly one regeneration for a copied line
+        if copied:
+            # #1013: no regeneration ran, or it failed: the beat is dropped, never the fallback.
+            count_copied_line("dropped")
+            degradation[:] = [(REPAIR_DROPPED, COPIED_LINE)]
+            if stating and beat.kind in DETERMINISTIC_KINDS:
+                # The State deterministic rung for the effect, built without the copied text.
+                outcome = state_deterministic(replace(beat, text=""), stating)
+                if outcome is not None and outcome.text.strip():
+                    return result(FALLBACK, outcome)
+            gone = result(FALLBACK, None)
+            gone.drop_cause = COPIED_LINE
+            return gone
         # Rung 4: the safe fallback (a think or latent beat is dropped).
         degradation.append((SAFE_FALLBACK, REPAIR))
         if beat.kind not in DETERMINISTIC_KINDS:
@@ -1047,6 +1113,17 @@ class RepairLadder:
         return result(
             FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()), fallback=True
         )
+
+    def _reserve(self, budget: TurnBudget, stating: Sequence[Finding]) -> bool:
+        """Whether one regeneration's calls could be reserved now (and they are held)."""
+        cost = self.regeneration_cost
+        if any(f.tag == TIME_STOP for f in stating) and budget.named.get(BUDGET_STOP, 0) >= cost:
+            # #636: a due-event stop's regeneration is planned work (its reserved slot).
+            budget.draw(BUDGET_STOP)
+            budget.hold(cost)
+            return True
+        # Optional work (#156): never a reserved call, and only while it could start.
+        return budget.try_optional(BUDGET_REPAIR, cost)
 
     # -- the rungs ------------------------------------------------------------------------
 
@@ -1313,6 +1390,35 @@ def settled(beat: TurnBeat, violations: Sequence[CheckedClaim]) -> RepairResult:
     )
 
 
+def copy_dropped(beat: TurnBeat, violations: Sequence[CheckedClaim]) -> RepairResult:
+    """#1013: ``beat``, flagged ``copied_line``, dropped without the ladder (the story's repair
+    module off): ``repair_dropped`` (cause ``copied_line``), its rejected text recorded."""
+    count_copied_line("dropped")
+    repair_class = classify(FALLBACK, 0)
+    return RepairResult(
+        beat=None,
+        rung=FALLBACK,
+        attempts=0,
+        rejected=[
+            RejectedRender(
+                beat=beat.beat,
+                attempt=0,
+                rung=FALLBACK,
+                text=beat.text,
+                verdicts=_verdicts(violations),
+                detected_claims=_detected(violations),
+            )
+        ],
+        repair_class=repair_class,
+        degradation=[(REPAIR_DROPPED, COPIED_LINE)],
+        remaining_violations=[],
+        original=beat,
+        violations=list(violations),
+        context=Context(),
+        drop_cause=COPIED_LINE,
+    )
+
+
 def _surface(p: Proposition, names: Mapping[str, str]) -> str:
     """How a proposition's object reads in prose: the entity's canonical name, the set's names
     joined, or the literal's text."""
@@ -1349,6 +1455,8 @@ async def _names(
 
 
 __all__ = [
+    "COPIED_LINE",
+    "COPY_CONSTRAINT",
     "DETERMINISTIC_KINDS",
     "DROPPED",
     "DUPLICATE_FALLBACK",
@@ -1374,6 +1482,7 @@ __all__ = [
     "RenderOf",
     "RepairLadder",
     "RepairResult",
+    "copy_dropped",
     "drop_plan",
     "real_line",
     "speaker_of",

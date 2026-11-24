@@ -34,10 +34,21 @@ only staged beats, never a rejected or regenerated-away version, and never anoth
 ``think`` or ``latent``. Everything commits as one turn (one ``message_rendered`` naming every
 primary in order); a later render that fails fails the whole turn with nothing recorded.
 
+**Copied lines** (#1013, FR-MULTI-8,11; ``orchestrator.structured.copies``): with several
+primaries, each ``say`` and ``do`` beat is checked, after its verification and before its own
+repair, against every earlier ``say`` and ``do`` beat of another speaker in the turn as staged
+(an earlier primary's repaired text, the beats before it in its own render, its narrated
+reactions both ways, the follow-up's against the last primary's repaired beats; in
+``simultaneous`` mode the primaries earlier in request order). A sentence of 5 words or more
+whose normalized form equals one of theirs is a ``copied_line``: the beat is regenerated once
+with ``no_copy`` ("Do not repeat what {name} just said; respond in your own words."), else
+dropped (``repair_dropped``, cause ``copied_line``), never the fallback line. A primary whose
+every beat was dropped stays in ``message_rendered``'s primaries and in the order.
+
 ``turn_report.multi`` = ``{mode, order, order_source, staged, accepted, regenerated_beats,
-deferred, not_present}`` (#175: a simultaneous turn adds ``tie_break`` and ``adjudications``);
-``epistrel_multi_turns_total{mode}`` and ``epistrel_director_order_total{outcome}`` count
-them. Log lines carry ids and counts only
+copied, deferred, not_present}`` (#175: a simultaneous turn adds ``tie_break`` and
+``adjudications``); ``epistrel_multi_turns_total{mode}`` and
+``epistrel_director_order_total{outcome}`` count them. Log lines carry ids and counts only
 (invariant 3).
 """
 
@@ -340,6 +351,8 @@ class MultiReport:
     """#188: ``tie_break_state_invalid`` when a ``state:<name>`` fell back."""
     adjudications: list[dict[str, Any]] = field(default_factory=list)
     """#175: ``{object, winner, loser, rule}`` per settled conflict."""
+    copied: int = 0
+    """#1013: the beats flagged ``copied_line`` (each counted once)."""
 
     def report(self) -> dict[str, Any]:
         if self.mode == SIMULTANEOUS:
@@ -358,6 +371,7 @@ class MultiReport:
             "staged": self.staged,
             "accepted": self.accepted,
             "regenerated_beats": sorted(set(self.regenerated_beats)),
+            "copied": self.copied,
             "deferred": list(self.deferred),
             "not_present": list(self.not_present),
         }

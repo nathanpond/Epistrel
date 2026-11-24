@@ -102,7 +102,10 @@ stages each repaired beat's ``verify_verdict`` and every rejected text as ``rend
 off a contradicted beat stands, labelled. #1014 (FR-REPAIR-5): ``repair.max_attempts`` is each
 render's (``render_key``), the drop rule (``drop_fallbacks``) runs after each repair pass over
 the turn so far, and each repair's ``degradation_details`` entry is per beat
-(``repair_details``), with ``turn_report.repair``'s totals.
+(``repair_details``), with ``turn_report.repair``'s totals. #1013 (FR-MULTI-8,11): with
+several primaries ``repair_turn`` also checks each beat, and each repair candidate, for a
+sentence another speaker already said in the turn (``copies``; ``copy_scope``), regenerated
+once or dropped.
 
 **Regenerate** (#154, ``regenerate``): the head turn's recorded input is played again as a new
 variant. Its reads leave the replaced variant's records out (``core.membership.excluding``), so
@@ -424,6 +427,7 @@ from epistrel.orchestrator.repair.ladder import (
 )
 from epistrel.orchestrator.repair.ladder import SAFE_FALLBACK as REPAIR_FALLBACK
 from epistrel.orchestrator.structured import clocking, multi, planner, stopping, turn_edges
+from epistrel.orchestrator.structured import copies as copy_check
 from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
@@ -2825,6 +2829,8 @@ async def repair_turn(
     stage: TurnStage | None = None,
     follow_up_render: bool = False,
     before: Checked | None = None,
+    copies: copy_check.Scope | None = None,
+    copy_before: Checked | None = None,
 ) -> Checked:
     """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
     beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
@@ -2840,25 +2846,61 @@ async def repair_turn(
     narrator's beats are one render, the follow-up's another when ``follow_up_render`` (a turn
     with several primaries), the rest the calling primary's (with the reactions it narrates);
     then the drop rule runs over the whole of ``checked`` (``drop_fallbacks``), counting
-    ``before``'s beats (a staged turn's intent, for its outcome step)."""
-    if not repair_on(configuration) or rendered.finish_reason == "fallback":
+    ``before``'s beats (a staged turn's intent, for its outcome step). #1013 (FR-MULTI-8,11):
+    with ``copies`` (a turn with several primaries) each beat, in beat order and just before
+    its own repair, is also checked for a sentence another speaker already said
+    (``copies.find`` over ``copy_before``'s beats, the earlier renders', and ``checked``'s
+    beats before it, as repaired so far), and so is every repair candidate; a copied beat goes
+    to the ladder with its other violations (a deceptive or joking ``say`` too), or, with the
+    repair module off, is dropped (``ladder.copy_dropped``)."""
+    if rendered.finish_reason == "fallback":
         return checked
-    wanted = [
-        (b, found)
+    repairing = repair_on(configuration)
+    if not repairing and copies is None:
+        return checked
+
+    def copy_claims(beat: TurnBeat) -> list[CheckedClaim]:
+        """#1013: ``beat``'s copied sentences, as checked claims."""
+        if copies is None:
+            return []
+        earlier = [] if copy_before is None else [*copy_before.beats]
+        results = [*checked.repairs, *(() if copy_before is None else copy_before.repairs)]
+        exempt = {*copies.exempt, *(r.original.beat for r in results if r.fallback)}
+        pool = {b.beat: b for b in (*earlier, *checked.beats)}
+        found = copy_check.find(beat, pool.values(), player=copies.player, exempt=exempt)
+        return copy_check.claims_of(found, beat, operation_id)
+
+    def violations_of(beat: TurnBeat) -> list[CheckedClaim]:
+        copied = copy_claims(beat)
+        if not repairing:
+            return copied
+        if (
+            beat.kind == SAY
+            and beat.intent in UNREPAIRED_INTENTS
+            and not _hallucinated(checked, beat)
+        ):
+            return copied  # #1013: a deceptive or joking say is still checked for a copy
+        return [*_violations(checked, beat), *copied]
+
+    numbers = sorted(
+        b.beat
         for b in checked.beats
         if b.beat > 1
         and (only is None or b.beat in only)
         # #180: the co_author player's narration is checked by its own rules, never repaired.
         and not authority_rules.is_narrated(b)
-        and not (b.kind == SAY and b.intent in UNREPAIRED_INTENTS and not _hallucinated(checked, b))
-        and (found := _violations(checked, b))
-    ]
-    if not wanted:
-        drop_fallbacks(checked, stage, before)
+    )
+    if not repairing:
+        # #1013: the repair module off: a copied beat is dropped, every other one stands.
+        for number in numbers:
+            current = next((b for b in checked.beats if b.beat == number), None)
+            copied = [] if current is None else copy_claims(current)
+            if current is not None and copied:
+                dropped = repair_ladder.copy_dropped(current, copied)
+                _merge_repair(checked, dropped)
+                checked.degradation += dropped.degradation
         return checked
     settings = configuration.settings
-    async with db.connect() as conn:
-        detection = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
     sketches = dict(rendered.sketches)
     claims_made = [len(checked.checked)]
 
@@ -2893,6 +2935,8 @@ async def repair_turn(
         if found.verifier is not None:
             checked.repair_verifiers.append((rung, found.verifier))
         (made,) = found.beats
+        # #1013: a candidate that copies another speaker's line is rejected like any failure.
+        found.checked += copy_claims(made)
         if book is not None and book.on:
             # #187: the candidate's effects, folded with the turn's other beats'; #188: an
             # effect a repair adds stays under the turn's caps too (rewritten down to them).
@@ -2925,30 +2969,42 @@ async def repair_turn(
         return await output_passes(models, [text], context, budget=budget, render_ids=render_ids)
 
     policies = output_policies(context, render_ids)
-    ladder = RepairLadder(
-        db,
-        models,
-        story_id,
-        turn=read.turn,
-        read_set=read_set,
-        max_attempts=settings.repair.max_attempts,
-        recheck=recheck,
-        output_ok=output_ok,
-        fallback=fallback,
-        inputs_of=inputs_of,
-        sketches_of=sketches,
-        params=render_params(
-            ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
-            read.resolved.max_tokens,
-        ),
-        extraction_calls=1 if detection.extraction_on else 0,
-        check_calls=regeneration_cost(policies) - 1,
-        render_of=render_of,
-    )
-    for beat, violations in wanted:
+    ladder: RepairLadder | None = None
+    for number in numbers:
+        beat = next((b for b in checked.beats if b.beat == number), None)
+        violations = [] if beat is None else violations_of(beat)
+        if beat is None or not violations:
+            continue
+        if ladder is None:
+            async with db.connect() as conn:
+                detection = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+            ladder = RepairLadder(
+                db,
+                models,
+                story_id,
+                turn=read.turn,
+                read_set=read_set,
+                max_attempts=settings.repair.max_attempts,
+                recheck=recheck,
+                output_ok=output_ok,
+                fallback=fallback,
+                inputs_of=inputs_of,
+                sketches_of=sketches,
+                params=render_params(
+                    ModelParams(temperature=read.resolved.temperature, top_p=read.resolved.top_p),
+                    read.resolved.max_tokens,
+                ),
+                extraction_calls=1 if detection.extraction_on else 0,
+                check_calls=regeneration_cost(policies) - 1,
+                render_of=render_of,
+                cast_names=read.names,
+            )
         result = await ladder.run(beat, violations, budget)
         _merge_repair(checked, result)
         checked.degradation += result.degradation
+    if ladder is None:
+        drop_fallbacks(checked, stage, before)
+        return checked
     regenerated = set(ladder.regenerated)
     for render in ladder.renders:
         checked.repair_renders.append(render in regenerated)
@@ -5764,6 +5820,8 @@ async def play(
         starting: list[Record] = []
         """#175: the same-turn overlay a simultaneous primary is verified against: the input's
         and the narration's claims only, never another primary's."""
+        copy_scope = copy_check.Scope(player=tuple(t for t in (say, do) if t))
+        """#1013: the turn's copy check (used once the turn has several primaries)."""
         # #180: the co_author player's narrated beats are beats 2..k, before every render's.
         next_beat = 2 + len(split.narrated)
         read_k = read
@@ -5789,6 +5847,9 @@ async def play(
                         None if simultaneous or merged is None else merged,
                     )
                 rendered_k, outcome_k, replaced = await render_primary(k, read_k, next_beat)
+                if rendered_k.finish_reason == "fallback":
+                    # #1013: a render released as the safe fallback is never compared.
+                    copy_scope.exempt.update(b.beat for b in rendered_k.beats)
                 fresh = 0
                 if turn_roles is not None and rendered_k.finish_reason != "fallback":
                     # #176 (FR-MULTI-9,10): the reactions it narrates, judged; a reaction that
@@ -5937,6 +5998,10 @@ async def play(
                         ),
                         book=book,
                         stage=turn_stage,
+                        # #1013: with several primaries, each beat is checked for a copied line
+                        # against the earlier renders' (and its own render's earlier) beats.
+                        copies=copy_scope if len(order) > 1 else None,
+                        copy_before=merged,
                     )
                     # #638: a beat the ladder rewrote is decided again for any skip it brings.
                     await time_skips(read_k, checked_k, [] if merged is None else merged.beats)
@@ -6047,6 +6112,8 @@ async def play(
             stage=turn_stage,
             # #1014: with several primaries the follow-up is its own render.
             follow_up_render=sequential,
+            # #1013: the last primary's beats, then the follow-up's, checked for copied lines.
+            copies=copy_scope if sequential else None,
         )
         # #638: a beat the ladder rewrote is decided again for any skip it brings.
         await time_skips(read_k, checked, [])
@@ -6062,6 +6129,10 @@ async def play(
             report_multi.regenerated_beats = [
                 r.original.beat for r in checked.repairs if r.original.beat > 1
             ]
+            # #1013: the beats flagged ``copied_line`` (each once).
+            report_multi.copied = len(
+                {r.original.beat for r in checked.repairs if r.original.beat > 1 and r.copied}
+            )
         # #177 (FR-MULTI-3): the turn's concurrent commitments, reconciled on one timeline
         # after #175's adjudication (its settled pairs skipped), before the composition.
         firsts = [f for f in (turn_stage.render_of(p.id) for p in order) if f is not None]

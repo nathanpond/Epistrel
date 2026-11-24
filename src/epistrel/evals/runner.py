@@ -1515,8 +1515,12 @@ async def run_suites(
     sees each suite start and each case end.
 
     ``trace`` (#737, ``evals.trace``): the run's per-call trace, on for the run's model calls;
-    the judge calibration's calls are recorded under ``phase: calibration``."""
+    the judge calibration's calls are recorded under ``phase: calibration``. The report's
+    ``run_conditions`` count only the structured requests this run sent, not those an earlier
+    preset sent on the same trace (#988)."""
     started = now or datetime.now(UTC)
+    # #988: certify plays every preset on one trace; this run reports what it sends from here.
+    baseline = trace.counts() if trace is not None else None
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
     if not calibrate and any(s.judge_calibration == "pairwise" for s in suites):
@@ -1633,7 +1637,10 @@ async def run_suites(
     report.errors.extend(f"isolation: {p}" for p in problems)
     if config.adapter == "openai" and config.base_url:
         report.run_conditions = run_conditions(
-            config.base_url, trace, journal.reused if journal is not None else 0
+            config.base_url,
+            trace,
+            journal.reused if journal is not None else 0,
+            baseline=baseline,
         )
     if journal is not None and journal.reused:
         shas = set(journal.reused_shas)

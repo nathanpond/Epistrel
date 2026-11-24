@@ -62,6 +62,40 @@ def test_the_trace_counts_fallback_requests_without_the_judge(tmp_path: Path) ->
     assert untraced.note == "untraced run (--no-trace)"
 
 
+def test_a_preset_counts_only_the_requests_after_its_baseline(tmp_path: Path) -> None:
+    """#988: certify plays every preset on one trace. The second preset's run conditions count
+    what it sent after its baseline (``CallTrace.counts`` at its start), and a schema it never
+    sent is left out. With no baseline (a single-preset run), the counts are the whole
+    trace's, as before."""
+    sink = CallTrace(model="m", engine_sha="abc", file=TraceFile(tmp_path / "t.calls.jsonl.gz"))
+    body = {"model": "m", "messages": []}
+    strict = {**body, "response_format": STRICT}
+    parse = {"purpose": "directive_parse", "schema": "DirectiveParseResult", "attempt": 1}
+    token = CALL_TRACE.set(sink)
+    try:
+        sink.record(parse, [Exchange(body=body)])
+        sink.record({"purpose": "entailment", "attempt": 1, "schema": "V"}, [Exchange(body=strict)])
+        first = sink.counts()
+        sink.record(parse, [Exchange(body=body)])
+        sink.record(parse, [Exchange(body=body)])
+    finally:
+        CALL_TRACE.reset(token)
+    assert first == {
+        "DirectiveParseResult": {"parse_validate_retry": 1},
+        "V": {"json_schema_strict": 1},
+    }
+    second = run_conditions(ANTHROPIC, sink, baseline=first)
+    assert second.observed == {"DirectiveParseResult": {"parse_validate_retry": 2}}
+    assert second.parse_validate_retry == {"DirectiveParseResult": 2}
+    whole = run_conditions(ANTHROPIC, sink)
+    assert whole == run_conditions(ANTHROPIC, sink, baseline={})
+    assert whole.observed == {
+        "DirectiveParseResult": {"parse_validate_retry": 3},
+        "V": {"json_schema_strict": 1},
+    }
+    assert sink.counts() is not sink.structured
+
+
 def _report(conditions: RunConditions | None) -> Report:
     return Report(
         run_id="r",

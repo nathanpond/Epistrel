@@ -16135,3 +16135,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#994):** I ran the targeted set over 62 test files in 4 shards, with `tests/gates` and `tests/docs` in shard 0. The files are every test file that imports `core.epistemic.context`, `orchestrator.structured.prompt` or the structured pipeline, or that touches cites or `dependency_edges`, plus `test_model_call_revision.py` and the two new test files. Results: `730 passed`, `88 passed`, `78 passed, 1 deselected` and `91 passed`. `ruff check`, `ruff format --check`, `mypy` and `lint-imports` are clean. `MODEL_CALL_REVISION` is unchanged, because the prompt doesn't change.
   **Why:** brief step 4.
   **Issue:** #994
+- **Decision (#958, owner):** I dropped AC1's "respond call that names nobody to answer" case. Ingest records a line with no reply, and the respond API is unchanged. AC1 is amended and ticked.
+  **Why:** omitting `render_character_ids` already means "everyone but the actor" (FR-RESP-5). Accepting `[]` would change the request schema. The owner chose this on 2026-11-24.
+  **Issue:** #958
+- **Decision (#988, Discretion):** `run_suites` takes a baseline (`CallTrace.counts()`) when the preset's run starts, and `run_conditions(..., baseline=)` reports `observed` and `parse_validate_retry` as the delta since then. A schema with no new requests is left out. `run` and `certify` share this path. `CallTrace.structured`, `record` and the trace file are unchanged, and the flat report shape is unchanged.
+  **Why:** the planner's discretion (snapshot at the preset run's start, report the delta). An empty baseline gives exactly the old whole-trace counts, so a single-preset run doesn't change.
+  **Issue:** #988
+- **Decision (#988):** calibration and the journal's `reused` count needed no change. Certify opens one journal per preset, so `reused` is already per preset. Calibration requests run under `trace.judging()`, so `structured` never counted them. Certify's shared calibration and preflight run before the first preset's baseline. A `run --calibrate` calibrates after its baseline, as before. No ADR and no `MODEL_CALL_REVISION` change, because no model call changes.
+  **Why:** the planner said to handle these "the same way"; reading the code showed both were already per preset or excluded.
+  **Issue:** #988
+- **Decision (#988, Discretion):** the committed historical reports are left as they are. `docs/evals/README.md` notes that reports from before #988 show a running total across a certify run's presets, with the 2026-11-21 e03 example. The integration test follows certify's shape: one `CallTrace`, attached per preset, two `run_suites` calls against `mock_openai`, Standard 2 cases and Full 3. It uses this instead of the CLI because a stub certify run has no `run_conditions` (they need an openai adapter).
+  **Why:** the planner's discretion. The stub adapter never sets `run_conditions`, so a stub certify run could not show the bug.
+  **Issue:** #988
+- **Decision (#988):** red-first, with the new test written before the `src/` change. `test_each_preset_reports_its_own_structured_requests` gave `1 failed`: `{'full': {'Tally': {'json_schema': 5}}} != {'full': {'Tally': {'json_schema': 3}}}`. Full reported Standard's 2 plus its own 3.
+  **Why:** the test plan's red-first run.
+  **Issue:** #988
+- **Decision (#988):** I ran the targeted set over 33 test files, plus `tests/gates` and `tests/docs`, in 4 shards. The files are every test file that imports `evals.trace`, `evals.run_conditions`, `evals.runner` or `evals.report`. Results: `75 passed`, `71 passed, 1 skipped, 1 deselected`, `59 passed` and `687 passed`. `ruff check`, `ruff format --check`, `mypy` and `lint-imports` are clean.
+  **Why:** brief step 4.
+  **Issue:** #988

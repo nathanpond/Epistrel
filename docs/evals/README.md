@@ -269,9 +269,14 @@ the structured mode the endpoint gets (`json_schema_strict` on api.anthropic.com
 has a strict wire form, `parse_validate_retry` when it has none, today `DirectiveParseResult`,
 and `json_schema` elsewhere). From the trace, it gives the structured requests seen by schema
 and mode, and the parse-validate-retry requests by schema, retries included and judge calls
-excluded. Without a trace (`--no-trace`) the counts are `null`. A resumed run counts this
-session's requests only and says how many cases came from the journal. A stub run has no
-`run_conditions`.
+excluded. The counts are this preset's own: `certify` plays its presets on one trace, and each
+report counts only the requests sent after its preset's run started (#988). Reports committed
+before #988 show a running total across a multi-preset certify run instead. For example, the
+2026-11-21 e03 reports give `ConsolidationResult` 452, 902 and 1352 for Standard, Full and Max,
+where each preset's own count is about 450. Those reports are left as they are, and their
+verdicts are unaffected, because no floor reads these counts. Without a trace (`--no-trace`)
+the counts are `null`. A resumed run counts this session's requests only and says how many
+cases came from the journal. A stub run has no `run_conditions`.
 
 - A **rate** floor passes when the mean clears it by more than one standard deviation.
 - A **zero-tolerance** floor passes only with no violation on any seed over at least 300

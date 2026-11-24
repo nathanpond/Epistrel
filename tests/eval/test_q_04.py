@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import replace
+from types import MappingProxyType
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -303,3 +306,105 @@ def test_q_04__m5_context_leaves_out_the_schema_and_the_models_answers() -> None
         fact,
         case.inputs,
     )
+
+
+LEAKED_FROM = "asymmetry-family-0001"
+"""The set case the grounded-leak tests copy (#1005): Linda asked what Frank keeps locked in
+his desk drawer (the ``sale`` fact, Frank's)."""
+
+
+class _Kept(Q04Suite):
+    """Q-04 that keeps each outcome ``Q04Suite.evaluate`` gives, by case id."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.outcomes: dict[str, Outcome] = {}
+
+    async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:
+        found = await super().evaluate(ctx, case)
+        self.outcomes[case.id] = found
+        return found
+
+
+LEAKED_FORM = "farm is for sale"
+"""One of ``LEAKED_FROM``'s forbidden forms that names no entity: an answer naming the fact's
+object (``the sale contract``) is regenerated before it reaches the player."""
+
+
+def _leaking_case(fixture_id: str) -> AsymmetryCase:
+    """``LEAKED_FROM`` on ``fixture_id``, answered with ``LEAKED_FORM`` said outright (on the
+    stub, no ``inject()``)."""
+    source = next(
+        c for c in SUITES["q04"].load(SETS) if isinstance(c, AsymmetryCase) and c.id == LEAKED_FROM
+    )
+    assert LEAKED_FORM in source.inputs.forbidden
+    return source.model_copy(
+        update={
+            "id": f"{LEAKED_FROM}-leak-{fixture_id}",
+            "inputs": source.inputs.model_copy(update={"fixture_id": fixture_id}),
+            "stub_answer": render(f"Word is the {LEAKED_FORM}."),
+        }
+    )
+
+
+async def _played(pg_url: str, engine: AsyncEngine, case: AsymmetryCase) -> tuple[Any, Outcome]:
+    """``case`` through a fresh ``Q04Suite``'s run (one seed): its metrics and its outcome."""
+    suite = _Kept()
+    async with stub_engine(pg_url, engine) as lib:
+        report = await run(
+            suite, AdapterConfig(), SEEDS[:1], engine=lib, cases={suite.name: [case]}
+        )
+    assert report.harness_errors == []
+    assert report.suites[0].errors == [], report.suites[0].errors
+    return by_id(report.suites[0]), suite.outcomes[case.id]
+
+
+@pytest.mark.part("M5", "FR-EPI-1,5; NFR-QUAL-1")
+async def test_q_04__m5_a_grounded_leak_counts(
+    pg_url: str, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1005 (#540, ADR-205): a forbidden form in the answer is a disclosure when the asked
+    character's recorded render context held the fact. A copy of the case's fixture gives the
+    asked character (Linda) a definition that names the form, so her render's system prompt
+    holds it; the stub answers with the form, with no ``inject()``. Through
+    ``Q04Suite.evaluate`` it is exactly one ``ASYMMETRY`` violation, scored ``grounded: True``,
+    and not a guess.
+
+    Complement asserted: ``test_q_04__m5_an_ungrounded_guess_is_not_a_leak`` plays the same
+    answer on the original fixture."""
+    family = fx.FIXTURES["family"]
+    case = _leaking_case("family-told")
+    viewpoint = case.inputs.viewpoint
+    told = replace(
+        family,
+        id="family-told",
+        cast=tuple(
+            replace(p, definition=f"{p.definition} {p.name} has heard the {LEAKED_FORM}.")
+            if p.name == viewpoint
+            else p
+            for p in family.cast
+        ),
+    )
+    monkeypatch.setattr(fx, "FIXTURES", MappingProxyType({**fx.FIXTURES, told.id: told}))
+    metrics, outcome = await _played(pg_url, engine, case)
+    assert outcome.detail["forms_found"] == [LEAKED_FORM], (outcome.output, outcome.detail)
+    assert outcome.detail["grounded"] is True, outcome.detail
+    assert metrics[ASYMMETRY].violations == 1
+    assert metrics[ASYMMETRY].sample_size == 1
+    assert metrics[UNGROUNDED].mean == 0.0
+
+
+@pytest.mark.part("M5", "FR-EPI-1,5; NFR-QUAL-1")
+async def test_q_04__m5_an_ungrounded_guess_is_not_a_leak(pg_url: str, engine: AsyncEngine) -> None:
+    """#1005 (#540, ADR-205): the same answer on the original fixture, where the asked
+    character's context never held the fact, is ``q04.ungrounded_guess`` (``grounded: False``),
+    not a violation.
+
+    Complement asserted: ``test_q_04__m5_a_grounded_leak_counts`` scores it a disclosure when
+    the context held the fact."""
+    case = _leaking_case("family")
+    metrics, outcome = await _played(pg_url, engine, case)
+    assert outcome.detail["forms_found"] == [LEAKED_FORM], (outcome.output, outcome.detail)
+    assert outcome.detail["grounded"] is False, outcome.detail
+    assert metrics[ASYMMETRY].violations == 0
+    assert metrics[UNGROUNDED].mean == 1.0

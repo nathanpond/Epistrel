@@ -104,6 +104,26 @@ class MediaOrigin(StrEnum):
     SUBJECT = "subject"
 
 
+class PromptSource(StrEnum):
+    """Who wrote a generated image's prompt (#1017, ADR-214): ``consumer`` (the consumer's own
+    text, ``source = generated_from_consumer_prompt``) or ``engine`` (Epistrel's prompt writer,
+    ``source = generated``). An asset read derives it from ``source`` (``prompt_source_of``), so
+    an image generated before #1017 reads ``engine``; an upload or extracted poster has none."""
+
+    CONSUMER = "consumer"
+    ENGINE = "engine"
+
+
+def prompt_source_of(source: str) -> PromptSource | None:
+    """The ``PromptSource`` of an asset's ``source``; ``None`` for one Epistrel did not
+    generate."""
+    if source == MediaSource.GENERATED_FROM_CONSUMER_PROMPT.value:
+        return PromptSource.CONSUMER
+    if source == MediaSource.GENERATED.value:
+        return PromptSource.ENGINE
+    return None
+
+
 class UploadState(StrEnum):
     """A resumable upload session's state (#107): ``open`` (parts may arrive), ``completed``
     (its asset exists) or ``aborted`` (by ``DELETE`` or by the sweep once it expired)."""
@@ -351,11 +371,13 @@ __all__ = [
     "MediaOrigin",
     "MediaSource",
     "MediaState",
+    "PromptSource",
     "ReferenceKind",
     "ReferenceScope",
     "SubjectKind",
     "UploadState",
     "media_assets",
     "media_upload_sessions",
+    "prompt_source_of",
     "subject_references",
 ]

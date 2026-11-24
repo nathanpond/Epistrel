@@ -45,7 +45,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186, 214 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 017, 129, 158, 162 |
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199, 206 |
@@ -278,6 +278,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
 | 212 | Slow strict grammars are warmed at start-up, in the background | Amended | 213 |
 | 213 | A strict schema over 16 union-typed parameters goes as parse-validate-retry | Current | — |
+| 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Current | — |
 
 ---
 
@@ -2495,6 +2496,30 @@ Tuning and its exit certification come after every milestone that may change a p
 - A start sends no warm-up call at the default configuration (ADR-212 revised).
 - `MODEL_CALL_REVISION` stays 6: the structured-mode choice moved, and the snapshot holds `strict_wire_schema`'s source and the two constants (re-taken with #1012).
 - Tests: `tests/test_strict_union_limit.py` (the count, `RewriteParseResult` over the limit and without a wire form, every other strict schema within it, the live 400 mapped to `SchemaTooLarge`); the warm-up tests lift the limit to keep a schema to warm.
+
+---
+
+### ADR-214 — A consumer may write a subject image's whole prompt, under the same guardrails
+**Status:** Accepted. Amends FR-IMG-14 (where a subject image's prompt comes from).
+**Context:** FR-IMG-14's subject images had their prompt written by the `image_prompt` purpose from the consumer's description, the true age's apparent age band, an optional style and the rating's image guidance. Consumers could steer it only through `style`, and the written prompt sometimes dropped what they asked for (#1012's cropped heads). While triaging #1012 on 2026-11-23 the owner decided to "let the consumer control the entire image generation prompt rather than these tight limits … We can still put guardrails on it", and on minors, "don't refuse": the checks judge the prompt by the declared true age, as they judge an engine-written one.
+**Decision:** The owner's decision, applied by #1017 (no new FR ID).
+- **Scope: subject images only.** `POST /subject-images` (and the library's `request_subject_images`) takes an optional `prompt`: 1 to 4,000 characters, not blank, no control character but newline and tab. It cannot be sent with `style`: the prompt is the whole prompt (422 at `body.prompt`). Catalog image requests still refuse a `prompt`. Story images already took a consumer prompt (#263, `generated_from_consumer_prompt`), and this ADR does not change them.
+- **Nothing written, nothing added.** With `prompt`, no `image_prompt` call is made. The image model receives `redact_ages(prompt, true_age)`, the redaction the description already gets, so a written age never reaches it. No rating guidance, age band or scene is appended, and there is no negative prompt. A prompt left empty by the redaction is 422 at `body.prompt`. The aspect ratio resolves as it does without a prompt (#1012). `subject.description` stays required and checked: the safety path and the figure classification read it.
+- **Guardrails kept.** #257's prompt check runs before any generation on that final prompt, with the description beside it, under the global and the rating's image-prompt policies and the declared true age. Figure classification runs on the same texts, with the subject resolved. #258's output check runs on every output, and a failing output is never stored. A consumer prompt the check refuses fails at once, with the same status and reason as a refused `style` (422 `guardrail_violation`). There is no rewrite retry, since nothing was written.
+- **Minors are not refused for age.** A subject under the minor threshold with a consumer prompt goes through the same checks, judged by that age. The policies decide, as they do for an engine-written prompt.
+- **Provenance.** The job's `params` and each attempt's applied parameters carry `prompt_source` (`consumer` or `engine`), so the asset's `generation_metadata.applied_parameters` records it. A consumer prompt's asset has `source` `generated_from_consumer_prompt`, the existing FR-IMG-10 value for a consumer's prompt. An asset read gains `prompt_source`, derived from `source`, so every image generated before this reads `engine` and no migration is needed.
+- **Content.** The raw `prompt` is kept in the job's `origin` beside the description, as consumer story content. It never reaches an operational log, metric or trace (invariant 3; C-03 sends one, so C-08's scan covers it), and no 422 echoes it. It joins the request's idempotency hash, as `style` does.
+- **No quality claim.** Epistrel's evals and certification measure Epistrel's own prompt writing, so they make no quality claim for a consumer prompt. The guarantee table's `image_prompt` row says so.
+**Alternatives considered:**
+- Raising `style`'s limits, or adding more prompt-shaping fields: still the writer's prompt, and still able to drop what the consumer asked for.
+- Appending the rating's image guidance or the age band to a consumer prompt: the owner asked for the whole prompt, and the guidance is enforced by the checks either way.
+- Refusing a consumer prompt for a minor: the owner declined it. The minors policy judges by true age on both paths.
+- A `prompt_source` column on `media_assets`, with a migration defaulting to `engine`: it duplicates `source`, which already says who wrote a generated image's prompt, and an upload would read `engine`.
+**Consequences:**
+- docs/03 FR-IMG-14 gains an *[amended by ADR-214]* marker. `docs/openapi.json` documents `prompt` and `prompt_source`, and `docs/guarantees.md`'s `image_prompt` note states the absence of a quality claim.
+- A consumer prompt can ask for anything the policies allow. The quality of what comes back is the consumer's to tune.
+- `MODEL_CALL_REVISION` stays 6, with #1017 named in its docstring and the snapshot re-taken for the new `jobs.PROMPT_SOURCE` constant: the engine-written path sends exactly what it did, and the consumer path makes no `image_prompt` call.
+- Tests: `tests/test_subject_consumer_prompt.py` (validation, redaction, `prompt_source`, a catalog request refusing `prompt`) and `tests/integration/test_i_30_m9.py` (`test_i_30__m9_consumer_prompt`, `_refused` and `_minor`: no writer call, the redacted prompt sent, the same refusal as `style`, a failed output stored nowhere, a 15-year-old subject judged at 15, no log line). The live check, 10 subject requests at `2:3` with a consumer full-body prompt and the whole head visible in at least 9, is the owner's.
 
 ---
 

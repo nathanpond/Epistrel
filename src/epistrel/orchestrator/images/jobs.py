@@ -827,6 +827,9 @@ AUDITED_ENDINGS: frozenset[ImageJobStatus] = frozenset(
     }
 )
 """Endings that write an ``image_job_ended`` audit row (a fail-closed ``failed`` does too)."""
+PROMPT_SOURCE = "prompt_source"
+"""A job ``params`` key (a subject job's, #1017) that each attempt's applied parameters copy:
+who wrote the prompt, ``consumer`` or ``engine``."""
 FAIL_CLOSED = "image_check_unconfigured"
 WAITING_ON_PAUSE = "pause"
 """``status_detail.waiting_on`` of a story job waiting on its paused story (#264)."""
@@ -1780,6 +1783,9 @@ class ImageJobRunner:
             return await self._adapter_failed(job, attempt, exc)
         applied = (result.applied_parameters or AppliedParameters()).model_dump(mode="json")
         applied.update({"seed": attempt.seed, "seed_source": attempt.seed_source})
+        if PROMPT_SOURCE in job.params:
+            # #1017: a subject job's ``prompt_source`` (``consumer`` or ``engine``).
+            applied[PROMPT_SOURCE] = job.params[PROMPT_SOURCE]
         attempt.applied = applied
         attempt.usage, attempt.cost = _usage(usage), _cost(cost)
         n = requested_outputs(job)
@@ -2790,6 +2796,7 @@ __all__ = [
     "MAX_EVALUATIONS",
     "MAX_WAITERS",
     "PRE_COMMIT_HOOKS",
+    "PROMPT_SOURCE",
     "REQUEUE_IN",
     "SUCCESSES",
     "WAITING_ON_PAUSE",

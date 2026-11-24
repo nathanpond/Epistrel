@@ -65,6 +65,7 @@
   "const:epistrel.orchestrator.images.jobs.MINORS_POLICY_ID": "bf149fd783d1dbaa70f14e20b666da317846432806b0c57ace6ffd6e1806e14a",
   "const:epistrel.orchestrator.images.jobs.POLL_INTERVAL_S": "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6",
   "const:epistrel.orchestrator.images.jobs.PRE_COMMIT_HOOKS": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "const:epistrel.orchestrator.images.jobs.PROMPT_SOURCE": "b471c773c4d8c75cfc3b8fbba6fba49098f461ad3e8c46c7a29f6483d003d2cf",
   "const:epistrel.orchestrator.images.jobs.REQUEUE_IN": "3ce340de8873c9e27caab312ecff5505a517971469b7af99deb849320940e7e0",
   "const:epistrel.orchestrator.images.jobs.SEED_LIMIT": "39f8d58187887b481fe709f7b323f2b876d9f522e9f7afef815c2089084a36d7",
   "const:epistrel.orchestrator.images.jobs.SNAPSHOT_EXCLUDED": "c03f1a6d18ba991e72ebc9ffd411f93b6c6404efcdeea1247fa102a79a062653",

@@ -2,8 +2,9 @@
 (FR-IMG-14; #830).
 
 A consumer describes a subject that exists in no Epistrel story or catalog (its appearance, the
-true age it declares and a label naming who it is) and gets ``n`` images of it through the
-catalog image path's safety checks. The answer is 202 ``{job_id, status: queued}`` with
+true age it declares and a label naming who it is), optionally writes the whole image prompt
+itself (``prompt``, #1017), and gets ``n`` images of it through the catalog image path's safety
+checks. The answer is 202 ``{job_id, status: queued}`` with
 ``Location: /image-jobs/{id}``; ``GET /image-jobs/{id}`` reports the job and, once it is
 ``completed``, its ``asset_ids`` and ``failures``. Each stored image is a live media asset owned by
 the caller, kept until it is deleted (``DELETE /media/{id}``) or its owner is offboarded, and
@@ -58,8 +59,14 @@ GENERATE = (
     "apply it the image is still made: the job's applied parameters name `aspect_ratio` as "
     "dropped, and the asset's `width` and `height` are what came back. The prompt is written "
     "by the `image_prompt` purpose from the description, the true age's apparent age band, "
-    "the style and the rating's image guidance (the image model never receives the true age), "
-    "then checked **before any generation**, together with the description and style, against "
+    "the style and the rating's image guidance (the image model never receives the true age). "
+    "Or the consumer writes the **whole prompt** in `prompt` (at most 4,000 characters, not "
+    "blank, no control character but newline and tab; not with `style`, 422 at "
+    "`body.prompt`): no `image_prompt` call is made, nothing is added to it (no guidance, age "
+    "band or scene), and only its written ages are removed (422 at `body.prompt` when nothing "
+    "is left); `subject.description` is still required and checked. Epistrel's evals and "
+    "certification make **no quality claim** for a consumer prompt (ADR-214). Either prompt is "
+    "checked **before any generation**, together with the description and style, against "
     "the global and the rating's image-prompt policies, the seeded minors policy included, "
     "judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for "
     "figures and passes the image-output check in private staging; one that fails is never "
@@ -67,8 +74,10 @@ GENERATE = (
     "`completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at "
     "least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored "
     "image is a **live** media asset owned by the caller with `origin: subject`, `source: "
-    "generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, "
-    "label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays "
+    "generated` (`generated_from_consumer_prompt` with `prompt`), `prompt_source` `engine` "
+    "(`consumer` with `prompt`; also in its applied parameters), the rating's current version "
+    "and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never "
+    "purges it while it is live (ADR-186): it stays "
     "until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), "
     "and it can be named in a story character's `images`.\n\n"
     "Refused before any job, reservation or provider call: 422 `validation_error` for a body "
@@ -79,8 +88,8 @@ GENERATE = (
     "policy (its audit row names the subject's id, never its label), 503 `model_unavailable` "
     "when the check cannot reach its model; 409 `image_limit_reached` or 422 "
     "`images_disabled` from the deployment's daily image limit. Idempotent under "
-    "`Idempotency-Key` (deployment-scoped). The description, label and style never reach an "
-    "operational log, metric or trace."
+    "`Idempotency-Key` (deployment-scoped). The description, label, style and prompt never "
+    "reach an operational log, metric or trace."
 )
 
 

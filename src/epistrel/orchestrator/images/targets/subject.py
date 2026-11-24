@@ -6,9 +6,9 @@ appearance, the true age the consumer declares and a label naming who it is), an
 an optional content rating (the deployment default when omitted) and ``n`` (1 to 4). Each
 request mints a subject id (a ULID). A subject job's ``target`` is ``{subject_id,
 content_rating_id, content_rating_version_id}`` (the rating's version current at the request)
-and its ``origin`` ``{subject_id, label, true_age, description, style}``: the declaration the
-safety path resolves inline (``core.images.safety.InlineSubject``), with the consumer's
-description and style checked beside the built prompt. The request's optional
+and its ``origin`` ``{subject_id, label, true_age, description, style, prompt}``: the
+declaration the safety path resolves inline (``core.images.safety.InlineSubject``), with the
+consumer's description and style checked beside the built prompt. The request's optional
 ``aspect_ratio`` (#1012) is the request ratio of ``resolve_dimensions``: it travels on the view
 into the job's ``params`` and the adapter's applied parameters, never in ``origin``.
 
@@ -16,17 +16,26 @@ into the job's ``params`` and the adapter's applied parameters, never in ``origi
 description with authored ages redacted, the true age's apparent age band, the style and the
 rating's image guidance), never from the true age; its default scene is ``single subject``
 (no portrait framing, no background), and the template adds a fixed head-in-frame line for a
-subject image (#1012). **The safety path** is the catalog path
-(FR-IMG-3, FR-GUARD-11): #257's prompt check before any generation with the declared true age
-and the global and the rating's policies, figure classification (the subject is a resolved label
-with its true age), and #258's output check on every output. A failing output is never stored.
+subject image (#1012). **A consumer-written prompt** (``prompt``, #1017, ADR-214) replaces
+that step: ``prompt_override`` hands the job the consumer's text after ``redact_ages`` with
+nothing appended, and no ``image_prompt`` call is made; ``prompt`` and ``style`` are mutually
+exclusive. The raw text is stored in ``origin`` as story content. The job's ``params`` and each
+attempt's applied parameters carry ``prompt_source`` (``consumer`` or ``engine``), and a
+consumer prompt's assets are ``source = generated_from_consumer_prompt``. **The safety path**
+is the catalog path on both prompt paths (FR-IMG-3, FR-GUARD-11): #257's prompt check before
+any generation with the declared true age and the global and the rating's policies, figure
+classification (the subject is a resolved label with its true age), and #258's output check on
+every output. A failing output is never stored. A consumer prompt is checked as sent to the
+image model (after ``redact_ages``), with the description beside it, and a subject under the
+minor threshold is not refused for its age alone: the policies decide.
 
 - ``validate_enqueue``: nothing beyond the request's own validation.
 - ``revalidate`` (at claim and before each provider call): the owner being offboarded (an
   offboarding of the requester asked since the job, whose media action is not ``keep``) ends
   the job ``target_gone`` with no provider call.
 - ``promote`` (inside the promotion's transaction): per passing output a **live**
-  ``media_assets`` row owned by the requester (``source = generated``, ``origin = subject``,
+  ``media_assets`` row owned by the requester (``source = generated``, or
+  ``generated_from_consumer_prompt`` for a consumer prompt; ``origin = subject``,
   the rating's version, ``depicted_subjects`` ``[{kind: subject, id, label, true_age}]``), and
   the job's ``result`` ``{asset_ids, failures}``: each output index of ``n`` not stored, with
   ``reason`` ``guardrail_violation`` (its output check failed) or ``provider_empty_result`` (the
@@ -35,8 +44,8 @@ with its true age), and #258's output check on every output. A failing output is
 - ``result_ids``: ``asset_ids``.
 
 The assets are kept until they are deleted or their owner is offboarded: the media sweep never
-purges a live subject image (ADR-186). The label and description are consumer content: they
-never reach a log line, a metric or an audit row (invariant 3).
+purges a live subject image (ADR-186). The label, description, style and prompt are consumer
+content: they never reach a log line, a metric or an audit row (invariant 3).
 """
 
 from __future__ import annotations
@@ -45,7 +54,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    ValidationInfo,
+    field_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -57,7 +75,7 @@ from epistrel.core.images.store import ImageJob, set_result
 from epistrel.core.tables import content_rating_versions, content_ratings, deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
-from epistrel.core.tables.media import MediaOrigin, MediaState
+from epistrel.core.tables.media import MediaOrigin, MediaSource, MediaState, PromptSource
 from epistrel.core.tables.offboarding import OffboardingStatus, offboarding_jobs
 from epistrel.orchestrator.images import jobs
 from epistrel.orchestrator.images.params import SUBJECT_ASPECT_RATIOS, ImageGenerationParams
@@ -71,6 +89,8 @@ JOB_LOCATION = jobs.JOB_LOCATION
 DESCRIPTION_MAX = 4_000
 LABEL_MAX = 120
 STYLE_MAX = 1_000
+PROMPT_MAX = 4_000
+"""A consumer-written prompt's length bound, checked before ``redact_ages`` (#1017)."""
 TRUE_AGE_MAX = 150
 SUBJECT_N_MAX = 4
 PURPOSE = "subject"
@@ -79,6 +99,8 @@ SCENE = "single subject"
 """The default scene: no framing and no background, so a style may ask for either (#1012)."""
 SUBJECT_KIND = "subject"
 """``depicted_subjects[].kind`` of a subject image's declaration."""
+PROMPT_SOURCE = jobs.PROMPT_SOURCE
+"""The job ``params`` key, and the applied-parameters key, naming who wrote the prompt (#1017)."""
 FAILED_CHECK = "guardrail_violation"
 NO_OUTPUT = "provider_empty_result"
 
@@ -86,6 +108,16 @@ NO_OUTPUT = "provider_empty_result"
 def _text(value: str) -> str:
     if not value.strip():
         raise ValueError("must not be blank")
+    return value
+
+
+def _prompt_text(value: str) -> str:
+    """A consumer prompt: not blank, and no control character but newline and tab. The message
+    never echoes the text (#1017)."""
+    if not value.strip():
+        raise ValueError("must not be blank")
+    if any((ord(c) < 32 and c not in "\n\t") or ord(c) == 127 for c in value):
+        raise ValueError("must not contain control characters other than newline and tab")
     return value
 
 
@@ -127,7 +159,9 @@ class SubjectImageRequest(BaseModel):
     omitted (or ``null``), the dimensions are the deployment default's, else ``1:1``. When the
     image model cannot apply the ratio the image is still made: the job's applied parameters
     name ``aspect_ratio`` as dropped and the asset's ``width``/``height`` are what came back.
-    No seed or size."""
+    An optional ``prompt`` (#1017) is the whole image prompt, written by the consumer (1 to
+    4,000 characters, not blank, no control character but newline and tab; not with ``style``:
+    422 at ``body.prompt``; ``null`` means omitted). No seed or size."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -160,6 +194,31 @@ class SubjectImageRequest(BaseModel):
             "deployment default applies (else `1:1`)."
         ),
     )
+    prompt: (
+        Annotated[
+            StrictStr, Field(min_length=1, max_length=PROMPT_MAX), AfterValidator(_prompt_text)
+        ]
+        | None
+    ) = Field(
+        default=None,
+        description=(
+            "The whole image prompt, written by the consumer (#1017; ADR-214): 1 to 4,000 "
+            "characters, not blank, no control character but newline and tab. Epistrel writes "
+            "no prompt and appends nothing; it removes written ages (`redact_ages`) and checks "
+            "the result like a written prompt, judged by `subject.true_age`. Not with `style` "
+            "(422 at `body.prompt`). Epistrel's evals and certification make no quality claim "
+            "for a consumer prompt."
+        ),
+    )
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_alone(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """A consumer prompt is the whole prompt, so it takes no ``style`` (422 at
+        ``body.prompt``)."""
+        if value is not None and info.data.get("style") is not None:
+            raise ValueError("a consumer prompt cannot be sent with style")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +283,60 @@ async def subject_rating(conn: AsyncConnection, rating_id: str | None) -> Subjec
     return SubjectRating(rating_id, str(row.current_version_id), str(row.image_guidance or ""))
 
 
+def appearance(subject: SubjectSpec) -> str:
+    """The description with authored ages redacted; 422 at ``body.subject.description`` when
+    redaction leaves no appearance (on both prompt paths, #1017)."""
+    description = redact_ages(subject.description, subject.true_age).strip()
+    if not description:
+        raise InvalidRequest(
+            "the subject's description states no appearance once its ages are left out",
+            {"field": "body.subject.description"},
+        )
+    return description
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumerPrompt:
+    """A consumer-written subject prompt as the job sends it (#1017): the text after
+    ``redact_ages`` and the dimensions ``resolve_dimensions`` gives the request."""
+
+    prompt: str
+    size: str | None
+    aspect_ratio: str | None
+
+
+def prompt_override(
+    request: SubjectImageRequest, deployment: ImageGenerationParams | None = None
+) -> ConsumerPrompt | None:
+    """The job's prompt when the consumer wrote it (``request.prompt``), else ``None`` and
+    ``image_prompt`` writes it from ``subject_view``. The consumer's prompt is sent as is,
+    minus its written ages (``redact_ages`` with the true age, the function ``subject_view``
+    applies to the description): no rating guidance, age band or scene is added, and no model
+    call writes it (#1017, ADR-214). The description is still required and checked
+    (``appearance``). 422 at ``body.prompt`` when redaction leaves nothing."""
+    if request.prompt is None:
+        return None
+    appearance(request.subject)
+    prompt = redact_ages(request.prompt, request.subject.true_age)
+    if not prompt.strip():
+        raise InvalidRequest(
+            "the prompt states nothing once its ages are left out", {"field": "body.prompt"}
+        )
+    size, ratio = resolve_dimensions(PURPOSE, None, request.aspect_ratio, deployment)
+    return ConsumerPrompt(prompt, size, ratio)
+
+
+def prompt_source(request: SubjectImageRequest) -> PromptSource:
+    """``consumer`` with a consumer-written prompt, else ``engine``."""
+    return PromptSource.ENGINE if request.prompt is None else PromptSource.CONSUMER
+
+
+def job_params(request: SubjectImageRequest) -> dict[str, Any]:
+    """The subject job's extra ``params``: its ``prompt_source``, which the attempt's applied
+    parameters and the asset's ``source`` follow (#1017)."""
+    return {PROMPT_SOURCE: prompt_source(request).value}
+
+
 def subject_view(
     request: SubjectImageRequest,
     guidance: str,
@@ -235,12 +348,7 @@ def subject_view(
     ``resolve_dimensions``: given, it wins over the deployment's defaults (#1012). 422 at
     ``body.subject.description`` when redaction leaves no appearance."""
     subject = request.subject
-    description = redact_ages(subject.description, subject.true_age).strip()
-    if not description:
-        raise InvalidRequest(
-            "the subject's description states no appearance once its ages are left out",
-            {"field": "body.subject.description"},
-        )
+    description = appearance(subject)
     band = age_band(subject.true_age)
     assert band is not None  # noqa: S101 - a true age has a band
     size, ratio = resolve_dimensions(PURPOSE, None, request.aspect_ratio, deployment)
@@ -278,6 +386,7 @@ def job_origin(subject_id: str, request: SubjectImageRequest) -> dict[str, Any]:
         "true_age": request.subject.true_age,
         "description": request.subject.description,
         "style": request.style,
+        "prompt": request.prompt,
     }
 
 
@@ -342,6 +451,8 @@ class SubjectTarget:
         if await owner_leaving(conn, job):
             raise jobs.TargetGone(f"{SUBJECT_ENTRY_KIND} {job.target.get('subject_id')}")
         depicted = [declaration(job)]
+        consumer = job.params.get(PROMPT_SOURCE) == PromptSource.CONSUMER.value
+        source = MediaSource.GENERATED_FROM_CONSUMER_PROMPT if consumer else MediaSource.GENERATED
         asset_ids = [
             await jobs.insert_output_asset(
                 conn,
@@ -351,6 +462,7 @@ class SubjectTarget:
                 owner=job.principal,
                 content_rating_version_id=str(job.target["content_rating_version_id"]),
                 depicted_subjects=depicted,
+                source=source,
                 origin=MediaOrigin.SUBJECT,
             )
             for output in outputs
@@ -377,18 +489,25 @@ jobs.register_target(ImageJobKind.SUBJECT, TARGET)
 
 __all__ = [
     "JOB_LOCATION",
+    "PROMPT_MAX",
+    "PROMPT_SOURCE",
     "SUBJECT_N_MAX",
     "TARGET",
+    "ConsumerPrompt",
     "SubjectImageRequest",
     "SubjectImagesQueued",
     "SubjectRating",
     "SubjectSpec",
     "SubjectTarget",
+    "appearance",
     "declaration",
     "failures",
     "job_origin",
+    "job_params",
     "job_target",
     "owner_leaving",
+    "prompt_override",
+    "prompt_source",
     "subject_rating",
     "subject_view",
 ]

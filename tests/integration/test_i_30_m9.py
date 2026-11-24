@@ -37,6 +37,7 @@ from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
+from epistrel.core.images.perceived import redact_ages
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.ratings import RatingFields, create_rating
 from epistrel.core.seeds.ratings import EVERYONE_ID
@@ -599,6 +600,172 @@ async def test_i_30__m9_flagged_outputs(image_settings: Settings, engine: AsyncE
         assert "failures" not in failed
         assert await job_assets(engine, failed_id) == []
         app.generator.script.clear()
+
+
+# -- a consumer-written prompt (#1017) -------------------------------------------------------
+
+CANARY = "CANARY-1017-QUILLFEATHER"
+"""A distinctive word in the consumer prompt: never in a log line."""
+CONSUMER_PROMPT = (
+    f"Full-length photo of a tall {TRUE_AGE}-year-old fisherman, aged {TRUE_AGE}, in a yellow "
+    f"oilskin coat on a rainy quay, head to toe in frame, {CANARY}"
+)
+
+
+async def job_origin(engine: AsyncEngine, job_id: str) -> dict[str, Any]:
+    async with engine.connect() as conn:
+        found = await conn.scalar(
+            text("SELECT origin FROM image_jobs WHERE id = :j"), {"j": job_id}
+        )
+    return dict(found)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_consumer_prompt(
+    image_settings: Settings, engine: AsyncEngine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#1017: with ``prompt`` the stub model records **zero** ``image_prompt`` calls and the
+    image call's prompt is exactly ``redact_ages(prompt, true_age)``: the written ages are gone
+    and nothing is appended (no rating guidance, age band or scene; no negative prompt). The
+    ratio is sent. The prompt check judged that prompt with the description beside it. The job's
+    ``origin`` keeps the raw prompt; its applied parameters, the asset's
+    ``generation_metadata.applied_parameters`` and the asset read say ``prompt_source:
+    consumer``, and the asset's ``source`` is ``generated_from_consumer_prompt``. The prompt
+    never reaches a log line. Refused at ``body.prompt`` before any job: with ``style``, blank,
+    over 4,000 characters, a control character, or nothing left once its ages are removed.
+
+    Complement asserted: without ``prompt`` the ``image_prompt`` writer runs and the asset reads
+    ``prompt_source: engine`` (``source: generated``), as every image made before #1017 does."""
+    caplog.set_level(logging.DEBUG)
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        app.guard.reset()
+        before = await subject_jobs(engine)
+        for refused in (
+            body(prompt=CONSUMER_PROMPT, style="oil painting"),
+            body(prompt="   "),
+            body(prompt="p" * 4_001),
+            body(prompt="a quay\x07at night"),
+            body(prompt=f"{TRUE_AGE}"),
+        ):
+            status, code, details = error_of(await app.request(refused))
+            assert (status, code, details["field"]) == (422, "validation_error", "body.prompt")
+            assert CANARY not in json.dumps(details)
+        assert await subject_jobs(engine) == before
+        assert app.generator.requests == []
+
+        job_id, job = await app.generated(
+            Outputs(n=1, size=(64, 96)), prompt=CONSUMER_PROMPT, aspect_ratio="2:3"
+        )
+        assert ip.prompt_calls(app.guard) == []
+        sent = app.generator.requests[-1].request
+        assert sent.prompt == redact_ages(CONSUMER_PROMPT, TRUE_AGE)
+        assert str(TRUE_AGE) not in sent.prompt
+        assert "year" not in sent.prompt.lower()
+        assert sent.prompt.endswith(CANARY)
+        assert sent.negative_prompt is None
+        assert sent.aspect_ratio == "2:3"
+        checked = [payload(c) for c in safety_calls(app.guard)]
+        assert checked
+        assert all(f"Prompt: {sent.prompt}" in p for p in checked)
+        assert all(f"Subject description: {DESCRIPTION}" in p for p in checked)
+        assert (await job_origin(engine, job_id))["prompt"] == CONSUMER_PROMPT
+
+        asset = await app.asset(job["asset_ids"][0])
+        assert (asset["source"], asset["prompt_source"]) == (
+            "generated_from_consumer_prompt",
+            "consumer",
+        )
+        assert asset["generation_metadata"]["applied_parameters"]["prompt_source"] == "consumer"
+        assert asset["generation_metadata"]["prompt"] == sent.prompt
+
+        app.guard.reset()
+        _, engine_job = await app.generated(Outputs(n=1, size=(64, 97)))
+        assert ip.prompt_calls(app.guard)
+        written = await app.asset(engine_job["asset_ids"][0])
+        assert (written["source"], written["prompt_source"]) == ("generated", "engine")
+        assert written["generation_metadata"]["applied_parameters"]["prompt_source"] == "engine"
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert CANARY not in logged
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_consumer_prompt_refused(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#1017: a consumer prompt that breaks an image-prompt policy is refused exactly as the
+    same text sent as ``style`` is: 422 ``guardrail_violation`` naming the same policy, with no
+    job and no generation call. A consumer prompt's output that fails the output check on every
+    attempt is never stored: the job ends ``failed`` (``guardrail_violation``) with no asset.
+
+    Complement asserted: the same prompt without the policy's word is accepted (202)."""
+    word = word_of("basilisk")
+    checks = ScriptedChecks(fail_closed=False)
+    async with subject_app(image_settings, engine, checks) as app:
+        await app.configure()
+        app.guard.reset()
+        made = await global_policy(app.lib, words(word), applies_to=["image_prompt"])
+        try:
+            before = await subject_jobs(engine)
+            bad = f"A fisherman on a quay holding a {word}."
+            as_prompt = await app.request(body(prompt=bad))
+            as_style = await app.request(body(style=bad))
+            assert refused_by(as_prompt) == refused_by(as_style) == [made.id]
+            assert error_of(as_prompt)[:2] == error_of(as_style)[:2]
+            assert await subject_jobs(engine) == before
+            assert app.generator.requests == []
+            fine = await app.request(body(prompt="A fisherman on a quay."))
+            assert fine.status_code == 202, fine.text
+        finally:
+            await app.lib.policies_retire(POLICY_OPERATOR, made.id)
+
+        checks.script = [MINORS_POLICY_ID]
+        app.generator.script.extend(Outputs(n=1, size=(91, 60)) for _ in range(12))
+        accepted = await app.request(body(prompt="A fisherman on a quay at dusk."))
+        assert accepted.status_code == 202, accepted.text
+        failed_id = accepted.json()["job_id"]
+        assert await app.run(failed_id) == {"image_job": "failed", "reason": "guardrail_violation"}
+        assert await job_assets(engine, failed_id) == []
+        app.generator.script.clear()
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-IMG-14")
+async def test_i_30__m9_consumer_prompt_minor(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#1017: a consumer prompt for a subject declared under the minor threshold (15) is not
+    refused for that age alone: a benign prompt is accepted (202), and the minors check judged
+    it with the subject at age 15. A sexualizing prompt at 15 is refused by the minors policy
+    before any generation.
+
+    Complement asserted: the same sexualizing prompt for a subject declared 30 passes the minors
+    policy (202)."""
+    benign = "A child in a red raincoat jumping in puddles, whole figure in frame."
+    async with subject_app(image_settings, engine) as app:
+        await app.configure()
+        app.guard.reset()
+        recognise_sexual(app.guard, UNSAFE)
+        young = {"subject": subject(true_age=MINOR_AGE), "prompt": benign}
+        accepted = await app.request(young)
+        assert accepted.status_code == 202, accepted.text
+        minors_checks = [
+            payload(c)
+            for c in safety_calls(app.guard)
+            if SUBJECTS_HEADING in payload(c) and benign in payload(c)
+        ]
+        assert minors_checks
+        assert all(f"- subject_1: age {MINOR_AGE}" in p for p in minors_checks)
+
+        before = await subject_jobs(engine)
+        unsafe = {"subject": subject(true_age=MINOR_AGE), "prompt": f"A figure {UNSAFE}."}
+        assert refused_by(await app.request(unsafe)) == [MINORS_POLICY_ID]
+        assert await subject_jobs(engine) == before
+        adult = {"subject": subject(true_age=30), "prompt": f"A figure {UNSAFE}."}
+        assert (await app.request(adult)).status_code == 202
+        assert app.generator.requests == []
 
 
 # -- lifetime ---------------------------------------------------------------------------------

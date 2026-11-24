@@ -6362,7 +6362,9 @@ class Engine:
         ``GET /image-jobs/{id}``, which ends ``completed`` with the ``asset_ids`` and the
         ``failures`` (``{index, reason}`` per output not stored), or ``failed`` when none
         passed. The prompt is built by ``image_prompt`` from the description and style (the true
-        age only as its apparent age band) and checked before any generation against the
+        age only as its apparent age band), or is the consumer's own ``prompt`` with its written
+        ages removed and nothing added (#1017, ADR-214; no ``image_prompt`` call), and is checked
+        before any generation against the
         global and the rating's image-prompt policies with the declared true age, together
         with the description and style (FR-IMG-3, FR-GUARD-11); figure classification and the
         output check run on every image, and a failing one is never stored. Each passing image
@@ -6383,16 +6385,26 @@ class Engine:
             async with self.db.connect() as conn:
                 rating = await subject_images.subject_rating(conn, request.content_rating)
             deployment = await self._image_deployment()
-            view = subject_images.subject_view(request, rating.guidance, deployment)
-            built = await prompt_builder.write_image_prompt(self.models, view)
+            consumer = subject_images.prompt_override(request, deployment)
+            if consumer is not None:
+                # #1017: the consumer wrote the whole prompt; no ``image_prompt`` call.
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=consumer.prompt,
+                    n=request.n,
+                    size=consumer.size,
+                    aspect_ratio=None if consumer.size is not None else consumer.aspect_ratio,
+                )
+            else:
+                view = subject_images.subject_view(request, rating.guidance, deployment)
+                built = await prompt_builder.write_image_prompt(self.models, view)
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=built.prompt,
+                    negative_prompt=built.negative_prompt,
+                    n=request.n,
+                    size=built.size,
+                    aspect_ratio=None if built.size is not None else built.aspect_ratio,
+                )
             subject_id = new_ulid()
-            job_request = image_jobs.ImageJobRequest(
-                prompt=built.prompt,
-                negative_prompt=built.negative_prompt,
-                n=request.n,
-                size=built.size,
-                aspect_ratio=None if built.size is not None else built.aspect_ratio,
-            )
             prepared = await image_jobs.prepare_image_job(
                 self.image_runtime(),
                 ImageJobKind.SUBJECT,
@@ -6400,6 +6412,7 @@ class Engine:
                 subject_images.job_origin(subject_id, request),
                 job_request,
                 principal,
+                extra_params=subject_images.job_params(request),
             )
             async with self.db.begin() as conn:
                 queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)

@@ -16201,3 +16201,42 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#941):** I kept `RewriteParseResult` on `WARM_LIST`. The warm-up skips a schema with no wire form, so it sends nothing today. Its tests lift `UNION_LIMIT` so they still have a schema to warm.
   **Why:** the mechanism costs nothing idle and comes back on its own if the schema's wire form fits under the limit again.
   **Issue:** #941
+- **Decision (#1017, Discretion):** `prompt_source` is not a `media_assets` column. The asset read derives it from `source` (`prompt_source_of`: `generated_from_consumer_prompt` → `consumer`, `generated` → `engine`, upload or poster → `null`), so assets made before #1017 read `engine` and no migration is needed. The job's `params` carry `prompt_source`, and each attempt's applied parameters copy it, so the asset's `generation_metadata.applied_parameters.prompt_source` stores it. A consumer prompt's subject asset takes `source = generated_from_consumer_prompt`.
+  **Why:** The plan let me pick what the asset read already exposes. `source` already means "who wrote a generated image's prompt" (FR-IMG-10, `insert_output_asset`'s docstring, #263's story images). A column with a migration would duplicate it, and an upload would read `engine`. Recorded as an alternative in ADR-214.
+  **Issue:** #1017
+- **Decision (#1017, Discretion):** The `prompt` + `style` exclusion is a `field_validator("prompt")` that reads `info.data["style"]`, not a `model_validator`. NUL, the other C0 control characters except newline and tab, and DEL are refused. Every message is fixed text and never echoes the prompt.
+  **Why:** A field validator gives the `loc` `body.prompt` the plan asks for directly. A model-level validator's error lands at `body`. `prompt` is declared after `style`, so `style` is validated first.
+  **Issue:** #1017
+- **Decision (#1017, Discretion):** The consumer path goes through `subject.prompt_override(request, deployment)`, which returns `ConsumerPrompt(prompt, size, aspect_ratio)` or `None`. The Engine branches on it and skips `subject_view` and `write_image_prompt`. The sent prompt is exactly `redact_ages(prompt, true_age)`: not stripped, no negative prompt. The description's redaction check (`appearance`, 422 at `body.subject.description`) runs on both paths. A prompt that is blank after redaction is 422 at `body.prompt`.
+  **Why:** The plan's pass-2 discretion: `prompt_override`, `redact_ages` on `prompt` only, and the description "checked as today".
+  **Issue:** #1017
+- **Decision (#1017):** The prompt check needs no change. `safety_request` already puts the job prompt (here the redacted consumer prompt) in the prompt slot and the origin's `description` and `style` beside it. The raw `prompt` in `origin` is not in `SUBJECT_TEXTS`, so the checker sees only the redacted text. Figure classification reads the same texts. A refusal is `prepare_image_job`'s 422 `guardrail_violation`, the same as a refused `style`. There is no rewrite step on this path to retry.
+  **Why:** The plan's "no new rule" in `safety.py`. The integration test asserts that refusing the same text as `prompt` and as `style` gives the same status, code and policy list.
+  **Issue:** #1017
+- **Decision (#1017, plan assumption corrected):** The AC "Story and catalog image requests still refuse a `prompt` field" holds for catalog requests (`CatalogImageRequest`, `extra_forbidden`, unit-tested). It does not hold for story requests: `StoryImageRequest` has taken a consumer `prompt` since #263 (`generated_from_consumer_prompt`, protected-term matching). I left story behaviour unchanged, and ADR-214 says so rather than repeating the issue's claim.
+  **Why:** Changing story requests is outside this story and would break #263's contract.
+  **Issue:** #1017
+- **Decision (#1017, plan assumption corrected):** No "erasure key list" covers a subject job's `origin`. Subject jobs are not story-scoped, and `_erase_image_jobs` reads story jobs only, so `description`, `label` and `style` in `origin` are not erased today either. `prompt` sits beside them in `origin` and is equally unreached. I added nothing to erasure and filed no issue, because this is #830's existing design (a consumer subject is not an erasable subject, ADR-186), not a gap this story opened.
+  **Why:** The plan line assumed a list that doesn't exist. Inventing an erasure path for subject jobs would be new scope.
+  **Issue:** #1017
+- **Decision (#1017):** The log guard: C-03 gains a second `request_subject_images` step with a consumer `prompt` and `aspect_ratio` (REST and library), so C-08's harvest of every request body scans for it. `test_i_30__m9_consumer_prompt` also asserts that a distinctive canary in the prompt appears in no captured log record at DEBUG.
+  **Why:** The plan's "extend the existing subject case in the log guard". C-08 is a harvest guard, so a new body in C-03 is how a field joins it.
+  **Issue:** #1017
+- **Decision (#1017):** The new integration tests go in `tests/integration/test_i_30_m9.py` with `part("M9", "FR-IMG-14")`, as #1012's did. FR-IMG-14 is an M9 requirement, and the traceability gate takes one file per test ID and milestone.
+  **Why:** Invariant 7.
+  **Issue:** #1017
+- **Decision (#1017):** `MODEL_CALL_REVISION` stays 6 (already bumped on the branch), and its docstring gets a #1017 sentence. The snapshot guards `images.jobs` constants, so the new `PROMPT_SOURCE` constant failed `test_the_guarded_set_matches_the_snapshot_at_the_current_revision` (`added: const:epistrel.orchestrator.images.jobs.PROMPT_SOURCE`). It was re-snapshotted (`tests.model_call_support --write`, +1 entry). INDEX was regenerated and is unchanged. The engine-written path sends byte-identical calls.
+  **Why:** Brief step 6. The test asks for it.
+  **Issue:** #1017
+- **Decision (#1017):** Red-first: with `src/` stashed, the three new integration tests failed with 422 `extra_forbidden` at `body.prompt` (`3 failed`). The minors test was also run against a mutation of `prompt_override` that refuses a consumer prompt under 18. It failed with `assert 422 == 202` at `test_i_30_m9.py:753` (`1 failed`). Without the mutation it passes.
+  **Why:** The test plan's red-first runs.
+  **Issue:** #1017
+- **Decision (#1017):** FR-IMG-14 is amended in place with `[amended by ADR-214]`, and there is no new FR ID. ADR-214 records the scope, the guardrails kept, minors not refused, and no quality claim. The no-quality-claim statement goes in the guarantee table's `image_prompt` note (`core/profiles/guarantees.py`, then `docs/guarantees.md` regenerated), in `docs/openapi.json` and in FR-IMG-14. The live check AC is left unchecked: it is a paid image run under the owner's $2 cap, which the orchestrator runs.
+  **Why:** The plan's discretion and the orchestrator's brief.
+  **Issue:** #1017
+
+## Ad-hoc — 2026-11-24 (consumer-written subject prompts; ADR-214)
+
+- **Change:** `POST /subject-images` takes an optional `prompt`, the consumer's whole image prompt. No `image_prompt` call is made. The prompt is sent minus its written ages, with nothing appended, under the same prompt check, figure classification and output check. A minor's prompt is judged by true age, not refused. Assets record `prompt_source`, and a consumer-prompt subject asset has `source = generated_from_consumer_prompt`. Evals and certification make no quality claim for a consumer prompt.
+  **Why:** The owner's decision of 2026-11-23 while triaging #1012 (#1017).
+  **Affects:** any later plan that assumes every subject image prompt is engine-written or eval-covered: the M12 image stories sharing the $2 cap (#1012, #1020), M13 Audit's image and invariant-3 reviews, and the Console's subject-image form (a `prompt` field and a `prompt_source` display).

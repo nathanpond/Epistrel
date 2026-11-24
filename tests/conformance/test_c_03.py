@@ -2905,7 +2905,14 @@ def _steps() -> list[Step]:
         Step(
             "request_subject_images",
             lambda ids: Rest("POST", "/subject-images", SUBJECT_REQUEST),
-            lambda e, ids: _subject_images(e),
+            lambda e, ids: _subject_images(e, SUBJECT_REQUEST),
+            status=lambda body: 202,
+        ),
+        # #1017: one whose consumer wrote the whole prompt (C-08 harvests it as content).
+        Step(
+            "request_subject_images",
+            lambda ids: Rest("POST", "/subject-images", SUBJECT_PROMPT_REQUEST),
+            lambda e, ids: _subject_images(e, SUBJECT_PROMPT_REQUEST),
             status=lambda body: 202,
         ),
         # #263: a story image generated for the omniscient audience after turn 1's player beat
@@ -3948,6 +3955,11 @@ SUBJECT_REQUEST = {
     "subject": {"description": "A tall lighthouse keeper.", "true_age": 40, "label": "Keeper"},
     "n": 1,
 }
+SUBJECT_PROMPT_REQUEST = {
+    **SUBJECT_REQUEST,
+    "prompt": "Full-length photo of a lighthouse keeper on a windswept gallery, head to toe.",
+    "aspect_ratio": "2:3",
+}
 COVER_REQUEST = {"slot": "cover", "n": 1}
 PARITY_IMAGE_ADAPTER = "parity_png"
 
@@ -4046,11 +4058,11 @@ async def _catalog_images(
     return dump(CatalogImagesAccepted.of(queued))
 
 
-async def _subject_images(engine: Engine) -> dict[str, Any]:
+async def _subject_images(engine: Engine, body: dict[str, Any]) -> dict[str, Any]:
     from epistrel.api.routes.subject_images import SubjectImagesAccepted
     from epistrel.orchestrator.images.targets.subject import SubjectImageRequest
 
-    request = SubjectImageRequest.model_validate(SUBJECT_REQUEST)
+    request = SubjectImageRequest.model_validate(body)
     return dump(SubjectImagesAccepted.of(await engine.request_subject_images(CTX, request)))
 
 

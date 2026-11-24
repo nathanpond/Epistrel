@@ -150,6 +150,15 @@ CLOCK_SOURCES: frozenset[StateChangeSource] = frozenset(
 )
 """The sources a world clock advance may have (FR-CLOCK-12; #228: a backfill's)."""
 
+
+def clock_change_permitted(kind: StateChangeKind, source: StateChangeSource) -> bool:
+    """The world clock's one rule (#193): it moves only forward, by a ``delta`` from a clock
+    source (``CLOCK_SOURCES``). ``core.states`` refuses any other change as 422
+    ``reserved_state``; #996: a render's effect is checked by the same rule before the commit
+    (its source is ``turn``, which the rule never admits)."""
+    return kind is StateChangeKind.DELTA and source in CLOCK_SOURCES
+
+
 CLOCK_INTERPRETIVE_MEMBERS: tuple[str, ...] = (
     "mode",
     "max_unprompted_skip_minutes",
@@ -1058,6 +1067,7 @@ __all__ = [
     "check_change",
     "check_clock_settings",
     "check_rules_shape",
+    "clock_change_permitted",
     "coerce",
     "derived_rule",
     "elapsed_rule",

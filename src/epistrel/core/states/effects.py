@@ -1125,7 +1125,7 @@ CLOCK_LINE: Final = (
 )
 """#939: the line that replaces the example when the world clock is listed. E-06's Full run had
 the world clock as the only tracked value, so the example was a ``change`` on it, which the
-render then refused (``the world clock moves only by a time advance``)."""
+render then refused (#996: ``orchestrator.structured.render.CLOCK_CORRECTION``, then dropped)."""
 
 
 def syntax(definitions: Sequence[StateDefinition], *, character: bool) -> str:

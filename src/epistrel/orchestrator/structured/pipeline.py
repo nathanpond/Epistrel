@@ -438,6 +438,7 @@ from epistrel.orchestrator.structured import time_estimation as skipping
 from epistrel.orchestrator.structured.eval_hooks import StageClock, eval_hooks
 from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
+    CLOCK_EFFECT_DROPPED,
     LATENT_HOLDER_REPAIRED,
     STRUCTURED,
     BeatDecl,
@@ -1208,6 +1209,8 @@ class Rendered:
     denied_introductions: int = 0
     latent_holder_repairs: int = 0
     """#750: the renders' latents whose named holder was repaired to ``canon``."""
+    clock_effects_dropped: int = 0
+    """#996: the renders' world-clock changes dropped after their correction."""
     narrator: bool = False
     model: str | None = None
     prompt_hash: str | None = None
@@ -2642,6 +2645,8 @@ async def _follow_up(
     checked.degradation += extra.degradation
     if narr.latent_holder_repairs and (LATENT_HOLDER_REPAIRED, "latent") not in checked.degradation:
         checked.degradation.append((LATENT_HOLDER_REPAIRED, "latent"))  # #750
+    if narr.clock_effects_dropped and (CLOCK_EFFECT_DROPPED, "state") not in checked.degradation:
+        checked.degradation.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
     checked.staged = extra.staged
     checked.follow_up_beats = frozenset(b.beat for b in extra.beats)
     checked.follow_up_verifier = extra.verifier
@@ -4466,6 +4471,7 @@ def _merged_rendered(renders: Sequence[Rendered]) -> Rendered:
         age_repairs=sum(r.age_repairs for r in renders),
         denied_introductions=sum(r.denied_introductions for r in renders),
         latent_holder_repairs=sum(r.latent_holder_repairs for r in renders),
+        clock_effects_dropped=sum(r.clock_effects_dropped for r in renders),
         narrator=any(r.narrator for r in renders),
         model=renders[-1].model or first.model,
         prompt_hash=renders[-1].prompt_hash or first.prompt_hash,
@@ -5674,6 +5680,7 @@ async def play(
                     age_repairs=repairs,
                     denied_introductions=denied,
                     latent_holder_repairs=sum(r.latent_holder_repairs for r, _ in renders),
+                    clock_effects_dropped=sum(r.clock_effects_dropped for r, _ in renders),
                     narrator=narrate and first,
                     model=calls.calls[-1].model if calls.calls else None,
                     prompt_hash=prompt_hash(messages),
@@ -7390,6 +7397,7 @@ async def play(
             attempts=1,
             structure_retries=retries,
             latent_holder_repairs=narr.latent_holder_repairs,
+            clock_effects_dropped=narr.clock_effects_dropped,
             narrator=True,
             model=calls.calls[-1].model if calls.calls else None,
             prompt_hash=prompt_hash(messages),
@@ -7921,6 +7929,8 @@ def _degradation(
             extra.append((INTRODUCTION_DENIED, "allow_new_arrivals"))
         if rendered.latent_holder_repairs:
             extra.append((LATENT_HOLDER_REPAIRED, "latent"))
+        if rendered.clock_effects_dropped:
+            extra.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
     if checked is not None:
         extra += checked.degradation
     for step, cause in extra:

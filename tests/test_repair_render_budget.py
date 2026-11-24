@@ -91,8 +91,10 @@ def _ladder(max_attempts: int, render_of: Any) -> RepairLadder:
     async def context(beat: TurnBeat, violations: Sequence[CheckedClaim]) -> Context:
         return Context()
 
-    async def regenerate(beat: TurnBeat, *_: Any, **__: Any) -> tuple[TurnBeat, list[Any], str]:
-        return beat, [], "hash"
+    async def regenerate(
+        beat: TurnBeat, *_: Any, **__: Any
+    ) -> tuple[TurnBeat, list[Any], str, int]:
+        return beat, [], "hash", 0  # #996: no world-clock change dropped
 
     async def ok(_: str) -> bool:
         return True

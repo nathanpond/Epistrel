@@ -100,7 +100,15 @@ from collections.abc import Awaitable, Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    ValidationInfo,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -159,12 +167,17 @@ from epistrel.orchestrator.models.registry import (
 from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.policies.output_gate import LAST_RESORT, FallbackLines
 from epistrel.orchestrator.structured.render import (
+    CLOCK_CORRECTION,
+    CLOCK_EFFECT_DROPPED,
     MAX_EFFECTS,
     MAX_PROPOSITIONS,
     EffectDecl,
     IntentName,
     PropositionSketch,
+    clock_offence,
+    clock_refusal,
     declared_of,
+    drop_clock_effects,
 )
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
@@ -241,12 +254,42 @@ class RegeneratedBeat(BaseModel):
     effects: list[EffectDecl] = Field(default_factory=list, max_length=MAX_EFFECTS)
     """#187: the rewritten beat's State effects (a State finding's repair: none, a smaller one,
     a concrete amount or the declared change)."""
+    _clock_drops: int = PrivateAttr(default=0)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _clock(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self], info: ValidationInfo
+    ) -> Self:
+        """#996: a world-clock change dropped once its correction was sent in this call
+        (``render.drop_clock_effects``)."""
+        drops = 0
+        if isinstance(data, dict) and "effects" in data:
+            effects, drops = drop_clock_effects(data["effects"], info)
+            if drops:
+                data = {**data, "effects": effects}
+        found = handler(data)
+        found._clock_drops = drops
+        return found
 
     @model_validator(mode="after")
     def _text(self) -> Self:
         if not self.text.strip():
             raise ValueError("text: empty")
+        # #996: the render's rule (``render.effect_errors``): a turn never changes the clock.
+        clocked = [
+            f"effects.{m}.state: {CLOCK_CORRECTION}"
+            for m, e in enumerate(self.effects)
+            if clock_offence(e)
+        ]
+        if clocked:
+            raise clock_refusal(clocked, self.effects)
         return self
+
+    @property
+    def clock_effects_dropped(self) -> int:
+        """#996: the world-clock changes dropped after their correction."""
+        return self._clock_drops
 
     @classmethod
     def stub_example(cls, digest: str, messages: Sequence[Message]) -> dict[str, Any]:
@@ -965,6 +1008,7 @@ class RepairLadder:
             self.used[render] = self.used.get(render, 0) + 1
             attempts += 1
             found = None
+            clock_drops = 0
             try:
                 made = await self._regenerate(
                     beat,
@@ -976,7 +1020,7 @@ class RepairLadder:
                     keep_effects=not stating or all(f.tag in PROSE_TAGS for f in stating),
                 )
                 if made is not None:
-                    candidate, chosen, hash_ = made
+                    candidate, chosen, hash_, clock_drops = made
                     found = await attempt(
                         REGENERATION, candidate, chosen, backstop=True, number=attempts, hash_=hash_
                     )
@@ -987,6 +1031,8 @@ class RepairLadder:
             if found is not None:
                 if EXTRACTION_DEGRADED in found.degradation:
                     degradation.append((REPAIR_UNEXTRACTED, "budget"))
+                if clock_drops:
+                    degradation.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
                 return result(REGENERATION, found.beat, found, chosen)
         # Rung 4: the safe fallback (a think or latent beat is dropped).
         degradation.append((SAFE_FALLBACK, REPAIR))
@@ -1086,11 +1132,12 @@ class RepairLadder:
         budget: TurnBudget,
         *,
         keep_effects: bool = True,
-    ) -> tuple[TurnBeat, list[PropositionSketch], str] | None:
-        """One ``regeneration`` call: the candidate beat, its declared sketches and the prompt
-        hash, or ``None`` when the model gave nothing usable. #187: the candidate takes the
-        effects the rewrite declares; with none declared it keeps the beat's own unless the
-        repair is a State finding's (``keep_effects`` off)."""
+    ) -> tuple[TurnBeat, list[PropositionSketch], str, int] | None:
+        """One ``regeneration`` call: the candidate beat, its declared sketches, the prompt
+        hash and how many world-clock changes it dropped (#996), or ``None`` when the model
+        gave nothing usable. #187: the candidate takes the effects the rewrite declares; with
+        none declared it keeps the beat's own unless the repair is a State finding's
+        (``keep_effects`` off)."""
         registry = context.registry
         assert registry is not None  # noqa: S101 - context() loads it
 
@@ -1147,7 +1194,7 @@ class RepairLadder:
             mentions=(),
             effects=effects,
         )
-        return candidate, list(found.propositions), hash_
+        return candidate, list(found.propositions), hash_, found.clock_effects_dropped
 
     async def _fallback_line(self, *, narrator: bool = False) -> str:
         """The first stored fallback line that passes the output policies (the last resort

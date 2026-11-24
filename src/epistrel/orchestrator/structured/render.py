@@ -47,6 +47,15 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   repaired (``orchestrator.structured.effects``). #189's ``consideration`` names the item a
   payment is for (an entity of the story, resolved when the effect's preconditions are
   checked, ``core.states.preconditions``);
+- #996 (FR-CLOCK-12): a ``change`` or ``transfer`` naming ``world_clock`` (itself, or as a
+  transfer's counterparty) is refused by the clock's own rule (``core.states.model
+  .clock_change_permitted``: a turn is no clock source) with one dedicated correction
+  (``CLOCK_CORRECTION``, ``CLOCK_EFFECT``), listed with the beat's other effect errors. The
+  correction is sent once per call: a later attempt that still carries such an effect has it
+  dropped (``drop_clock_effects``; the beat and its other effects stand), counted as
+  ``clock_effects_dropped`` (the turn's ``clock_effect_dropped`` degradation). The
+  ``regeneration`` answer (``orchestrator.repair.ladder.RegeneratedBeat``) is checked the same
+  way;
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -106,12 +115,14 @@ from pydantic import (
     Field,
     ModelWrapValidatorHandler,
     PrivateAttr,
+    ValidationInfo,
     create_model,
     field_validator,
     model_validator,
 )
 
-from epistrel.core.states.model import WORLD_CLOCK
+from epistrel.core.enums import StateChangeKind, StateChangeSource
+from epistrel.core.states.model import WORLD_CLOCK, clock_change_permitted
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.turns.beats import (
     BEAT_TEXT_MAX,
@@ -127,7 +138,7 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.errors import ModelUnavailable
 from epistrel.orchestrator.models.registry import GENERATION, GenerationInputs
-from epistrel.orchestrator.models.structured import Uncertain, feedback
+from epistrel.orchestrator.models.structured import Uncertain, correct_once, corrected, feedback
 
 log = logging.getLogger(__name__)
 
@@ -330,6 +341,65 @@ UNDELIVERED_EFFECT_FIELDS: tuple[str, ...] = ()
 CONTINGENCY_FIELDS = ("contingency", "prerequisites")
 """#216: a State effect's alone (a time advance or a reschedule takes neither)."""
 STATES_ON = "on"
+CLOCK_EFFECT = "clock_effect"
+"""#996: the error type of a ``change`` or ``transfer`` on the world clock (``correct_once``)."""
+CLOCK_CORRECTION = (
+    "Do not change the world clock in a turn's effects; it moves only through the clock."
+)
+"""#996: the correction a render's change to the world clock is sent (once per call)."""
+CLOCK_EFFECT_DROPPED = "clock_effect_dropped"
+"""#996 degradation: a render or regeneration still changed the world clock after its
+correction, and that effect was dropped (``drop_clock_effects``)."""
+
+
+def changes_clock(kind: Any, state: Any, counterparty: Any, delta: Any) -> bool:
+    """#996: whether an effect's fields (raw or validated) change the world clock against its
+    rule (``clock_change_permitted``): a ``change`` or ``transfer`` naming it, or a transfer
+    naming it as the counterparty. A render's effect commits with source ``turn``."""
+    if kind in CLOCK_EFFECTS:
+        return False
+    other = counterparty.get("state") if isinstance(counterparty, Mapping) else counterparty
+    if WORLD_CLOCK not in (state, other):
+        return False
+    change = StateChangeKind.DELTA if delta is not None else StateChangeKind.SET
+    return not clock_change_permitted(change, StateChangeSource.TURN)
+
+
+def clock_offence(effect: EffectDecl) -> bool:
+    """#996: ``changes_clock`` of a validated effect."""
+    other = None if effect.counterparty is None else effect.counterparty.state
+    return changes_clock(effect.kind, effect.state, other, effect.delta)
+
+
+def _raw_offence(effect: Any) -> bool:
+    if not isinstance(effect, Mapping):
+        return False
+    return changes_clock(
+        effect.get("kind", "change"),
+        effect.get("state"),
+        effect.get("counterparty"),
+        effect.get("delta"),
+    )
+
+
+def drop_clock_effects(effects: Any, info: ValidationInfo) -> tuple[Any, int]:
+    """#996: a raw ``effects`` list without its world-clock changes once their correction was
+    sent in this call (``corrected``), and how many went; unchanged before that (the
+    validators refuse them with ``CLOCK_CORRECTION``)."""
+    if not isinstance(effects, list) or not corrected(info.context, CLOCK_EFFECT):
+        return effects, 0
+    kept = [e for e in effects if not _raw_offence(e)]
+    return kept, len(effects) - len(kept)
+
+
+def clock_refusal(errors: Sequence[str], effects: Sequence[EffectDecl]) -> ValueError:
+    """#996: the error a validator raises for ``errors``: ``correct_once``'s ``CLOCK_EFFECT``
+    when one of ``effects`` changes the world clock (the other errors listed with it), else a
+    plain ``ValueError``."""
+    joined = "; ".join(errors)
+    if any(clock_offence(e) for e in effects):
+        return correct_once(CLOCK_EFFECT, joined)
+    return ValueError(joined)
 
 
 class CounterpartyDecl(_Strict):
@@ -541,8 +611,9 @@ def effect_errors(
                 errors.append(f"{at}.{name}: not delivered yet")
         if not effect.reason.strip():
             errors.append(f"{at}.reason: empty")
-        if effect.state == WORLD_CLOCK:
-            errors.append(f"{at}.state: the world clock moves only by a time advance")
+        if clock_offence(effect):
+            # #996: a time advance is how a render moves the clock (``clock_contract.j2``).
+            errors.append(f"{at}.state: {CLOCK_CORRECTION} Declare a time_advance instead.")
             continue
         target = states.get(effect.state)
         if target is None:
@@ -598,7 +669,7 @@ def _transfer_errors(
     if other is None:
         return [*errors, f"{at}.counterparty: a transfer names its counterparty"]
     if other.state == WORLD_CLOCK:
-        return [*errors, f"{at}.counterparty.state: the world clock is no counterparty"]
+        return [*errors, f"{at}.counterparty.state: {CLOCK_CORRECTION}"]
     if isinstance(other.delta, bool):
         errors.append(f"{at}.counterparty.delta: a number")
     found = states.get(other.state)
@@ -1000,6 +1071,7 @@ class RenderedBeats(_Strict):
     """#176 (FR-MULTI-9): the reactions this render narrates for other present characters (a
     character's render only)."""
     _latent_holder_repairs: int = PrivateAttr(default=0)
+    _clock_drops: int = PrivateAttr(default=0)
 
     actor_id: ClassVar[str | None] = None
     """The rendering character (``None``: the narrator's render)."""
@@ -1033,20 +1105,34 @@ class RenderedBeats(_Strict):
 
     @model_validator(mode="wrap")
     @classmethod
-    def _named(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
-        """#750: cast names to ids, and a latent's named holder repaired (module docstring)."""
-        repairs = 0
+    def _named(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self], info: ValidationInfo
+    ) -> Self:
+        """#750: cast names to ids, and a latent's named holder repaired (module docstring).
+        #996: a world-clock change dropped once its correction was sent."""
+        repairs = drops = 0
         if isinstance(data, dict) and isinstance(data.get("beats"), list):
             keys = cast_keys(cls.cast_ids, cls.cast_names)
             beats: list[Any] = []
             for beat in data["beats"]:
                 fixed, repaired = _resolve_beat(beat, keys)
+                if isinstance(fixed, dict) and "effects" in fixed:
+                    effects, dropped = drop_clock_effects(fixed["effects"], info)
+                    if dropped:
+                        fixed = {**fixed, "effects": effects}
+                        drops += dropped
                 beats.append(fixed)
                 repairs += repaired
             data = {**data, "beats": beats}
         found = handler(data)
         found._latent_holder_repairs = repairs
+        found._clock_drops = drops
         return found
+
+    @property
+    def clock_effects_dropped(self) -> int:
+        """#996: the world-clock changes dropped after their correction."""
+        return self._clock_drops
 
     @property
     def latent_holder_repairs(self) -> int:
@@ -1123,7 +1209,7 @@ class RenderedBeats(_Strict):
                 items=cls.items,
             )
             if found:
-                raise ValueError("; ".join(found))
+                raise clock_refusal(found, beat.effects)
             for name in beat.qualifiers_declared():
                 if beat.kind not in _SAY_ONLY[name]:
                     raise ValueError(f"{where}.{name}: not a qualifier a {beat.kind} declares")
@@ -1527,6 +1613,9 @@ def _unavailable(reason: str, found: Uncertain, failures: Sequence[str]) -> Mode
 __all__ = [
     "AGE_REPAIR",
     "AGE_UNREPAIRED",
+    "CLOCK_CORRECTION",
+    "CLOCK_EFFECT",
+    "CLOCK_EFFECT_DROPPED",
     "INVALID_STRUCTURE",
     "LATENT_HOLDER_REPAIRED",
     "NARRATOR",
@@ -1546,6 +1635,10 @@ __all__ = [
     "age_schema",
     "cast_keys",
     "cast_remedy",
+    "changes_clock",
+    "clock_offence",
+    "clock_refusal",
+    "drop_clock_effects",
     "effect_errors",
     "hold_length",
     "length_chars",

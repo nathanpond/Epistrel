@@ -73,7 +73,9 @@ correction). 4: #939's effect syntax (no ``change`` example on the world clock, 
 time-advance line). 5: #1009's strict wire schema (``$ref``s inlined, ``title``s dropped)
 and its per-schema fallback when api.anthropic.com finds the grammar too large. 6: #1014's
 per-render repair budget (``repair.max_attempts`` counts each render's regenerations, so a turn
-with several renders may send more ``regeneration`` calls). Bump it with any
+with several renders may send more ``regeneration`` calls); also #996's world-clock
+correction (a render's or a regeneration's change to the clock is corrected once with
+``CLOCK_CORRECTION``, then dropped). Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

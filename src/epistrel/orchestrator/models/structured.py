@@ -35,6 +35,10 @@ never the model's raw text.
    ``schema_error`` retry (JSON that fails validation) runs at the call's own params (#685:
    at ``temperature=0`` a model given a correction that names the fix repeated its answer on
    every attempt). Schema-invalid JSON in ``json_schema`` mode is retried the same way.
+   #996: each attempt is validated with the codes of the corrections already sent in this
+   call as its validation context (``corrected``): a validator that corrects a mistake only
+   once (``correct_once``) relaxes on a later attempt, and its schema repairs the answer
+   instead of refusing it again (a render's change to the world clock is dropped).
 4. **Uncertain** results: retries spent → the last failure's reason; a ``refusal`` or a
    ``length`` finish → ``parse_error`` at once (each attempt's ``max_tokens`` carries
    ``STRUCTURED_HEADROOM_TOKENS`` above the caller's, so hidden reasoning does not end it
@@ -221,6 +225,8 @@ class _Failure:
     reason: Literal["parse_error", "schema_error"]
     problem: str
     public: str = ""
+    codes: frozenset[str] = frozenset()
+    """#996: the error types of the validation's errors (``correct_once``'s among them)."""
 
     def reported(self) -> str:
         return self.public or self.problem
@@ -239,14 +245,34 @@ def feedback(correction: str, public: str) -> PydanticCustomError:
     )
 
 
+CORRECTED = "corrected"
+"""#996: the validation context key of the correction codes already sent in this call."""
+
+
+def correct_once(code: str, problems: str) -> PydanticCustomError:
+    """#996: a validator's error that is sent as a correction once per call: after it, an
+    attempt is validated with ``code`` in ``corrected(info)``, and the validator repairs the
+    answer instead of raising it again. ``problems`` names no story content."""
+    return PydanticCustomError(code, "{problems}", {"problems": problems})
+
+
+def corrected(context: Any, code: str) -> bool:
+    """#996: whether ``code``'s correction was already sent in this call (``context`` is the
+    validator's ``ValidationInfo.context``; ``None`` outside ``structured_messages``)."""
+    return isinstance(context, Mapping) and code in context.get(CORRECTED, ())
+
+
 def unfence(text: str) -> str:
     """``text`` without a surrounding ```` ```json ```` fence."""
     match = _FENCE.match(text)
     return match.group("body") if match else text
 
 
-def parse[T: BaseModel](text: str, schema: type[T]) -> T | _Failure:
-    """``text`` as a strict ``schema`` instance, or why it is not one (never its contents)."""
+def parse[T: BaseModel](
+    text: str, schema: type[T], seen: frozenset[str] = frozenset()
+) -> T | _Failure:
+    """``text`` as a strict ``schema`` instance, or why it is not one (never its contents).
+    ``seen``: the correction codes already sent in this call (#996, ``corrected``)."""
     body = unfence(text).strip()
     try:
         document = json.loads(body)
@@ -257,23 +283,31 @@ def parse[T: BaseModel](text: str, schema: type[T]) -> T | _Failure:
         # A JSON ``\u0000`` escape decodes to the NUL ``send`` removed from the raw text (#275).
         body = json.dumps(without_nul(document))
     try:
-        return schema.model_validate_json(body, strict=True)
+        return schema.model_validate_json(body, strict=True, context={CORRECTED: seen})
     except ValidationError as exc:
         problems: list[str] = []
         public: list[str] = []
+        codes = frozenset(error["type"] for error in exc.errors())
         for error in exc.errors()[:MAX_FEEDBACK_ERRORS]:
             where = ".".join(str(p) for p in error["loc"]) or "the object"
             problems.append(f"{where}: {error['msg']}")
             context = error.get("ctx") or {}
             public.append(f"{where}: {context.get(PUBLIC, error['msg'])}")
-        return _Failure("schema_error", "; ".join(problems), "; ".join(public))
+        return _Failure("schema_error", "; ".join(problems), "; ".join(public), codes)
 
 
-def usable(result: ModelResult, schema: type[BaseModel]) -> bool:
+def usable(
+    result: ModelResult, schema: type[BaseModel], seen: frozenset[str] = frozenset()
+) -> bool:
     """Whether ``result`` is a usable ``schema`` instance (the attempt's recorded outcome)."""
     if result.refused or result.finish_reason == "length":
         return False
-    return not isinstance(parse(result.text, schema), _Failure)
+    return not isinstance(parse(result.text, schema, seen), _Failure)
+
+
+def _usable_by(schema: type[BaseModel], seen: frozenset[str]) -> Callable[[ModelResult], bool]:
+    """``usable`` for one attempt: its schema and the corrections sent before it (#996)."""
+    return lambda answer: usable(answer, schema, seen)
 
 
 def with_schema(messages: Sequence[Message], schema: type[BaseModel]) -> list[Message]:
@@ -363,6 +397,7 @@ async def structured_messages[T: BaseModel](
     call_params = params
     retries_left = settings.structured_retry_budget
     attempts = 0
+    seen: frozenset[str] = frozenset()  # #996: the correction codes sent so far
     token = REQUEST_FIELDS.set(fields)
     # #737: an eval trace names the schema even when the prompt carries it.
     schema_token = STRUCTURED_SCHEMA.set(schema.__name__)
@@ -384,7 +419,7 @@ async def structured_messages[T: BaseModel](
                     schema if json_mode else None,
                     budget=budget,
                     attempt=attempts,
-                    usable=lambda answer: usable(answer, schema),
+                    usable=_usable_by(schema, seen),
                     format_probe=json_mode,
                 )
             except ResponseFormatRejected as exc:
@@ -407,7 +442,7 @@ async def structured_messages[T: BaseModel](
                 raise exc.with_attempts(attempts) from None
             if result.refused or result.finish_reason == "length":
                 return Uncertain("parse_error", attempts)
-            outcome = parse(result.text, schema)
+            outcome = parse(result.text, schema, seen)
             if isinstance(outcome, _Failure) and failures is not None:
                 failures.append(outcome.reported())
             prose = isinstance(outcome, _Failure) and outcome.reason == "parse_error"
@@ -425,6 +460,7 @@ async def structured_messages[T: BaseModel](
             if retries_left == 0:
                 return Uncertain(outcome.reason, attempts)
             retries_left -= 1
+            seen |= outcome.codes
             messages = [
                 *messages,
                 Message(role="assistant", content=result.text),
@@ -476,6 +512,8 @@ __all__ = [
     "ResponseFormatMemo",
     "Uncertain",
     "UncertainReason",
+    "correct_once",
+    "corrected",
     "feedback",
     "guardrail_deterministic_first",
     "parse",

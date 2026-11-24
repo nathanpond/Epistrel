@@ -33,6 +33,7 @@ from epistrel.orchestrator.models.registry import (
     GuardrailVerdict,
     ImageCheckVerdict,
     ImagePromptResult,
+    RewriteParseResult,
     TimeEstimate,
 )
 from epistrel.orchestrator.models.stub import GARBAGE, StubAdapter
@@ -271,9 +272,10 @@ def test_strict_wire_schema_for_every_response_schema() -> None:
     against. The exception: ``DirectiveParseResult``'s free-form ``qualifiers`` dict has no wire
     form (live, ``additionalProperties`` absent, ``true`` and a schema were each a 400), so it is
     ``None`` and that call is not sent in ``json_schema`` mode there. So is #254's
-    ``ImageCheckVerdict``, whose ``verdicts`` map is keyed by policy id."""
+    ``ImageCheckVerdict``, whose ``verdicts`` map is keyed by policy id. And #941's
+    ``RewriteParseResult``, whose 17 union-typed parameters are over ``UNION_LIMIT`` (16)."""
     schemas = {p.response_schema for p in DELIVERED.values() if p.response_schema is not None}
-    no_wire_form = {DirectiveParseResult, ImageCheckVerdict}
+    no_wire_form = {DirectiveParseResult, ImageCheckVerdict, RewriteParseResult}
     assert no_wire_form <= schemas
     assert len(schemas) >= 15
     for schema in schemas:

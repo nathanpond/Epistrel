@@ -554,6 +554,15 @@ structured calls are within Standard's and Full's 45 s per-call bound.
   keeps a grammar compiled by a call the client gave up on was not measured. Until #941 (the engine
   fix) is decided, retry a failed parse after a few minutes.
 
+**Re-measured on 2026-11-24 (#941): strict `RewriteParseResult` is now refused.** All 6 calls of
+`schema_compile_probe --rounds 3 --schema RewriteParseResult` (`claude-haiku-5-5`) were HTTP 400
+in 0.1 to 0.3 s: "Schemas contains too many parameters with union types (17 parameters with type
+arrays or anyOf) … (limit: 16 parameters with unions)". The wire form inlines `$ref`s since #1009
+(v0.4.1), so a union in a shared definition counts once per use. A schema over the limit now has
+no strict wire form (`provider_schema.UNION_LIMIT`), so `rewrite_parse` goes to api.anthropic.com
+as parse-validate-retry and compiles nothing; every other strict schema has 8 unions or fewer.
+The probe's verdict lines ignore failed calls: read its error notes before its timings.
+
 ## The quality judge and its calibration (#158)
 
 E-12 is judged by the `quality_judge` purpose (the `default` model unless `/admin/model-config`

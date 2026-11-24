@@ -86,6 +86,7 @@ async def test_health__answers_while_warmup_pending(
     warm_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(provider_schema, "ANTHROPIC_HOST", "127.0.0.1")
+    monkeypatch.setattr(provider_schema, "UNION_LIMIT", 64)  # a strict wire form to warm
     gate = threading.Event()
     with mock_openai(require_strict=True, gate=gate) as server:
         await configure(warm_settings, engine, server)
@@ -114,6 +115,7 @@ async def test_model_config_change__rewarms_once(
     warm_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(provider_schema, "ANTHROPIC_HOST", "127.0.0.1")
+    monkeypatch.setattr(provider_schema, "UNION_LIMIT", 64)  # a strict wire form to warm
     with mock_openai(require_strict=True) as server:
         await configure(warm_settings, engine, server)
         app = create_app(warm_settings)

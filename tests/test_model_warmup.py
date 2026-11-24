@@ -79,8 +79,12 @@ def layer(configs: Configs, monkeypatch: pytest.MonkeyPatch) -> ModelAccessLayer
 
 @pytest.fixture
 def as_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The local mock server (127.0.0.1) is api.anthropic.com for this test."""
+    """The local mock server (127.0.0.1) is api.anthropic.com for this test, and
+    ``RewriteParseResult`` stands in for a warm-listed schema with a strict wire form: its 17
+    union-typed parameters are over the live ``UNION_LIMIT`` (see
+    ``tests/test_strict_union_limit.py``), so the limit is lifted here."""
     monkeypatch.setattr(provider_schema, "ANTHROPIC_HOST", "127.0.0.1")
+    monkeypatch.setattr(provider_schema, "UNION_LIMIT", 64)
 
 
 @pytest.fixture
@@ -240,6 +244,7 @@ async def test_stop__cancels_a_pending_call(
 ) -> None:
     """Shutdown cancels the pass without waiting for the call, and logs no failure."""
     monkeypatch.setattr(provider_schema, "ANTHROPIC_HOST", "127.0.0.1")
+    monkeypatch.setattr(provider_schema, "UNION_LIMIT", 64)  # a strict wire form to warm
     gate = threading.Event()
     with mock_openai(require_strict=True, gate=gate) as server:
         mal = layer(Configs(f"{server.root}/v1"), monkeypatch)

@@ -16195,3 +16195,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#1012):** FR-IMG-14 is amended in place with "(amended 2026-11-24, #1012)", and there is no ADR, per the plan. The Console follow-up issue is drafted for the owner rather than filed, on the orchestrator's instruction. The live check AC is left unchecked: it is a paid OpenRouter image run under the owner's $2 cap, which the orchestrator runs.
   **Why:** The plan's discretion and the orchestrator's brief.
   **Issue:** #1012
+- **Decision (#941, Rule 1):** a strict schema with more than 16 union-typed parameters now has no wire form, so `rewrite_parse` goes to api.anthropic.com as parse-validate-retry. The provider's union-limit 400 also maps to `SchemaTooLarge` as a safety net. Recorded as ADR-213, which amends ADR-212.
+  **Why:** in the orchestrator's live re-measure, all 6 strict `RewriteParseResult` calls were HTTP 400 ("17 parameters with type arrays or anyOf … limit: 16"). #1009's `$ref` inlining copies each union into every use. Before this fix the 400 surfaced as a plain 503, so every hosted rewrite parse failed. Pre-fix check: `strict_wire_schema(RewriteParseResult) is None` → False, and the union 400 wasn't recognised. After the fix both hold. 118 passed across the warm-up, adapter and structured-output tests and the new tests.
+  **Issue:** #941
+- **Decision (#941):** I kept `RewriteParseResult` on `WARM_LIST`. The warm-up skips a schema with no wire form, so it sends nothing today. Its tests lift `UNION_LIMIT` so they still have a schema to warm.
+  **Why:** the mechanism costs nothing idle and comes back on its own if the schema's wire form fits under the limit again.
+  **Issue:** #941

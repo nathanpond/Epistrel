@@ -276,7 +276,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
 | 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Current | — |
 | 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
-| 212 | Slow strict grammars are warmed at start-up, in the background | Current | — |
+| 212 | Slow strict grammars are warmed at start-up, in the background | Amended | 213 |
+| 213 | A strict schema over 16 union-typed parameters goes as parse-validate-retry | Current | — |
 
 ---
 
@@ -2458,6 +2459,7 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-212 — Slow strict grammars are warmed at start-up, in the background
 **Status:** Accepted.
+**Amended by:** ADR-213 — `RewriteParseResult` has no strict wire form (17 union-typed parameters, over api.anthropic.com's limit of 16), so `rewrite_parse` goes there as parse-validate-retry and the warm list warms nothing today.
 **Context:** #941, found while working #785. On api.anthropic.com, a strict `json_schema` is compiled into a grammar on its first use, and the provider caches the grammar for a while. `RewriteParseResult` took 128.6, 138.8 and 134.1 s cold (live, 2026-11-22). Every other registry schema took 1.9 to 6.6 s. The rewrite parse's deadline is 120 s (`rewrite.parse.PARSE_DEADLINE_S`), and the deadline clamps the call. So the first `POST /stories/{id}/rewrites` after the provider's cache expired failed with 503 `model_unavailable` (`timeout`), and no `params.timeout` could help.
 **Decision:** The owner's option 2 at the planning of #941, applied by #941 (FR-MODEL-7; no new requirement).
 - **A warm list.** `orchestrator.models.warmup.WARM_LIST` holds the schemas that compile too slowly cold for a request to wait (over 30 s). It holds `RewriteParseResult` only.
@@ -2471,11 +2473,28 @@ Tuning and its exit certification come after every milestone that may change a p
 - Simplifying the wire schema: needs a measurement of which part compiles slowly, and still leaves the first call slow.
 - Raising `PARSE_DEADLINE_S` above about 210 s: the first parse succeeds but holds the author's request for over three minutes.
 - Going through `structured_call`, as the plan suggested: it retries a schema error and needs the purpose's full inputs, and a warm-up is one attempt on one line.
-**Consequences:**
+**Consequences:** *[revised per ADR-213: no listed schema has a strict wire form today, so a start sends no warm-up call and the first rewrite waits on no compile.]*
 - Each start of an `api` or `all` process on api.anthropic.com costs one small call per listed schema and configured endpoint and model: one `rewrite_parse` call (a short prompt and at most 64 output tokens) at the default configuration. A restart pays it again.
 - The 120 s parse deadline is unchanged. The live check that the first rewrite after the warm-up parses within it is the owner's (#941).
 - `MODEL_CALL_REVISION` stays 6, with the warm-up named in its docstring. No request's call changes.
 - Tests: `tests/test_model_warmup.py` (one strict call per schema, none off or non-strict or keyless, one content-free warning and no retry, re-warm coalesced, shutdown cancels) and `tests/integration/test_model_warmup_app.py` (`/health` answers while the warm-up is pending; a model change re-warms once, a params change does not).
+
+### ADR-213 — A strict schema over 16 union-typed parameters goes as parse-validate-retry
+**Status:** Accepted. Amends ADR-212 (what the warm list warms) and extends #1009's per-schema fallback (in `provider_schema`).
+**Context:** #941's live re-measure on 2026-11-24 (`schema_compile_probe --rounds 3 --schema RewriteParseResult`, `claude-haiku-5-5`). All 6 strict calls were HTTP 400 in 0.1 to 0.3 s: "Schemas contains too many parameters with union types (17 parameters with type arrays or anyOf) … (limit: 16 parameters with unions)". So the 128 to 139 s cold compile measured on 2026-11-22 no longer happens: the endpoint refuses the schema outright. The wire form has inlined every local `$ref` since #1009 (v0.4.1), so a union inside a shared definition counts once per use; `RewriteParseResult`'s wire form has 17. The 400 named neither `response_format` nor the grammar size, so `map_provider_error` made it a plain 503 `model_unavailable`, and every `rewrite_parse` on api.anthropic.com failed.
+**Decision:** applied by #941 (Rule 1, inside its scope; no new requirement).
+- **A union limit.** `provider_schema.UNION_LIMIT` is 16. `strict_wire_schema` returns `None` for a wire form with more nodes carrying a `type` list or an `anyOf` (`union_parameters`), as it does for a schema with no inline form. `json_schema_mode` is then false on api.anthropic.com, and the call goes as parse-validate-retry from its first attempt, with no wasted 400.
+- **A safety net.** `rejects_grammar_size` also matches the 400's phrase (`TOO_MANY_UNIONS`), so a schema the count misses is still a `SchemaTooLarge`: remembered per endpoint, model and schema, and retried as parse-validate-retry.
+- **The warm list stays.** `WARM_LIST` keeps `RewriteParseResult`; the warm-up already skips a schema with no wire form, so it sends nothing today and warms the schema again if its wire form returns under the limit.
+**Alternatives considered:**
+- Cutting `RewriteParseResult` to 16 unions (a required field in place of a nullable one): it changes the parse's output contract for one provider's limit, and keeps the 2-minute cold compile the warm-up exists for.
+- Keeping `$ref`s for this schema (#1009's pre-inline form): it was under the limit but compiled in over 2 minutes, and #1009 inlined refs because the `$defs` form overflowed the grammar size on other schemas.
+- Only matching the 400 (the safety net alone): every process pays one failed call per schema and configuration revision first.
+**Consequences:**
+- `rewrite_parse` on api.anthropic.com works again, as parse-validate-retry: the schema goes in the prompt and the answer is validated and retried, with no grammar compile and no 120 s risk. Every other strict schema has 8 union-typed parameters or fewer and is unchanged. Other endpoints are unchanged.
+- A start sends no warm-up call at the default configuration (ADR-212 revised).
+- `MODEL_CALL_REVISION` stays 6: the structured-mode choice moved, and the snapshot holds `strict_wire_schema`'s source and the two constants (re-taken with #1012).
+- Tests: `tests/test_strict_union_limit.py` (the count, `RewriteParseResult` over the limit and without a wire form, every other strict schema within it, the live 400 mapped to `SchemaTooLarge`); the warm-up tests lift the limit to keep a schema to warm.
 
 ---
 

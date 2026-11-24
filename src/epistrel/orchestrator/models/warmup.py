@@ -37,6 +37,12 @@ background, once the service is up, so a request does not wait on the compile:
   never warms. A non-strict endpoint is never sent anything.
 
 A rewrite that arrives before the pass finishes can still wait on the compile.
+
+**Today the list warms nothing (#941, live 2026-11-24).** api.anthropic.com now refuses a strict
+schema with more than 16 union-typed parameters, and ``RewriteParseResult``'s wire form has 17
+(``provider_schema.UNION_LIMIT``). So it has no strict wire form: ``rewrite_parse`` goes there as
+parse-validate-retry, compiles no grammar, and this module skips it. ``WARM_LIST`` keeps it, so
+it is warmed again if its wire form returns under the limit.
 """
 
 from __future__ import annotations

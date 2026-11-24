@@ -2375,8 +2375,8 @@ Tuning and its exit certification come after every milestone that may change a p
 - A fix pass before closing M11: the gaps are test-only, but the owner preferred to ship and collect real-use bugs in one place.
 - Filing real-use bugs into the audit milestone: the audit is a separate, planned review, and mixing intake into it would blur its scope.
 - Filing them into v2: v2 holds deferred capability and certification, not fixes for what ships now.
-**Consequences:**
-- No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected. *[revised per ADR-210: §22's M12 row is FR-REPAIR-5, gated by I-12's M12 part; M13's stays "not yet planned".]*
+**Consequences:** *[revised per ADR-210: the first bullet no longer holds for M12. §22's M12 row is FR-REPAIR-5, gated by I-12's M12 part; M13's stays "not yet planned".]*
+- No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected.
 - `current_milestone` becomes 11 with M11's closure.
 - M12 is planned by `/n8-plan M12`. Until then, it is an intake bucket.
 

@@ -31,7 +31,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-REPAIR | §10 | 207, 210 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201 |
+| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201, 212 |
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
 | FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
@@ -276,6 +276,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
 | 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Current | — |
 | 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
+| 212 | Slow strict grammars are warmed at start-up, in the background | Current | — |
 
 ---
 
@@ -2452,6 +2453,29 @@ Tuning and its exit certification come after every milestone that may change a p
 - Not covered, and open with the owner: a `respond` call that names nobody to answer. Omitting `render_character_ids` means every cast member except the actor (FR-RESP-5), `[]` is refused with 422, and a reply-less respond result has no specified shape. A consumer records a line without a reply through ingest.
 - No `MODEL_CALL_REVISION` change: no model call sends anything new.
 - Tests: `tests/integration/test_player_message_memories.py` (ingest perceivers and the absent character, ingested narration, episodic off, replay; the player's whisper; regenerate, swap, truncate and untruncate; retrieval 25 beats later).
+
+---
+
+### ADR-212 — Slow strict grammars are warmed at start-up, in the background
+**Status:** Accepted.
+**Context:** #941, found while working #785. On api.anthropic.com, a strict `json_schema` is compiled into a grammar on its first use, and the provider caches the grammar for a while. `RewriteParseResult` took 128.6, 138.8 and 134.1 s cold (live, 2026-11-22). Every other registry schema took 1.9 to 6.6 s. The rewrite parse's deadline is 120 s (`rewrite.parse.PARSE_DEADLINE_S`), and the deadline clamps the call. So the first `POST /stories/{id}/rewrites` after the provider's cache expired failed with 503 `model_unavailable` (`timeout`), and no `params.timeout` could help.
+**Decision:** The owner's option 2 at the planning of #941, applied by #941 (FR-MODEL-7; no new requirement).
+- **A warm list.** `orchestrator.models.warmup.WARM_LIST` holds the schemas that compile too slowly cold for a request to wait (over 30 s). It holds `RewriteParseResult` only.
+- **One call per endpoint, model and schema.** Once an `api` or `all` process is up, a background task (`StrictWarmup`) reads the effective configuration of each delivered purpose whose response schema is on the list. When the purpose's `base_url` is api.anthropic.com (`provider_schema.is_anthropic`, where Epistrel sends `strict: true`) and the schema has a strict wire form, it sends one call, deduped by `(base_url, model, schema)`. The call is one fixed user line with the schema as its strict `response_format` and `max_tokens` 64, over the purpose's params. The answer is discarded. A `worker` process parses no rewrite and never warms.
+- **Outside every request.** The call goes through the normal adapter under its own 210 s timeout (`WARMUP_TIMEOUT_S`), with no turn budget and no deadline clamp. It is not counted in the model-call metrics or in any operation's `model_calls`. With tracing on, it is a `model_call` span with purpose `warmup`. It is one attempt. A failure or timeout logs one warning with the purpose, the host and the exception type, and is not retried. A purpose with no key is skipped at debug.
+- **Readiness unaffected.** The lifespan starts the task just before it yields and cancels it first at shutdown, before the model clients close. `GET /health` and every route answer while it runs. A rewrite that arrives before the warm-up finishes can still wait on the compile.
+- **Re-warm.** Every `/admin/model-config` write (a purpose's configuration or its key, set or removed) asks for another pass. Writes during a pass are coalesced into one more pass. A triple already warmed in this process is not sent again, so only a new endpoint or model costs a call.
+- **Off switch.** `EPISTREL_MODEL_WARMUP` (default on; `0`, `false` or `off` turn it off). The stub adapter never warms.
+**Alternatives considered:**
+- Sending `rewrite_parse` without `strict` (parse-validate-retry): no compile, but the answer is only checked after the fact, and the endpoint refuses a `json_schema` without `strict`, so the whole call would move to the prompt.
+- Simplifying the wire schema: needs a measurement of which part compiles slowly, and still leaves the first call slow.
+- Raising `PARSE_DEADLINE_S` above about 210 s: the first parse succeeds but holds the author's request for over three minutes.
+- Going through `structured_call`, as the plan suggested: it retries a schema error and needs the purpose's full inputs, and a warm-up is one attempt on one line.
+**Consequences:**
+- Each start of an `api` or `all` process on api.anthropic.com costs one small call per listed schema and configured endpoint and model: one `rewrite_parse` call (a short prompt and at most 64 output tokens) at the default configuration. A restart pays it again.
+- The 120 s parse deadline is unchanged. The live check that the first rewrite after the warm-up parses within it is the owner's (#941).
+- `MODEL_CALL_REVISION` stays 6, with the warm-up named in its docstring. No request's call changes.
+- Tests: `tests/test_model_warmup.py` (one strict call per schema, none off or non-strict or keyless, one content-free warning and no retry, re-warm coalesced, shutdown cancels) and `tests/integration/test_model_warmup_app.py` (`/health` answers while the warm-up is pending; a model change re-warms once, a params change does not).
 
 ---
 

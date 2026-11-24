@@ -157,11 +157,14 @@ def _clean_epistrel_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every EPISTREL_* variable so tests see only what they set (EPISTREL_TEST_* kept),
     except ``EPISTREL_ERASURE_LEDGER_DIR``: it points at this process's ledger directory, so an
     app built from bare ``Settings`` never writes an erasure ledger under the repository and
-    always reads the one that matches the session database (#125)."""
+    always reads the one that matches the session database (#125). ``EPISTREL_MODEL_WARMUP`` is
+    set to ``0`` (#941)."""
     for name in list(os.environ):
         if name.upper().startswith("EPISTREL_") and not name.upper().startswith("EPISTREL_TEST_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("EPISTREL_ERASURE_LEDGER_DIR", str(ERASURE_LEDGER_DIR))
+    # #941: no strict-schema warm-up behind a test's back; the warm-up's tests turn it on.
+    monkeypatch.setenv("EPISTREL_MODEL_WARMUP", "0")
 
 
 @pytest.fixture

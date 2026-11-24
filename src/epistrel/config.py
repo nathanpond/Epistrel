@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # Which model adapter serves every purpose (FR-MODEL-11, NFR-PORT-2): `openai` talks to the
     # configured OpenAI-compatible endpoints; `stub` is the deterministic test adapter.
     model_adapter: Literal["openai", "stub"] = "openai"
+    # The strict-schema warm-up (FR-MODEL-7; #941, ADR-212): once an `api` or `all` process is
+    # up, one small background call per slow strict schema (`RewriteParseResult`) to each
+    # api.anthropic.com endpoint configured for it, so a request never waits on the provider's
+    # cold grammar compile. `0`/`false`/`off` turn it off; the stub adapter never warms.
+    model_warmup: bool = True
     # Seconds the stub adapter waits before answering (load and latency tests); 0 answers at once.
     stub_latency_s: float = Field(default=0.0, ge=0.0, le=600.0)
     # Claims the stub's structured renders declare, each on its share of the renders (JSON in

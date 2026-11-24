@@ -263,6 +263,7 @@ from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.models import registry as model_registry
 from epistrel.orchestrator.models.held import HeldCalls
+from epistrel.orchestrator.models.warmup import StrictWarmup
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -868,6 +869,11 @@ class Engine:
         # EPISTREL_MODEL_ADAPTER. Tests reach the stub through ``engine.models.stub``.
         self.models = models or ModelAccessLayer.from_settings(settings)
         self.models.bind(db)
+        # The strict-schema warm-up (#941, ADR-212): the app's start-up starts it, and every
+        # model-configuration write asks it for another pass.
+        self.warmup = StrictWarmup(
+            self.models, enabled=settings.model_warmup and settings.model_adapter == "openai"
+        )
         # The embedding jobs and the embedding-model change listener embed through this layer
         # (#138; the last Engine constructed in a process binds them, like the jobs below).
         reembed_job.bind(self.models.embeddings)
@@ -4721,7 +4727,7 @@ class Engine:
         params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
-            return await self._keyed(
+            written = await self._keyed(
                 ctx,
                 "replace_model_config",
                 lambda _: model_config.replace_config(
@@ -4735,6 +4741,8 @@ class Engine:
                     },
                 },
             )
+        self.warmup.changed()
+        return written
 
     async def _probe_embedding_change(
         self, purpose: str, body: model_config.ConfigReplacement
@@ -4870,7 +4878,7 @@ class Engine:
         self, ctx: RequestContext, purpose: str
     ) -> model_config.ConfigWrite:
         principal = self.require_principal(ctx)
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "remove_model_override",
             lambda _: model_config.remove_override(
@@ -4878,6 +4886,8 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+        self.warmup.changed()
+        return written
 
     async def set_model_api_key(
         self, ctx: RequestContext, purpose: str, api_key: SecretStr
@@ -4885,7 +4895,7 @@ class Engine:
         principal = self.require_principal(ctx)
         # The hash covers the key's digest, never the key (NFR-SEC-3).
         digest = hashlib.sha256(api_key.get_secret_value().encode()).hexdigest()
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "set_model_api_key",
             lambda _: model_config.set_api_key(
@@ -4893,12 +4903,14 @@ class Engine:
             ),
             material={"purpose": purpose, "api_key_sha256": digest},
         )
+        self.warmup.changed()
+        return written
 
     async def remove_model_api_key(
         self, ctx: RequestContext, purpose: str
     ) -> model_config.ConfigWrite:
         principal = self.require_principal(ctx)
-        return await self._keyed(
+        written = await self._keyed(
             ctx,
             "remove_model_api_key",
             lambda _: model_config.remove_api_key(
@@ -4906,6 +4918,8 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+        self.warmup.changed()
+        return written
 
     # -- consumer purposes (FR-MODEL-14; #824) -----------------------------------------------
     # Deployment-scoped like the model configuration: each write takes the deployment lock,

@@ -16153,3 +16153,24 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#988):** I ran the targeted set over 33 test files, plus `tests/gates` and `tests/docs`, in 4 shards. The files are every test file that imports `evals.trace`, `evals.run_conditions`, `evals.runner` or `evals.report`. Results: `75 passed`, `71 passed, 1 skipped, 1 deselected`, `59 passed` and `687 passed`. `ruff check`, `ruff format --check`, `mypy` and `lint-imports` are clean.
   **Why:** brief step 4.
   **Issue:** #988
+- **Decision (#941, Discretion):** The warm-up call goes straight through the adapter (`ModelAccessLayer.adapter.complete`) under its own `WARMUP_TIMEOUT_S = 210` timeout. It does not go through `structured_call` with a new `budget=None`/`warmup=True`, as the plan's pass-2 line suggested. Metrics, `model_calls` and the reported-version probe are skipped because `send` is never entered. Tracing gets a `model_call` span labelled `warmup` from the warm-up module itself.
+  **Why:** `structured_call` retries a schema error (the AC asks for a single attempt) and needs the purpose's full validated inputs (the plan wants one user line). Going around `send` leaves every request path unchanged. The request body (strict `response_format`, wire schema, `thinking` extra) is still the adapter's own.
+  **Issue:** #941
+- **Decision (#941, Discretion):** A pass skips an `(endpoint, model, schema)` triple already warmed in this process. Every `/admin/model-config` write (PUT/DELETE of a purpose and of its api-key, hooked in `Engine`) asks for a pass. Writes during a running pass queue exactly one more pass. A failed triple stays unwarmed, so the next config write tries it once more. That isn't a loop.
+  **Why:** The AC re-warms after a change of endpoint or model. The plan says "always re-warm after a change". Dedup by triple satisfies both, and a params-only write costs nothing.
+  **Issue:** #941
+- **Decision (#941, Discretion):** It is enabled when `EPISTREL_MODEL_WARMUP` is on and `model_adapter` is `openai`. It is started in the lifespan for the `api` and `all` modes only, because rewrite parses run in the request path (`rewrite.session`). No job handler parses, so a `worker` never warms. "Strict endpoint" means `provider_schema.is_anthropic(base_url)` and the schema has a strict wire form, which is exactly where the adapter sends `strict: true`. The `json_schema_mode` alone is also true for every non-Anthropic host. Each pass logs an info line, `model warm-up finished sent= failed= elapsed_ms=`, for the live check to wait on.
+  **Why:** These are the plan's pass-2 "check this at exec" and "strictness by json_schema_mode" lines, made precise.
+  **Issue:** #941
+- **Decision (#941, Discretion):** `MockOpenAI.gate` is a `threading.Event`, not an `asyncio.Event`, and gated requests wait at most 30 s. `stop()` cancels the task and awaits only its cancellation, which is immediate, swallowing `CancelledError`. A cancelled warm-up logs nothing.
+  **Why:** The mock serves from threads, where an `asyncio.Event` can't be waited on. Awaiting the cancelled task avoids a "Task was destroyed but it is pending" warning at loop close, without waiting on the HTTP call.
+  **Issue:** #941
+- **Decision (#941):** `MODEL_CALL_REVISION` stays 6, and its docstring names the warm-up. The snapshot was re-taken (4 new `warmup` constants) and INDEX regenerated (unchanged). ADR-212 was added. docs/03 is unchanged: no new FR ID, and FR-MODEL-7 covers it, per the plan. `.env.example` and `docs/OPERATIONS.md` ("Strict-schema warm-up") document the setting and its cost.
+  **Why:** Brief step 6 and the plan's pass-2 docs line.
+  **Issue:** #941
+- **Decision (#941):** The re-measure AC and the live-check AC are left unchecked. Both are hosted api.anthropic.com calls, and the orchestrator runs them under the owner's $1 cap. The README cold-compile table row waits on the re-measure.
+  **Why:** No paid calls in exec.
+  **Issue:** #941
+- **Decision (#941):** Red-first: `test_health__answers_while_warmup_pending` was run against a lifespan that awaited the warm-up (`await epistrel.warmup.wait()` after `start()`). It failed with `TimeoutError` at the 10 s start-up bound (`tests/integration/test_model_warmup_app.py:94`, `1 failed in 13.36s`). With the background start it passes.
+  **Why:** The test plan's red-first run.
+  **Issue:** #941

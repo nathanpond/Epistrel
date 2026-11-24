@@ -14,6 +14,7 @@ from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.clock import TurnClockBody
 from epistrel.api.routes.history import (
     AudienceFilterValue,
+    DegradationBody,
     NoticeBody,
     PlacedItem,
     StateEffectModel,
@@ -132,13 +133,6 @@ class BudgetBody(BaseModel):
     max_calls: int | None
     reserved: dict[str, int]
     used: int
-
-
-class DegradationBody(BaseModel):
-    """A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`)."""
-
-    step: str
-    cause: str
 
 
 class WarningBody(BaseModel):
@@ -359,9 +353,7 @@ class RespondResponse(MutationResponse):
             model_calls=result.model_calls,
             elapsed_ms=result.elapsed_ms,
             degradation=result.degradation,
-            degradation_details=[
-                DegradationBody(step=d.step, cause=d.cause) for d in result.degradation_details
-            ],
+            degradation_details=[DegradationBody.of(d) for d in result.degradation_details],
             call_counts=result.call_counts,
             queued_ms=result.queued_ms,
             first_call_offset_ms=result.first_call_offset_ms,

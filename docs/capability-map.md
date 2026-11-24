@@ -19,7 +19,7 @@ guarantees, and the guarantee table, are derived from the same map.
 | Per-character partitions: model adjudication of testimony | `partitions_testimony` | FR-BELIEF-3 | `partitions`; `testimony` at `model` | yes | M5 |
 | Perception at `co_location` or `full` | `perception_co_location` | FR-TURN-9,10; FR-RESP-13 | `perception` at `co_location` or above | yes | M5 |
 | Perception at `full` | `perception_full` | FR-TURN-2,13 | `perception` at `full` | yes | M5 |
-| Verification, at its level | `verification` | FR-VERIFY; FR-PROP-10; FR-REPAIR | `verification` at `declared` or above | yes | M4, M5, M6 |
+| Verification, at its level | `verification` | FR-VERIFY; FR-PROP-10; FR-REPAIR | `verification` at `declared` or above | yes | M4, M5, M6, M12 |
 | Verification with claim extraction | `verification_extraction` | FR-VERIFY-13 | `verification` at `extraction` or above | yes | M4 |
 | Verification with entailment escalation | `verification_entailment` | FR-VERIFY-3 | `verification` at `entailment` | yes | M4 |
 | Commitment | `commitment` | FR-COMMIT | `commitment` | yes | M4, M5, M7 |
@@ -86,7 +86,7 @@ FR-TURN-2, FR-TURN-13
 
 ### Verification, at its level (`verification`)
 
-FR-PROP-10, FR-REPAIR-1, FR-REPAIR-2, FR-REPAIR-3, FR-REPAIR-4, FR-VERIFY-1, FR-VERIFY-2, FR-VERIFY-3, FR-VERIFY-4, FR-VERIFY-5, FR-VERIFY-6, FR-VERIFY-7, FR-VERIFY-8, FR-VERIFY-9, FR-VERIFY-10, FR-VERIFY-11, FR-VERIFY-12, FR-VERIFY-13, FR-VERIFY-14, FR-VERIFY-15
+FR-PROP-10, FR-REPAIR-1, FR-REPAIR-2, FR-REPAIR-3, FR-REPAIR-4, FR-REPAIR-5, FR-VERIFY-1, FR-VERIFY-2, FR-VERIFY-3, FR-VERIFY-4, FR-VERIFY-5, FR-VERIFY-6, FR-VERIFY-7, FR-VERIFY-8, FR-VERIFY-9, FR-VERIFY-10, FR-VERIFY-11, FR-VERIFY-12, FR-VERIFY-13, FR-VERIFY-14, FR-VERIFY-15
 
 ### Verification with claim extraction (`verification_extraction`)
 

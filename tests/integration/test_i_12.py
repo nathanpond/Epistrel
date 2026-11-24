@@ -15,16 +15,24 @@ renders are recorded (the rejected one as audit, the correction as narrative sta
 
 ``test_i_12__classification`` (M5, #166, FR-VERIFY-5): the speech-act classification over the
 verdict, the checked intent and the provenance, and its record on a repair.
+
+``test_i_12__m12_*`` (M12, #1014, FR-REPAIR-5): ``repair.max_attempts`` per render (the
+narrator's and the first primary's, three primaries, two flagged beats in one render, a call
+budget with room for one regeneration), the drop rule (a fallback line beside its speaker's real
+line, one fallback line per speaker, a lone failing beat, a narration) and the per-beat cause in
+``respond`` and the history read.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -58,16 +66,19 @@ from epistrel.core.verify.rules import Rule, VerdictKind
 from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.verify.verifier import story_verifier
+from tests import effect_support as es
+from tests import multi_support as ms
 from tests import partition_support as parts
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import KNOWS, LOCATED_AT, PRINCIPAL, World, at, commit, supersede, world
 from tests.event_support import rows
 from tests.fixtures.bobby_education import DEGREE_AWARDED, GRADUATION, bobby_education
+from tests.fixtures.key_room import key_room
 from tests.memory_support import use_structured
 from tests.projection_support import truncate
 from tests.respond_support import body, respond, respond_client
-from tests.story_support import override
+from tests.story_support import READ, override
 from tests.structured_turn_support import (
     age_fact,
     beat,
@@ -618,3 +629,327 @@ async def test_i_12__classification(
             b=edu.bobby,
         )
         assert (spoken.classification, spoken.belief_relation) == ("sincere", "consistent")
+
+
+# -- M12: the repair budget per render, the drop rule and the per-beat cause (#1014) ----------
+
+SEVENTY = "I am seventy years old."
+"""A say whose age claim canon (64) contradicts, and that rungs 1 and 2 cannot fix."""
+NARRATED_SEVENTY = "{name} is seventy years old."
+SAY_REGENERATED = "I'd rather not say."
+NARRATION_REGENERATED = "The fire crackles."
+FALLBACK_SUFFIX = "changes the subject."
+BUDGET_CAP = 9
+"""A call budget with room for two primaries' planned calls, their salience and one
+regeneration (#1014): at 8 neither primary's flagged beat regenerates."""
+
+
+def _old(kind: str = "say", text_: str = SEVENTY) -> dict[str, Any]:
+    fields: dict[str, Any] = {"intent": "sincere"} if kind == "say" else {}
+    return beat(kind, text_, propositions=[claim("I", "age", "70")], **fields)
+
+
+def _narrated_old(name: str) -> dict[str, Any]:
+    return beat(
+        "narration", NARRATED_SEVENTY.format(name=name), propositions=[claim(name, "age", "70")]
+    )
+
+
+async def _cast(
+    client: Any, engine: AsyncEngine, *names: str, model_calls: int = 50, **settings: Any
+) -> tuple[str, dict[str, str]]:
+    """Wren (the player) and ``names``, each 64 in canon, rendered per character."""
+    story, ids = await structured_story(client, "Wren", *names)
+    for name in names:
+        await age_fact(engine, story, ids[name], 64)
+    await ms.per_character(engine, story, model_calls=model_calls, **settings)
+    return story, ids
+
+
+def _regenerations(outcome: str) -> float:
+    return (
+        REGISTRY.get_sample_value("epistrel_repair_regenerations_total", {"outcome": outcome})
+        or 0.0
+    )
+
+
+def _renders(regenerated: bool) -> float:
+    label = "true" if regenerated else "false"
+    return REGISTRY.get_sample_value("epistrel_repair_renders_total", {"regenerated": label}) or 0.0
+
+
+def _texts(played: dict[str, Any]) -> list[str]:
+    return [b["text"] for b in played["beats"] if str(b["kind"]).startswith("beat_")]
+
+
+def _repair_details(played: dict[str, Any]) -> list[dict[str, Any]]:
+    return [d for d in played["degradation_details"] if "beat" in d]
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_render_budget(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1014 (FR-REPAIR-5): ``repair.max_attempts`` counts per render. Under ``max_attempts:
+    1`` the narrator's render and the first primary's render each regenerate their flagged
+    beat (before #1014 they shared one attempt and the second fell back). Three primaries, one
+    flagged beat each: three regenerations, all accepted. Complement: a render with two
+    flagged beats regenerates only the first; the second is ``repair_deterministic``
+    (``max_attempts``) and, its speaker having a line, is dropped."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- the narrator's render and the first primary's: one regeneration each
+        story, ids = await _cast(client, engine, "Ada", "Bo")
+        stub.reset()
+        es.narrator(stub, es.render(_narrated_old("Ada")))
+        ms.renders_for(stub, "Ada", ms.render(_old()))
+        ms.renders_for(stub, "Bo", ms.render(beat("say", "Evening, all.", intent="sincere")))
+        # The first match wins: Ada's regeneration prompt also holds the narration before it.
+        stub.when(SEVENTY, _regenerated(SAY_REGENERATED), purpose="regeneration")
+        stub.when("Ada is seventy", _regenerated(NARRATION_REGENERATED), purpose="regeneration")
+        accepted = _regenerations("accepted")
+        played = (
+            await respond(
+                client,
+                story,
+                body(
+                    ids["Wren"],
+                    None,
+                    do="looks around",
+                    render_character_ids=[ids["Ada"], ids["Bo"]],
+                ),
+            )
+        ).json()
+        texts = _texts(played)
+        assert NARRATION_REGENERATED in texts, texts
+        assert SAY_REGENERATED in texts, texts
+        assert not [t for t in texts if t.endswith(FALLBACK_SUFFIX) or t == "A moment passes."]
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 2
+        report = await turn_report(engine, story)
+        assert report["repair"] == {
+            "renders": 2,
+            "renders_regenerated": 2,
+            "regenerations": 2,
+            "fallbacks": 0,
+            "dropped": 0,
+        }
+        assert _regenerations("accepted") - accepted == 2
+
+        # -- three primaries, one flagged beat each: three regenerations (regression)
+        story, ids = await _cast(client, engine, "Ada", "Bo", "Cy")
+        stub.reset()
+        for name in ("Ada", "Bo", "Cy"):
+            ms.renders_for(stub, name, ms.render(_old()))
+        stub.script("regeneration", [_regenerated(SAY_REGENERATED)] * 3)
+        accepted, regenerated = _regenerations("accepted"), _renders(True)
+        played = (
+            await respond(
+                client,
+                story,
+                body(
+                    ids["Wren"], "Well?", render_character_ids=[ids[n] for n in ("Ada", "Bo", "Cy")]
+                ),
+            )
+        ).json()
+        assert _texts(played).count(SAY_REGENERATED) == 3, _texts(played)
+        assert _regenerations("accepted") - accepted == 3
+        assert _renders(True) - regenerated == 3
+        assert (await turn_report(engine, story))["repair"]["renders_regenerated"] == 3
+
+        # -- complement: two flagged beats in one render; only the first regenerates
+        story, ids = await _cast(client, engine, "Ada", "Bo")
+        stub.reset()
+        ms.renders_for(stub, "Ada", ms.render(_old(), _old(text_="Seventy years old, I am.")))
+        ms.renders_for(stub, "Bo", ms.render(beat("say", "Evening, all.", intent="sincere")))
+        stub.script("regeneration", [_regenerated(SAY_REGENERATED)])
+        skipped = _regenerations("skipped_max_attempts")
+        played = (
+            await respond(
+                client,
+                story,
+                body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"], ids["Bo"]]),
+            )
+        ).json()
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 1
+        assert _regenerations("skipped_max_attempts") - skipped >= 1
+        assert "repair_deterministic" in played["degradation"]
+        details = _repair_details(played)
+        second = [d for d in details if d["step"] == "repair_deterministic"]
+        assert [(d["cause"], d["rung"]) for d in second] == [("max_attempts", "dropped")], details
+        assert not [t for t in _texts(played) if t.endswith(FALLBACK_SUFFIX)]
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_render_budget_limit(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1014: the per-render budget never spends past the turn's call budget. With a cap that
+    leaves room for one regeneration, the first primary's flagged beat regenerates and the
+    second's is ``repair_deterministic`` (``budget``); no call goes over the cap."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        cap = BUDGET_CAP
+        story, ids = await _cast(client, engine, "Ada", "Bo", model_calls=cap)
+        stub.reset()
+        ms.renders_for(stub, "Ada", ms.render(_old()))
+        ms.renders_for(stub, "Bo", ms.render(_old()))
+        stub.script("regeneration", [_regenerated(SAY_REGENERATED)] * 2)
+        skipped = _regenerations("skipped_budget")
+        answer = await respond(
+            client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"], ids["Bo"]])
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 1
+        assert _regenerations("skipped_budget") - skipped == 1
+        details = [d for d in _repair_details(played) if d["step"] == "repair_deterministic"]
+        assert [d["cause"] for d in details] == ["budget"], played["degradation_details"]
+        report = await turn_report(engine, story)
+        assert report["budget"]["used"] <= cap, report["budget"]
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_drop_rule(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1014 (FR-REPAIR-5): a beat that fails repair is dropped when its speaker has a real
+    line, and a speaker keeps at most one fallback line. (a) The #1014 shape: Ada's failing
+    ``do``, failing ``say`` and passing ``say``: only the passing ``say`` is committed, with
+    two ``repair_dropped`` (``speaker_has_line``). (b) Both of Ada's beats fail: one fallback
+    line, one ``repair_dropped`` (``duplicate_fallback``). (c) Complement: one failing beat
+    still gets the fallback line. (d) A failing narration next to an accepted one is
+    dropped."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        still = _regenerated("I'm 71.", claim("I", "age", "71"))
+
+        # -- (a) a failing do, a failing say and a passing say
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    _old("do", "Ada says she is seventy years old."),
+                    _old(),
+                    beat("say", "The fire is warm.", intent="sincere"),
+                )
+            ],
+        )
+        stub.script("regeneration", [still])
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        assert _texts(played) == ["The fire is warm."], _texts(played)
+        assert FALLBACK_SUFFIX not in played["message"]["text"]
+        dropped = [d for d in _repair_details(played) if d["step"] == "repair_dropped"]
+        assert [(d["cause"], d["rung"], d["character_id"]) for d in dropped] == [
+            ("speaker_has_line", "dropped", ids["Ada"])
+        ] * 2
+        assert "safe_fallback" not in played["degradation"]
+        report = await turn_report(engine, story)
+        assert report["repair"]["dropped"] == 2
+        assert report["repair"]["fallbacks"] == 0
+        assert {(r["rung"], r["dropped"]) for r in report["repairs"]} == {(4, True)}
+
+        # -- (b) both of the speaker's beats fail: one fallback line is kept
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        stub.script(
+            "generation", [render(_old("do", "Ada says she is seventy years old."), _old())]
+        )
+        stub.script("regeneration", [still])
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        texts = _texts(played)
+        assert [t for t in texts if t.endswith(FALLBACK_SUFFIX)] == ["Ada changes the subject."]
+        steps = [(d["step"], d.get("cause")) for d in _repair_details(played)]
+        assert ("repair_dropped", "duplicate_fallback") in steps, steps
+        assert ("safe_fallback", "repair") in steps, steps
+
+        # -- (c) complement: a speaker's only beat fails: the fallback line stays
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        stub.script("generation", [render(_old())])
+        stub.script("regeneration", [still])
+        played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
+        assert played["message"]["text"] == 'Ada: "Ada changes the subject."'
+        assert "repair_dropped" not in played["degradation"]
+
+        # -- (d) a failing narration next to an accepted one is dropped
+        story, ids, _ = await _age_story(client, engine)
+        stub.reset()
+        es.narrator(
+            stub, es.render(_narrated_old("Ada"), beat("narration", "Rain taps the window."))
+        )
+        ms.renders_for(stub, "Ada", ms.render(beat("say", "Evening.", intent="sincere")))
+        stub.when("Ada is seventy", still, purpose="regeneration")
+        played = (await respond(client, story, body(ids["Wren"], None, do="looks around"))).json()
+        texts = _texts(played)
+        assert "Rain taps the window." in texts, texts
+        assert "A moment passes." not in texts
+        (entry,) = [d for d in _repair_details(played) if d["step"] == "repair_dropped"]
+        assert (entry["cause"], entry["character_id"]) == ("speaker_has_line", None)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_per_beat_cause(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#1014 (FR-REPAIR-5): a fallback caused by an ``other_character_secret`` denial reports
+    its beat, speaker, rung and violation codes in ``degradation_details``, in ``respond`` and
+    in the history read of the turn (omniscient, and a character viewpoint that sees the beat);
+    no entry carries beat text, and no log line carries it (invariant 3)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        room = await key_room(client, engine)
+        stub.reset()
+        told = "Bobby holds the brass key."
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(
+                beat(
+                    "say",
+                    told,
+                    intent="sincere",
+                    propositions=[claim("Bobby", "holds", "the brass key")],
+                )
+            ),
+        )
+        stub.script("regeneration", [_regenerated(told, claim("Bobby", "holds", "the brass key"))])
+        with caplog.at_level(logging.DEBUG):
+            answer = await respond(
+                client,
+                room.story_id,
+                body(room.cal, "Who has it?", render_character_ids=[room.jenni]),
+            )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        (entry,) = [d for d in _repair_details(played) if d["step"] == "safe_fallback"]
+        said = next(b for b in played["beats"] if b["kind"] == "beat_say")
+        assert entry == {
+            "step": "safe_fallback",
+            "cause": "repair",
+            "beat": said["beat"],
+            "character_id": room.jenni,
+            "rung": "safe_fallback",
+            "violations": ["unpermitted:other_character_secret"],
+        }
+        # Entries that are not a repair's carry none of the per-beat fields.
+        assert all(
+            set(d) == {"step", "cause"} for d in played["degradation_details"] if "beat" not in d
+        )
+        assert told not in json.dumps(played["degradation_details"])
+        assert told not in caplog.text
+
+        for viewpoint in ("omniscient", f"character:{room.cal}"):
+            response = await client.get(
+                f"/stories/{room.story_id}/history",
+                params={"viewpoint": viewpoint},
+                headers=READ,
+            )
+            assert response.status_code == 200, response.text
+            (turn,) = [t for t in response.json()["turns"] if t["turn"] == played["turn"]]
+            assert entry in turn["degradation_details"], (viewpoint, turn)

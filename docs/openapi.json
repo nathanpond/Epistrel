@@ -7984,15 +7984,74 @@
         "type": "object"
       },
       "DegradationBody": {
-        "description": "A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`).",
+        "description": "A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`, and every\nother stage's). #1014 (FR-REPAIR-5): an entry the repair ladder made (`repair_deterministic`,\n`repair_unextracted`, `safe_fallback`, `repair_dropped`) is per beat and also carries the\nbeat, its speaker, the rung it ended at and what flagged it; other entries carry none of\nthese fields.",
         "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the beat's index in the turn (as committed; a dropped beat's as rendered). Absent on an entry that is not a repair's.",
+            "title": "Beat"
+          },
           "cause": {
             "title": "Cause",
             "type": "string"
           },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the beat's speaker; `null` for the narrator. Absent on an entry that is not a repair's.",
+            "title": "Character Id"
+          },
+          "rung": {
+            "anyOf": [
+              {
+                "enum": [
+                  "narrowing",
+                  "substitution",
+                  "regeneration",
+                  "safe_fallback",
+                  "state_settled",
+                  "dropped"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the rung the beat ended at (`state_settled`: a State finding's deterministic outcome; `dropped`: left out of the turn). Absent on an entry that is not a repair's.",
+            "title": "Rung"
+          },
           "step": {
             "title": "Step",
             "type": "string"
+          },
+          "violations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#1014: the codes of what flagged the beat, sorted: `contradicted`, `uncertain`, `unpermitted:<reason>` (#144's reason, e.g. `other_character_secret`), `think_leak`, `confabulation`, `resolution_conflict`, `hidden_conflict`, `hallucinated`, a State finding's tag, `unchecked`. Codes only, never text. Absent on an entry that is not a repair's.",
+            "title": "Violations"
           }
         },
         "required": [
@@ -9478,7 +9537,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -10241,7 +10300,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -11287,7 +11346,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -18723,7 +18782,7 @@
                             "anyOf": [
                               {
                                 "default": 0,
-                                "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                                "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                                 "maximum": 10.0,
                                 "minimum": 0.0,
                                 "title": "Max Attempts",
@@ -21211,7 +21270,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -25843,7 +25902,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -28835,7 +28894,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -29712,7 +29771,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -31157,7 +31216,7 @@
                         "anyOf": [
                           {
                             "default": 0,
-                            "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                            "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                             "maximum": 10.0,
                             "minimum": 0.0,
                             "title": "Max Attempts",
@@ -32180,7 +32239,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -33008,7 +33067,7 @@
                       },
                       "max_attempts": {
                         "default": 0,
-                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                         "maximum": 10.0,
                         "minimum": 0.0,
                         "title": "Max Attempts",
@@ -44424,7 +44483,7 @@
                   },
                   "max_attempts": {
                     "default": 0,
-                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                     "maximum": 10.0,
                     "minimum": 0.0,
                     "title": "Max Attempts",
@@ -46287,7 +46346,7 @@
                       },
                       "max_attempts": {
                         "default": 0,
-                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                        "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR): the regenerations\neach render of a turn may run (FR-REPAIR-5, #1014: the narrator's, each primary's with the\nreactions it narrates, an escalated reactor's and, with several primaries, the follow-up's\neach have their own), within the turn's call budget and deadline. ``0`` turns the ladder\noff.",
                         "maximum": 10.0,
                         "minimum": 0.0,
                         "title": "Max Attempts",
@@ -57434,6 +57493,14 @@
       "TurnSummaryModel": {
         "description": "A turn on the page and its reply; ``message`` is null for a reply-less turn.",
         "properties": {
+          "degradation_details": {
+            "description": "The turn's degradation steps with their causes, as its `respond` returned them (#1014, FR-REPAIR-5): a repair's per-beat entry only when the viewpoint sees the beat (`omniscient`: every one), a dropped beat's when it sees a beat of the same speaker in the turn. Absent when none, and on a turn stored before #1014 with no repair it reads as stored.",
+            "items": {
+              "$ref": "#/components/schemas/DegradationBody"
+            },
+            "title": "Degradation Details",
+            "type": "array"
+          },
           "incomplete": {
             "default": false,
             "description": "A staged turn still waiting on its external outcome or its outcome step (#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent otherwise.",

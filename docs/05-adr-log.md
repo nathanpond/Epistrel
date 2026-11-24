@@ -28,6 +28,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
+| FR-REPAIR | §10 | 207, 210 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201 |
@@ -73,7 +74,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 007 | Model Access Layer: per-purpose config held in Epistrel; Epistrel connects directly | Partly superseded | 136, 150 |
 | 008 | Structured turn contract (say/think/do/latent); utterances as speech acts | Amended | 036 |
 | 009 | Commitment lifecycle: consequence-driven, salience-triggered, per-knower | Partly superseded | 022, 043, 053 |
-| 010 | Validation and repair: three-way verify, viewpoint-aware, least-invasive repair | Amended | 035, 065, 087 |
+| 010 | Validation and repair: three-way verify, viewpoint-aware, least-invasive repair | Amended | 035, 065, 087, 210 |
 | 011 | Guardrails: immutable policy, policy-never-yields, in-character enforcement | Amended | 094, 095, 096, 098 |
 | 012 | Directives and bitemporal retcon under an authority hierarchy | Current | — |
 | 013 | Orchestrator extensibility; external data as a first-class fact authority | Amended | 030 |
@@ -270,9 +271,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Partly superseded | — |
 | 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
 | 206 | A structured turn's deadline is checked up front against per-model latency estimates | Current | — |
-| 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Current | — |
+| 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Partly superseded | 210 |
 | 208 | An owner waiver lets one named version release without current certification records | Current | — |
 | 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
+| 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Current | — |
 
 ---
 
@@ -357,7 +359,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 ### ADR-010 — Validation and repair: three-way verify, viewpoint-aware, least-invasive repair
 **Status:** Accepted.
-**Amended by:** ADR-035 — "contradicted" is defined by deterministic predicate rules; ADR-065 — verification checks every *detected* claim; detection recall is measured separately; ADR-087 — output claims are precise; Lite does no structured claim checking
+**Amended by:** ADR-035 — "contradicted" is defined by deterministic predicate rules; ADR-065 — verification checks every *detected* claim; detection recall is measured separately; ADR-087 — output claims are precise; Lite does no structured claim checking; ADR-210 — the repair budget is per render, and a failed beat beside its speaker's real line is dropped instead of becoming the safe fallback
 **Context:** The model will contradict canon, fabricate, and break rules; naive find-replace repair breaks dependent reasoning.
 **Decision:** `verify(claim, viewpoint)` returns supported/contradicted/novel (Engine Core may add uncertain). Repair picks the least-invasive rung; cascading contradictions are fixed by regenerating under the contradicted fact's neighborhood, not string substitution. Novel facts may be canonized.
 **Consequences:** Nothing reaches the player unverified *[revised per ADR-065 and ADR-087: every detected claim is checked, under profiles that verify; Lite does no structured checking]*; the validator also grows canon; `fact_neighborhood` is a required primitive.
@@ -2358,9 +2360,10 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-207 — A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13
 **Status:** Accepted. Amends ADR-184 (the audit's number and place).
+**Amended by:** ADR-210 — M12 carries one requirement, FR-REPAIR-5.
 **Context:** `/n8-verify M11` (2026-11-22, at `b162dda`) verified 24 of M11's 32 stories outright. It filed four confirmed test gaps that blocked closure (#998, #999, #1000, #1005: missing complement or promised tests, each proved by a mutant) and four carries (#1001–#1004). The owner is putting Epistrel into real use with a consuming application, and expects real use to surface more bugs. The owner's words: *"can I waive these missing tests and add another milestone right after to add them and other bugs too? Epistrel is goign to be put into real use, so any bugs will also get added to this new milestone"*.
 **Decision:** The owner's decision of 2026-11-22.
-- **M12 — Real-use fixes**, depending on M11. No new capability and no requirements. It holds:
+- **M12 — Real-use fixes**, depending on M11. No new capability and no requirements *[superseded by ADR-210: M12 carries FR-REPAIR-5]*. It holds:
   - the four deferred test gaps (relabelled `sev:medium` so M11's gate reads the deferral);
   - M11's verify carries #1001–#1004;
   - the M11 exec follow-ups #994 and #996;
@@ -2372,7 +2375,7 @@ Tuning and its exit certification come after every milestone that may change a p
 - Filing real-use bugs into the audit milestone: the audit is a separate, planned review, and mixing intake into it would blur its scope.
 - Filing them into v2: v2 holds deferred capability and certification, not fixes for what ships now.
 **Consequences:**
-- No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected.
+- No requirement moves: §22's M12 row is "None — real-use fixes" and M13's is the old "not yet planned". No test part gates from M12 or M13, so the gate checks are unaffected. *[revised per ADR-210: §22's M12 row is FR-REPAIR-5, gated by I-12's M12 part; M13's stays "not yet planned".]*
 - `current_milestone` becomes 11 with M11's closure.
 - M12 is planned by `/n8-plan M12`. Until then, it is an intake bucket.
 
@@ -2407,6 +2410,27 @@ Tuning and its exit certification come after every milestone that may change a p
 **Consequences:**
 - A sampled run below 100 windows on two seeds reports faithfulness only. CI's stub certify (`--sample 100 --seeds 2`, 400 pairs) still gates. The committed reports are not rewritten.
 - Tests: `tests/eval/test_e_03.py::test_e_03__the_judge_needs_two_hundred_pairs` (199 pairs at perfect agreement is untrusted, 200 is trusted, also as 100 on each of two seeds); `test_e_03` samples 50 windows so its two seeds give 200 pairs. `tests/evals/test_judge_for.py` (16 pairs) and `tests/evals/test_harness.py`'s stub run (48 pairs) expect E-03 report only.
+
+---
+
+### ADR-210 — The repair budget is per render, and a failed beat beside its speaker's real line is dropped
+**Status:** Accepted. Amends ADR-010 (the safe fallback as the last rung) and ADR-207 (M12 carries no requirements).
+**Context:** #1014, from real use (a consumer's simulated two-character conversation under Full, 2026-11-23). Three of six reply beats were *"Ethan Brooks changes the subject."*, one speaker had the line as both a `do` and a `say` next to a real `say`, and the consumer could not tell why any beat was flagged. #151's ladder counted `repair.max_attempts` per ladder, and a ladder spanned more than one render: the narrator's render shared the first primary's, and the last primary's shared the follow-up's. Full's `max_attempts: 1` then meant one regeneration for two renders, and every other flagged beat went to the fallback line, which FR-REPAIR-3 and the ladder released whatever else its speaker said.
+**Decision:** The owner's decisions at the triage of #1014 (2026-11-23), applied by #1014 (FR-REPAIR-5, new; FR-REPAIR-3 notes it).
+- **Budget per render.** `repair.max_attempts` counts each render's regenerations: the narrator's, each primary's (with the reactions it narrates), each escalated reactor's and, with several primaries, the follow-up's. A turn with one character render (`combined`) keeps one budget for the characters and the follow-up, and the narrator's is its own. A time-stop repair, an outcome-step repair and `regenerate` keep a ladder of their own, as before. The setting's range, default and preset values are unchanged; Full's 1 now means one per render. The turn's call budget (`try_optional`, or a due-event stop's reserved slot) and deadline still decide whether a regeneration starts.
+- **The drop rule.** Once a render's beats have been through the ladder, and again over the whole turn before its commit, a `say`, `do` or narration beat that became the fallback line is dropped (`repair_dropped`, `speaker_has_line`) when its speaker (the narrator, for narration) has a committed `say`, `do` or narration beat that is not a fallback line or a State finding's deterministic outcome (#187). When every beat of the speaker failed, its first fallback line is kept and the others dropped (`duplicate_fallback`). An already staged beat leaves the turn stage too. A staged turn's outcome step counts the intent's beats. If a later step removes the beat that justified a drop, the speaker may end with no line: silence is preferred over a fallback line, and nothing re-runs.
+- **The cause per beat.** Each ladder entry in `degradation_details` (`repair_deterministic`, `repair_unextracted`, `safe_fallback`, `repair_dropped`) is per beat and carries `beat`, `character_id` (`null` for the narrator), `rung` (`narrowing`, `substitution`, `regeneration`, `safe_fallback`, `state_settled`, `dropped`) and `violations` (the flagged claims' codes: `contradicted`, `uncertain`, `unpermitted:<reason>`, the repair tags, `hidden_conflict`, `unchecked`). Codes and ids only. The flat `degradation` list stays once per step. The history read's turn summary carries the stored entries, filtered by the viewpoint as `state_effects` are: a beat the viewpoint cannot see has no entry, and a dropped beat's shows when the viewpoint sees a beat of the same speaker.
+- **Metrics.** `epistrel_repair_regenerations_total{outcome}` (`accepted`, `failed`, `skipped_max_attempts`, `skipped_budget`), `epistrel_repair_renders_total{regenerated}`, and `rung="dropped"` on `epistrel_repairs_total` for a dropped line (counted only there). `turn_report.repair` gives the turn's `renders`, `renders_regenerated`, `regenerations`, `fallbacks` and `dropped`.
+- **M12 carries FR-REPAIR-5** in §22, gated by I-12's M12 part.
+**Alternatives considered:**
+- A larger `max_attempts` for Full: it spends more calls on every turn, and the shared counter would still starve the second render.
+- One budget per beat: a render with several flagged beats is often one bad generation, and a regeneration per beat multiplies the calls a turn can make.
+- Narrowing the fallback beat instead of dropping it: the fallback line has no content left to narrow; dropping is the `think`/`latent` treatment the issue asked for.
+**Consequences:**
+- A turn with several renders may send more `regeneration` calls than before, within its budget. `MODEL_CALL_REVISION` is 6.
+- `turn_report.repairs` keeps its per-claim entries with int rungs: a dropped line is rung 4 with `dropped: true`.
+- Entries in `degradation_details` gain optional fields; stored entries without them read as before.
+- Tests: `tests/integration/test_i_12.py::test_i_12__m12_render_budget`, `::test_i_12__m12_render_budget_limit`, `::test_i_12__m12_drop_rule` and `::test_i_12__m12_per_beat_cause`; the units in `tests/test_repair_render_budget.py`.
 
 ---
 

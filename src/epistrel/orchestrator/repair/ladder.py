@@ -30,10 +30,14 @@ The neighborhood's size (its facts, memories excluded) classifies the repair.
    ``structured_call`` (``RegeneratedBeat``; #172: a span leaking another character's private
    thought is cut from the rejected text it reads, ``redact``). It starts only when the turn's
    budget can reserve, at once, the re-render, its extraction and one re-check per
-   model-assisted output policy (``can_afford_unreserved`` + ``hold``), and while the turn has
-   ``repair.max_attempts`` left (each regeneration is one attempt; #53's retries are inside
-   it). Otherwise the ladder
-   stays deterministic: ``repair_deterministic`` (cause ``budget`` or ``max_attempts``);
+   model-assisted output policy (``can_afford_unreserved`` + ``hold``), and while the beat's
+   *render* has ``repair.max_attempts`` left (each regeneration is one attempt; #53's retries
+   are inside it). #1014 (FR-REPAIR-5): the attempts are counted per render, not per turn: the
+   ladder's ``render_of`` names the render a beat came from (the narrator's, each primary's
+   with the reactions it narrates, an escalated reactor's, a sequential turn's follow-up), and
+   each render has its own ``max_attempts``; the turn's budget and deadline still cap the
+   total. Otherwise the ladder stays deterministic: ``repair_deterministic`` (cause ``budget``
+   or ``max_attempts``);
 4. *the safe fallback*: a ``say``, ``do`` or narration beat becomes the stored safe fallback
    line (the character's own, else the deployment's, else the last resort; the first that
    passes the output policies), ``safe_fallback`` (cause ``repair``); a ``think`` or ``latent``
@@ -67,6 +71,15 @@ answers) before it is accepted. A correction with any claim that still ``needs_r
 the gate rejects, is not accepted: the next rung runs. A regeneration whose extraction could not
 run is accepted on its deterministic re-verification, with ``repair_unextracted``.
 
+**The drop rule** (#1014, FR-REPAIR-5; ``drop_plan``, applied by the pipeline once a render's
+beats have all been through the ladder, and again over the whole turn): a ``say``, ``do`` or
+narration beat that became the fallback line (``RepairResult.fallback``) is dropped
+(``repair_dropped``, cause ``speaker_has_line``) when its speaker (the character; the narrator
+for narration) has another committed ``say``, ``do`` or narration beat in the turn that is not
+a fallback line (a ``think``, a ``latent`` and a State finding's deterministic beat do not
+count). When every beat of the speaker failed, its first fallback line is kept and the others
+are dropped (``duplicate_fallback``).
+
 **What comes out** (``RepairResult``): the accepted beat (``None`` for a dropped one) at the
 original beat's position with its new claims (a claim rung 2 rewrote restates canon and is
 never canonized, ``restates``), the rung, the attempts, every rejected text
@@ -74,7 +87,8 @@ never canonized, ``restates``), the rung, the attempts, every rejected text
 ``render_rejected`` audit events at the commit), the FR-REPAIR-4 class
 (``core.repair.rungs.classify``), the degradation and the violations still open (none once a
 beat is accepted). Nothing from a rejected render is canonized: the pipeline drops its canon
-requests.
+requests. #1014: ``detail`` is the beat's ``degradation_details`` entries (its index, speaker,
+the rung it ended at and the codes of what flagged it, ``violation_codes``); codes and ids only.
 
 Log lines carry counts and codes only (invariant 3).
 """
@@ -82,7 +96,7 @@ Log lines carry counts and codes only (invariant 3).
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Self
 
@@ -125,6 +139,7 @@ from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
+from epistrel.observability.metrics import count_regeneration
 from epistrel.orchestrator.budget import REPAIR as BUDGET_REPAIR
 from epistrel.orchestrator.budget import STOP as BUDGET_STOP
 from epistrel.orchestrator.budget import TurnBudget
@@ -154,6 +169,7 @@ from epistrel.orchestrator.structured.render import (
 from epistrel.orchestrator.verify.extraction import EXTRACTION_DEGRADED, CheckedClaim
 from epistrel.orchestrator.verify.verifier import (
     CONFABULATION,
+    HALLUCINATION,
     RESOLUTION_CONFLICT,
     THINK_LEAK,
     UNANCHORED,
@@ -183,6 +199,31 @@ SAFE_FALLBACK = "safe_fallback"
 """Degradation: a beat became the stored safe fallback line (or, ``think``/``latent``, was
 dropped)."""
 REPAIR = "repair"
+REPAIR_DROPPED = "repair_dropped"
+"""Degradation (#1014): a beat that became the fallback line was dropped instead, because its
+speaker has a real line in the turn (``SPEAKER_HAS_LINE``) or already keeps one fallback line
+(``DUPLICATE_FALLBACK``)."""
+SPEAKER_HAS_LINE = "speaker_has_line"
+DUPLICATE_FALLBACK = "duplicate_fallback"
+REPAIR_STEPS = frozenset({REPAIR_DETERMINISTIC, REPAIR_UNEXTRACTED, SAFE_FALLBACK, REPAIR_DROPPED})
+"""The degradation steps the ladder reports per beat (``RepairResult.detail``)."""
+RUNG_NAMES: dict[int, str] = {
+    NARROWING: "narrowing",
+    SUBSTITUTION: "substitution",
+    REGENERATION: "regeneration",
+    FALLBACK: "safe_fallback",
+}
+STATE_SETTLED = "state_settled"
+"""#1014: the rung name of a State finding's deterministic beat (#187), not a fallback line."""
+DROPPED = "dropped"
+"""#1014: the rung name of a beat the ladder left out of the turn (a ``think`` or ``latent``,
+or a fallback line the drop rule removed)."""
+UNCHECKED = "unchecked"
+"""#1014: the violation code of a claim with no verification result."""
+NARRATOR_RENDER = "narrator"
+"""#1014: the render key of the narrator's beats (``RepairLadder.render_of``)."""
+REGENERATION_OUTCOMES = ("accepted", "failed", "skipped_max_attempts", "skipped_budget")
+"""``epistrel_repair_regenerations_total``'s ``outcome`` values (#1014)."""
 
 
 # -- the regeneration's answer -------------------------------------------------------------------
@@ -243,6 +284,9 @@ OutputCheck = Callable[[str], Awaitable[bool]]
 """Whether a text passes the story's output policies (the output gate's check)."""
 InputsOf = Callable[[TurnBeat], GenerationInputs | None]
 """The generation inputs of the render a beat came from (``None``: no regeneration)."""
+RenderOf = Callable[[TurnBeat], Hashable]
+"""#1014: the render a beat came from (its key); each render has its own
+``repair.max_attempts``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +354,11 @@ class RepairResult:
     context: Context
     recheck: Recheck | None = None
     sketches: list[PropositionSketch] = field(default_factory=list)
+    fallback: bool = False
+    """#1014: the beat became the stored fallback line (``_fallback_line`` made its text)."""
+    drop_cause: str | None = None
+    """#1014: why the drop rule removed the fallback line (``SPEAKER_HAS_LINE`` or
+    ``DUPLICATE_FALLBACK``); ``None`` when it was not dropped by it."""
 
     def restates(self, claim: Proposition) -> bool:
         """Whether ``claim`` is one rung 2 rewrote to canon's value: it restates canon, so it is
@@ -332,6 +381,53 @@ class RepairResult:
     def dropped(self) -> bool:
         return self.beat is None
 
+    @property
+    def speaker(self) -> str | None:
+        """Whose beat it is: the character's id, ``None`` for the narrator (#1014)."""
+        return speaker_of(self.original)
+
+    @property
+    def rung_name(self) -> str:
+        """The rung the beat ended at, by name (#1014): ``narrowing``, ``substitution``,
+        ``regeneration``, ``safe_fallback``, ``state_settled`` (a State finding's deterministic
+        beat) or ``dropped`` (a ``think``/``latent``, or a fallback line the drop rule
+        removed)."""
+        if self.drop_cause is not None or self.beat is None:
+            return DROPPED
+        if self.rung >= FALLBACK and not self.fallback:
+            return STATE_SETTLED
+        return RUNG_NAMES.get(self.rung, str(self.rung))
+
+    def drop(self, cause: str) -> None:
+        """#1014: the drop rule removed the fallback line (``cause``); its ``safe_fallback``
+        degradation becomes ``repair_dropped``."""
+        self.beat = None
+        self.drop_cause = cause
+        self.degradation = [
+            d for d in self.degradation if d[0] not in (SAFE_FALLBACK, REPAIR_DROPPED)
+        ] + [(REPAIR_DROPPED, cause)]
+
+    def detail(self) -> list[dict[str, Any]]:
+        """#1014: the beat's ``degradation_details`` entries, one per degradation step it took
+        (a dropped fallback line's ``safe_fallback`` replaced by ``repair_dropped``; a
+        ``repair_deterministic`` that led to it stays), each with the beat's index, its speaker
+        (``None``: the narrator), the rung it ended at and the codes of what flagged it. Its
+        ``kind`` is for the viewpoint filter only. Codes and ids only, never text."""
+        steps = [d for d in self.degradation if d[0] in REPAIR_STEPS]
+        codes = violation_codes(self.violations)
+        return [
+            {
+                "step": step,
+                "cause": cause,
+                "beat": self.original.beat,
+                "character_id": self.speaker,
+                "rung": self.rung_name,
+                "violations": codes,
+                "kind": self.original.kind,
+            }
+            for step, cause in dict.fromkeys(steps)
+        ]
+
     def report(self) -> list[dict[str, Any]]:
         """``turn_report.repairs`` entries, one per violation: ids, codes and counts only."""
         return [
@@ -352,6 +448,90 @@ class RepairResult:
             }
             for v in self.violations
         ]
+
+
+# -- the per-beat cause and the drop rule (#1014) -------------------------------------------------
+
+
+def speaker_of(beat: TurnBeat) -> str | None:
+    """Whose line ``beat`` is: the character's id; ``None`` for the narrator's."""
+    if beat.narrator or beat.kind == NARRATION:
+        return None
+    return beat.character_id
+
+
+def violation_code(claim: CheckedClaim) -> str:
+    """#1014: what flagged one claim, as a code: its repair tag (``unpermitted:<reason>`` for a
+    denied novel claim, bare ``unpermitted`` when no reason was recorded; ``think_leak``,
+    ``confabulation``, ``resolution_conflict``, ``hallucinated``, a State finding's tag), else
+    ``hidden_conflict``, else its verdict (``contradicted``, ``uncertain``); ``unchecked`` for a
+    claim with no result."""
+    result = claim.result
+    if result is None:
+        return UNCHECKED
+    tag = result.repair_tag
+    if tag == UNPERMITTED:
+        denied = result.denied
+        return UNPERMITTED if denied is None else f"{UNPERMITTED}:{denied.reason.value}"
+    if tag == HALLUCINATION:
+        return "hallucinated"
+    if tag is not None:
+        return tag
+    if result.hidden_conflict:
+        return "hidden_conflict"
+    return result.kind.value
+
+
+def violation_codes(claims: Sequence[CheckedClaim]) -> list[str]:
+    """#1014: the distinct codes of what flagged a beat (``violation_code``), sorted."""
+    return sorted({violation_code(c) for c in claims})
+
+
+def real_line(beat: TurnBeat) -> bool:
+    """#1014: whether ``beat`` counts as its speaker's line for the drop rule: a ``say``,
+    ``do`` or narration beat rendered by the engine (not the player's input, beat 1)."""
+    return beat.beat > 1 and beat.kind in DETERMINISTIC_KINDS
+
+
+def drop_plan(
+    beats: Sequence[TurnBeat],
+    results: Sequence[RepairResult],
+    *,
+    earlier: Sequence[TurnBeat] = (),
+    earlier_results: Sequence[RepairResult] = (),
+) -> list[tuple[RepairResult, str]]:
+    """#1014 (FR-REPAIR-5): which fallback lines among ``results`` to drop, with the cause.
+    ``beats`` are the beats so far (``results``' beats among them), ``results`` their repairs;
+    ``earlier`` and ``earlier_results`` an earlier stage of the same turn (a staged turn's
+    intent, for its outcome step), counted but never dropped. A fallback line
+    (``RepairResult.fallback``, not dropped yet) is dropped when its speaker has another beat
+    that is a real line (``real_line``) and not the outcome of a rung-4 repair (a fallback line
+    or a State finding's deterministic beat): ``speaker_has_line``. Otherwise the speaker's
+    first fallback line (by beat; an earlier stage's first) stays and the rest go:
+    ``duplicate_fallback``."""
+    every = [*earlier_results, *results]
+    settled = {r.original.beat for r in every if r.rung >= FALLBACK and r.beat is not None}
+    speaking = {speaker_of(b) for b in (*earlier, *beats) if real_line(b) and b.beat not in settled}
+    present = {b.beat for b in beats}
+    before = {b.beat for b in earlier}
+    kept: set[str | None] = {
+        r.speaker
+        for r in earlier_results
+        if r.fallback and r.drop_cause is None and r.original.beat in before
+    }
+    lines = sorted(
+        (r for r in results if r.fallback and r.drop_cause is None and r.original.beat in present),
+        key=lambda r: r.original.beat,
+    )
+    found: list[tuple[RepairResult, str]] = []
+    for r in lines:
+        if r.speaker in speaking:
+            found.append((r, SPEAKER_HAS_LINE))
+        elif r.speaker in kept:
+            found.append((r, DUPLICATE_FALLBACK))
+        else:
+            kept.add(r.speaker)
+    return found
 
 
 # -- the ladder ----------------------------------------------------------------------------------
@@ -455,8 +635,10 @@ def redact(text: str, spans: Sequence[tuple[int, int]]) -> str:
 
 
 class RepairLadder:
-    """One turn's repair ladder (see the module docstring). Built per turn: its
-    ``repair.max_attempts`` counts the turn's regenerations across every beat."""
+    """One repair pass's ladder (see the module docstring). #1014: its ``repair.max_attempts``
+    counts the regenerations of each render (``render_of``) separately; ``renders``,
+    ``regenerated`` and ``regenerations`` say what it ran, for ``turn_report.repair`` and
+    ``epistrel_repair_renders_total``."""
 
     def __init__(
         self,
@@ -475,6 +657,7 @@ class RepairLadder:
         params: ModelParams,
         extraction_calls: int,
         check_calls: int,
+        render_of: RenderOf | None = None,
     ) -> None:
         self.db = db
         self.models = models
@@ -490,9 +673,23 @@ class RepairLadder:
         self.params = params
         self.extraction_calls = extraction_calls
         self.check_calls = check_calls
-        self.attempts_used = 0
+        self.render_of: RenderOf = render_of or (lambda _: None)
+        self.used: dict[Hashable, int] = {}
+        """#1014: the regenerations each render has used."""
+        self.renders: list[Hashable] = []
+        """#1014: every render that ran the ladder at least once, in order."""
         self.cascade_threshold = VerifySettings().cascade_threshold
         self.max_facts = VerifySettings().neighborhood_max_facts
+
+    @property
+    def attempts_used(self) -> int:
+        """The regenerations this ladder ran, over every render."""
+        return sum(self.used.values())
+
+    @property
+    def regenerated(self) -> list[Hashable]:
+        """#1014: the renders with at least one regeneration attempt."""
+        return [r for r in self.renders if self.used.get(r, 0)]
 
     @property
     def regeneration_cost(self) -> int:
@@ -639,12 +836,17 @@ class RepairLadder:
         attempts = 0
         violating = {i for v in violations if (i := _declared_index(v)) is not None}
         stating = state_findings(violations)
+        render = self.render_of(beat)
+        if render not in self.renders:
+            self.renders.append(render)
 
         def result(
             rung: int,
             accepted: TurnBeat | None,
             recheck: Recheck | None = None,
             chosen: Sequence[PropositionSketch] = (),
+            *,
+            fallback: bool = False,
         ) -> RepairResult:
             original = RejectedRender(
                 beat=beat.beat,
@@ -681,6 +883,7 @@ class RepairLadder:
                 context=context,
                 recheck=recheck,
                 sketches=list(chosen),
+                fallback=fallback,
             )
 
         async def attempt(
@@ -740,11 +943,12 @@ class RepairLadder:
                 )
                 if found is not None:
                     return result(SUBSTITUTION, found.beat, found, chosen)
-        # Rung 3: regeneration, while the turn can reserve it and has attempts left.
+        # Rung 3: regeneration, while the turn can reserve it and the render has attempts left.
         inputs = self.inputs_of(beat)
         while inputs is not None:
-            if self.attempts_used >= self.max_attempts:
+            if self.used.get(render, 0) >= self.max_attempts:
                 degradation.append((REPAIR_DETERMINISTIC, "max_attempts"))
+                count_regeneration("skipped_max_attempts")
                 break
             cost = self.regeneration_cost
             held = budget.held
@@ -756,9 +960,11 @@ class RepairLadder:
             elif not budget.try_optional(BUDGET_REPAIR, cost):
                 # Optional work (#156): never a reserved call, and only while it could start.
                 degradation.append((REPAIR_DETERMINISTIC, "budget"))
+                count_regeneration("skipped_budget")
                 break
-            self.attempts_used += 1
+            self.used[render] = self.used.get(render, 0) + 1
             attempts += 1
+            found = None
             try:
                 made = await self._regenerate(
                     beat,
@@ -769,14 +975,15 @@ class RepairLadder:
                     # beat's effects.
                     keep_effects=not stating or all(f.tag in PROSE_TAGS for f in stating),
                 )
-                if made is None:
-                    continue
-                candidate, chosen, hash_ = made
-                found = await attempt(
-                    REGENERATION, candidate, chosen, backstop=True, number=attempts, hash_=hash_
-                )
+                if made is not None:
+                    candidate, chosen, hash_ = made
+                    found = await attempt(
+                        REGENERATION, candidate, chosen, backstop=True, number=attempts, hash_=hash_
+                    )
             finally:
                 budget.release_to(min(budget.held, held))
+            # #1014: unusable output, a model error or a rejected candidate all fail.
+            count_regeneration("failed" if found is None else "accepted")
             if found is not None:
                 if EXTRACTION_DEGRADED in found.degradation:
                     degradation.append((REPAIR_UNEXTRACTED, "budget"))
@@ -791,7 +998,9 @@ class RepairLadder:
             if settled is not None:
                 return result(FALLBACK, settled)
         line = await self._fallback_line(narrator=beat.narrator or beat.kind == NARRATION)
-        return result(FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()))
+        return result(
+            FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()), fallback=True
+        )
 
     # -- the rungs ------------------------------------------------------------------------
 
@@ -1094,10 +1303,20 @@ async def _names(
 
 __all__ = [
     "DETERMINISTIC_KINDS",
+    "DROPPED",
+    "DUPLICATE_FALLBACK",
     "NARRATOR_FALLBACK",
+    "NARRATOR_RENDER",
+    "REGENERATION_OUTCOMES",
     "REPAIR_DETERMINISTIC",
+    "REPAIR_DROPPED",
+    "REPAIR_STEPS",
     "REPAIR_UNEXTRACTED",
+    "RUNG_NAMES",
     "SAFE_FALLBACK",
+    "SPEAKER_HAS_LINE",
+    "STATE_SETTLED",
+    "UNCHECKED",
     "Context",
     "InputsOf",
     "OutputCheck",
@@ -1105,8 +1324,14 @@ __all__ = [
     "Rechecker",
     "RegeneratedBeat",
     "RejectedRender",
+    "RenderOf",
     "RepairLadder",
     "RepairResult",
+    "drop_plan",
+    "real_line",
+    "speaker_of",
     "state_deterministic",
     "state_findings",
+    "violation_code",
+    "violation_codes",
 ]

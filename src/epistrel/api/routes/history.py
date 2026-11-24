@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, SummaryItem, TurnSummary
@@ -318,6 +318,81 @@ class NoticeBody(BaseModel):
     external_effects: bool = False
 
 
+class DegradationBody(BaseModel):
+    """A degradation step and its cause (`retry_budget`, `call_budget` or `deadline`, and every
+    other stage's). #1014 (FR-REPAIR-5): an entry the repair ladder made (`repair_deterministic`,
+    `repair_unextracted`, `safe_fallback`, `repair_dropped`) is per beat and also carries the
+    beat, its speaker, the rung it ended at and what flagged it; other entries carry none of
+    these fields."""
+
+    step: str
+    cause: str
+    beat: int | None = Field(
+        default=None,
+        description="#1014: the beat's index in the turn (as committed; a dropped beat's as "
+        "rendered). Absent on an entry that is not a repair's.",
+    )
+    character_id: str | None = Field(
+        default=None,
+        description="#1014: the beat's speaker; `null` for the narrator. Absent on an entry "
+        "that is not a repair's.",
+    )
+    rung: (
+        Literal[
+            "narrowing",
+            "substitution",
+            "regeneration",
+            "safe_fallback",
+            "state_settled",
+            "dropped",
+        ]
+        | None
+    ) = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#1014: the rung the beat ended at (`state_settled`: a State finding's "
+        "deterministic outcome; `dropped`: left out of the turn). Absent on an entry that is "
+        "not a repair's.",
+    )
+    violations: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#1014: the codes of what flagged the beat, sorted: `contradicted`, "
+        "`uncertain`, `unpermitted:<reason>` (#144's reason, e.g. `other_character_secret`), "
+        "`think_leak`, `confabulation`, `resolution_conflict`, `hidden_conflict`, "
+        "`hallucinated`, a State finding's tag, `unchecked`. Codes only, never text. Absent on "
+        "an entry that is not a repair's.",
+    )
+
+    @model_serializer(mode="wrap")
+    def _per_beat(self, handler: SerializerFunctionWrapHandler):  # type: ignore[no-untyped-def]
+        # No return annotation: pydantic then documents the model's own fields (an annotated
+        # wrap serializer replaces the schema with the annotation's).
+        found = handler(self)
+        if isinstance(found, dict) and self.beat is None:
+            # Only a repair's entry names a beat and its speaker (null for the narrator).
+            found.pop("beat", None)
+            found.pop("character_id", None)
+        return found
+
+    @classmethod
+    def of(cls, step: Any) -> DegradationBody:
+        """From a ``DegradationStep`` or a stored ``turn_report`` entry (a mapping)."""
+
+        def get(key: str) -> Any:
+            return step.get(key) if isinstance(step, dict) else getattr(step, key, None)
+
+        violations = get("violations")
+        return cls(
+            step=get("step"),
+            cause=get("cause"),
+            beat=get("beat"),
+            character_id=get("character_id"),
+            rung=get("rung"),
+            violations=None if violations is None else list(violations),
+        )
+
+
 class TurnSummaryModel(BaseModel):
     """A turn on the page and its reply; ``message`` is null for a reply-less turn."""
 
@@ -344,6 +419,15 @@ class TurnSummaryModel(BaseModel):
         description="A staged turn still waiting on its external outcome or its outcome step "
         "(#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent "
         "otherwise.",
+    )
+    degradation_details: list[DegradationBody] = Field(
+        default_factory=list,
+        exclude_if=lambda d: not d,
+        description="The turn's degradation steps with their causes, as its `respond` "
+        "returned them (#1014, FR-REPAIR-5): a repair's per-beat entry only when the viewpoint "
+        "sees the beat (`omniscient`: every one), a dropped beat's when it sees a beat of the "
+        "same speaker in the turn. Absent when none, and on a turn stored before #1014 with "
+        "no repair it reads as stored.",
     )
 
     @classmethod

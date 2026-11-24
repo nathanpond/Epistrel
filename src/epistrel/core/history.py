@@ -64,6 +64,12 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   changes its operation committed (``core.states.turn_effects``: ``{state, scope_key,
   old_value, new_value, reason, source, contingency, status}``), a ``hidden`` State's only for
   ``omniscient``: visibility only, no audience filter (owner decision 2026-10-28).
+- **Repair causes** (#1014, FR-REPAIR-5): each structured turn on the page carries the
+  ``degradation_details`` its ``turn_report`` stored (``visible_details``): a repair ladder's
+  per-beat entry (``beat``, ``character_id``, ``rung``, ``violations``) only when the viewpoint
+  sees the beat (``omniscient``: every one); a beat the drop rule removed, when the viewpoint
+  sees a beat of the same speaker in the turn; every other entry as stored. An entry stored
+  before #1014 reads as it was (no per-beat fields).
 - **Incomplete turns** (#212, FR-EXT-19): a staged turn whose completion has not committed
   (``operations.turn_stage`` ``intent_committed``, ``awaiting_outcome`` or
   ``outcome_recorded``) is on the page with its committed beats (the action as an attempt,
@@ -185,6 +191,9 @@ class TurnSummary:
     returned them, with ``external_effects`` as of the read (see the module docstring)."""
     incomplete: bool = False
     """#212 (FR-EXT-19): a staged turn still waiting on its outcome or its outcome step."""
+    degradation_details: list[dict[str, Any]] = field(default_factory=list)
+    """#1014 (FR-REPAIR-5): the turn's degradation steps with their causes, its repairs' per
+    beat, as the viewpoint may see them (see the module docstring)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +434,7 @@ async def read_history(
             changed,
         )
         noticed = await _notices(conn, story_id, rows, items)
+        degraded = await _degradation_details(conn, story_id, rows)
         from epistrel.core.images import story_images
 
         # #261 (FR-IMG-5): the page's images for exactly this viewpoint; ``as_of=N`` leaves out
@@ -455,7 +465,18 @@ async def read_history(
         timeline_revision=story.timeline_revision,
         output_viewpoint=resolved,
         as_of=through,
-        turns=_turns(items, changed, noticed, _incomplete(rows)),
+        turns=_turns(
+            items,
+            changed,
+            noticed,
+            _incomplete(rows),
+            {
+                op: visible_details(
+                    found, [i for i in items if i.operation_id == op], is_omniscient(resolved)
+                )
+                for op, found in degraded.items()
+            },
+        ),
         audit=audit,
         next_before_turn=next_before,
         summary=summary,
@@ -1105,11 +1126,69 @@ def _incomplete(rows: Sequence[Any]) -> frozenset[str]:
     )
 
 
+async def _degradation_details(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """#1014: each structured turn's stored ``turn_report.degradation_details``, by operation."""
+    ops = sorted({str(r.operation_id) for r in rows if str(r.kind).startswith(STRUCTURED_PREFIX)})
+    if not ops:
+        return {}
+    found = await conn.execute(
+        select(
+            operations.c.operation_id,
+            operations.c.turn_report["degradation_details"].label("details"),
+        ).where(operations.c.story_id == story_id, operations.c.operation_id.in_(ops))
+    )
+    return {
+        str(r.operation_id): [dict(d) for d in r.details if isinstance(d, Mapping)]
+        for r in found
+        if isinstance(r.details, list) and r.details
+    }
+
+
+SPOKEN_KINDS = frozenset({"say", "do", "narration"})
+"""#1014: the beat kinds a dropped fallback line can have."""
+
+
+def _speaker(item: HistoryItem) -> str | None:
+    return None if item.kind == f"{STRUCTURED_PREFIX}narration" else item.actor_character_id
+
+
+def visible_details(
+    details: Sequence[Mapping[str, Any]], items: Sequence[HistoryItem], omniscient: bool
+) -> list[dict[str, Any]]:
+    """#1014 (FR-REPAIR-5): ``details`` (a turn's ``degradation_details``) as a viewpoint that
+    sees ``items`` of the turn may read them, as ``state_effects`` are filtered: an entry with
+    no ``beat`` as stored; a per-beat entry for ``omniscient``, or when the beat is among
+    ``items``; a dropped ``say``, ``do`` or narration beat (rung ``dropped``, never committed)
+    when ``items`` hold a beat of the same speaker. The internal ``kind`` never leaves."""
+    beats = [i for i in items if i.beat is not None and i.kind.startswith(STRUCTURED_PREFIX)]
+    shown = {i.beat for i in beats}
+    speakers = {_speaker(i) for i in beats if (i.beat or 0) > 1}
+    found: list[dict[str, Any]] = []
+    for entry in details:
+        beat = entry.get("beat")
+        visible = (
+            beat is None
+            or omniscient
+            or beat in shown
+            or (
+                entry.get("rung") == "dropped"
+                and entry.get("kind") in SPOKEN_KINDS
+                and entry.get("character_id") in speakers
+            )
+        )
+        if visible:
+            found.append({k: v for k, v in entry.items() if k != "kind"})
+    return found
+
+
 def _turns(
     items: Sequence[HistoryItem],
     changed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     noticed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     incomplete: frozenset[str] = frozenset(),
+    degraded: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[TurnSummary]:
     turns: dict[int, TurnSummary] = {}
     for item in items:
@@ -1122,6 +1201,7 @@ def _turns(
             _turn_effects((changed or {}).get(item.operation_id, ())),
             [dict(n) for n in (noticed or {}).get(item.operation_id, ())],
             incomplete=item.operation_id in incomplete,
+            degradation_details=[dict(d) for d in (degraded or {}).get(item.operation_id, ())],
         )
         if summary.message is None and item.kind == REPLY_KIND:
             summary = dataclasses.replace(summary, message=TurnMessage(item.message_id, item.text))

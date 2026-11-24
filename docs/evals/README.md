@@ -108,6 +108,13 @@ once, remembered per model (#235). Anthropic ignores `seed`, so a hosted run's s
 case order, not the sampling. Raise `--concurrency` as far as the account's rate limits allow:
 a rate-limited case is a model error and plays again on the next run (below).
 
+**The call timeout.** Every model call of a certification run has a 210 s per-call timeout
+(`evals.runner.CALL_TIMEOUT_S`, written into the run database's `default` model row). That is
+1.5 x the slowest cold strict-schema compile measured on api.anthropic.com, 138.8 s for
+`RewriteParseResult` ([below](#first-use-of-a-strict-schema-on-apianthropiccom-785)), so a
+schema's first use is measured instead of losing the case to a timeout. A call's own deadline
+still clamps it. `tests/evals/test_call_timeout.py` pins it (#999).
+
 **On the local reference model** (the local row of [docs/model-matrix.md](../model-matrix.md),
 `cydonia-24b-v4.3`), add `--reference` so the records are `host.tier = reference`:
 

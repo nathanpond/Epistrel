@@ -809,6 +809,7 @@ async def _run_e11(args: argparse.Namespace, adapter: AdapterName) -> int:
                 base_url=config.base_url,
                 model=config.model,
                 api_key=config.api_key,
+                # E-11's image checker (its own command): not CALL_TIMEOUT_S (#999).
                 params=ModelParams(timeout=120.0),
             )
         else:

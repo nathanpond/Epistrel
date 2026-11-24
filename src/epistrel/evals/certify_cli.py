@@ -590,6 +590,12 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
     command: argparse.ArgumentParser = sub.add_parser(
         "certify",
         help="certify presets on one model in one run: reports, records, INDEX (#235)",
+        description=(
+            "Certify presets on one model in one run: reports, records, INDEX (#235). Every "
+            "model call runs with the harness's 210 s per-call timeout (evals.runner."
+            "CALL_TIMEOUT_S, #785): 1.5 x the slowest cold strict-schema compile measured on "
+            "api.anthropic.com (138.8 s), so a schema's first use is measured, not cut off."
+        ),
     )
     command.add_argument(
         "--presets", required=True, help="comma-separated: lite, standard, full, max"

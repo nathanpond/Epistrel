@@ -6,7 +6,8 @@ adapter ``AdapterConfig.adapter`` names. Without an ``engine`` passed in it buil
 ``AdapterConfig.database_url``, or over a throwaway PostgreSQL started through testcontainers
 when none is given (``tools.model_matrix.database``, which also migrates it); the run writes
 the endpoint into that database's ``model_config`` (``default`` row: base URL, model, key and
-a 120 s per-call timeout; no adapter retries), so the URL should name a scratch database.
+a ``CALL_TIMEOUT_S`` per-call timeout, 210 s; no adapter retries), so the URL should name a
+scratch database.
 Before any case, a **preflight** probe (``ModelAccessLayer.probe``) checks the endpoint speaks
 the protocol; an unreachable one raises ``EndpointUnavailable`` and nothing is reported. The
 completing model's ``model`` field is the report's ``model_version``.

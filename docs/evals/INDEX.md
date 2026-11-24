@@ -37,6 +37,7 @@ otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) ha
 
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-11-24 | `claude-haiku-5-5` | full | `e7a7c49f1170` | hosted | `e06` insufficient_evidence | — | — | — | — | — | — | insufficient_evidence | — | — | — | — | [insufficient_evidence](full-e7a7c49f1170-2026-11-24.md) |
 | 2026-11-22 | `claude-haiku-5-5` | standard | `ebc8df736fc3` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](standard-ebc8df736fc3-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `e05` pass | — | — | — | pass | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22.md) |
 | 2026-11-22 | `claude-haiku-5-5` | max | `ae6202349765` | hosted | `smoke` pass | — | — | — | — | — | — | — | — | — | — | — | [pass](max-ae6202349765-2026-11-22-2.md) |

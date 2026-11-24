@@ -16369,3 +16369,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#978):** Docs: FR-VERIFY-8 gains the untracked-mention pass with an *[amended by ADR-219]* marker; ADR-219 amends ADR-163 and ADR-165 (Amended-by lines and inline superseded markers); ADR indexes regenerated. `MODEL_CALL_REVISION` stays 6 (already bumped on this branch): the change sends fewer `regeneration` calls, so its docstring gains a #978 sentence, and the snapshot was re-taken with `tests.model_call_support --write` (two added constants, `extraction.PASSED` and `TRACKED_RELATIONS`, accepted without a bump; nothing changed); `docs/evals/INDEX.md` regenerated (no diff). No Ad-hoc entry: the owner decided the rule. The live E-06 check is left unchecked for the owner's hosted run.
   **Why:** The AC's docs line; the brief forbids hosted calls.
   **Issue:** #978
+- **Decision (#978, #979):** the orchestrator ran the shared live check as one sampled E-06 run: `evals run --suite e06 --preset full --seeds 1 --sample 100 --model claude-haiku-5-5 --host hosted --new-run`, at 58bf64b. The report is `docs/evals/full-e7a7c49f1170-2026-11-24.md`.
+  **Why:** both stories target the same E-06 fallbacks, and one 100-case sample fits inside the owner's $5 cap (about $0.26 at Haiku 5.5's price). Result: released fallback 4.0% (baseline 25.5%) and generic-constraint case-seeds 13% (baseline 22.7% in the same trace count). Player-character denials are bounded by the 4% fallback rate (baseline 10.3%). The verdict is `insufficient_evidence`, as expected for 100 cases.
+  **Issue:** #978, #979
+- **Decision (#978):** I filed #1024 (needs-triage) for repair constraints that name a place by its raw entity id, and didn't fix it in this milestone run.
+  **Why:** it predates M12 (15.5% of baseline case-seeds) and is outside #978's scope.
+  **Issue:** #1024

@@ -27,7 +27,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177, 218 |
 | FR-REPAIR | §10 | 207, 210, 217 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
@@ -96,7 +96,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 029 | Optimistic concurrency, per-story turn policy, and idempotent mutations | Partly superseded | 040, 045, 052 |
 | 030 | Story States and owned values; authorities decide objective truth, not knowledge | Amended | 037, 038, 039, 060 |
 | 031 | Multi-character interaction modes, participation roles, and adjudication | Partly superseded | 047, 059, 126 |
-| 032 | Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies | Amended | 036, 043, 047, 059, 065, 087, 174 |
+| 032 | Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies | Amended | 036, 043, 047, 059, 065, 087, 174, 218 |
 | 033 | Consolidation scope, authorization, erasure boundary, and measurable acceptance | Partly superseded | 044, 045, 046, 070, 072, 071, 091, 103, 078 |
 | 034 | Belief antecedents: independently verified and earlier, not "a prior turn" | Current | — |
 | 035 | Normalized propositions, a layered predicate registry, and deterministic contradiction rules | Partly superseded | 048, 049, 050, 058 |
@@ -282,6 +282,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 215 | A subject image may take earlier subject images of its subject as reference images | Current | — |
 | 216 | A line copied from another speaker in the same turn is regenerated once, else dropped | Current | — |
 | 217 | Only characters at the turn actor's place react, and a name alone is not a line | Current | — |
+| 218 | A character may act toward the player's character or a character present with it | Current | — |
 
 ---
 
@@ -540,7 +541,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-032 — Closing verification and input gaps: verified composition, explicit input contract, novelty permissions, typed dependencies
 **Status:** Accepted.
-**Amended by:** ADR-036 — speech dimensions; ADR-043 — reactive narration is a named novelty exception; ADR-047/059 — composition checks are viewpoint-specific; ADR-065 — composition is re-run through full claim detection; ADR-087 — output claims are precise; Lite does no structured claim checking; ADR-174 — `co_author` narration's viewpoint check accepts what its character could not know, with a notice under `co_author_knowledge = confirm`
+**Amended by:** ADR-036 — speech dimensions; ADR-043 — reactive narration is a named novelty exception; ADR-047/059 — composition checks are viewpoint-specific; ADR-065 — composition is re-run through full claim detection; ADR-087 — output claims are precise; Lite does no structured claim checking; ADR-174 — `co_author` narration's viewpoint check accepts what its character could not know, with a notice under `co_author_knowledge = confirm`; ADR-218 — a render's own observable action toward the player's character or a present character is permitted (FR-VERIFY-11's exceptions)
 **Context:** Four holes remained in the verification and input path. The final polish step could add claims, swap speakers, or leak thoughts after every beat had passed verification. Player moves had no authoritative entry point (recent messages are non-authoritative) and repeated ingestion had no deduplication. A `novel` verdict effectively authorized any invention, including another character's secrets, player actions, or game-owned values. And retcon cascades treated every dependency alike, so retconning a university risked rewriting an intentional lie about it.
 **Decision:** (1) **Composition is constrained and verified**: it may only order and join verified beats and add connective prose, then passes a final claim/attribution/privacy check, falling back to deterministic assembly on failure. (2) **Explicit input contract**: a player-input field enters history as the turn's first beat; an ingest operation records events without generating, deduplicated by client event ID; `player_authority` is per story (`own_character` default — input about other characters is a request the world resolves; `co_author` — players may narrate other characters' observable actions, viewpoint-checked, never their thoughts). (3) **Novelty requires permission** by asserter and subject owner; unpermitted novelty is repaired, not canonized. (4) **Typed dependency edges** — `causes`, `presupposes`, `derives`, `mentions`, `asserts` — with per-type cascade rules; speech acts stay as history and only their objective relation (and, if the speaker's belief changed, their belief relation) is re-evaluated — never their intent (ADR-036); testimony-acquired beliefs stay, observation-acquired beliefs cascade.
 **Consequences:** No unverified text reaches the player *[revised per ADR-065 and ADR-087: every detected claim is checked, under profiles that verify; Lite does no structured checking]*; player moves have one authoritative, idempotent path; the model can't use novelty to author things it doesn't own; retcons preserve what characters actually said and believed.
@@ -2591,6 +2592,26 @@ Tuning and its exit certification come after every milestone that may change a p
 - `docs/openapi.json` gains `present_character_ids` on the respond and regenerate responses; `turn_report.roles.dropped` keys are unchanged in shape.
 - docs/03 FR-MULTI-9 and FR-REPAIR-2 gain *[amended by ADR-217]* markers; S-REACTIVE's M12 part gates FR-MULTI-9 and I-12's M12 part FR-REPAIR-2.
 - Tests: `tests/scenario/test_s_reactive.py::test_s_reactive__off_scene`, `tests/integration/test_i_12.py::test_i_12__m12_name_only` and the units in `tests/test_off_scene.py`.
+
+### ADR-218 — A character may act toward the player's character or a character present with it
+**Status:** Accepted. Amends FR-VERIFY-11 (the exceptions to who may introduce a claim naming another character) and ADR-032 (4), the novelty permissions; extends #519's hand-over exception, which it subsumes.
+**Context:** #979, found by #939's E-06 run on hosted `claude-haiku-5-5` (Full, 3 seeds, `docs/evals/full-bca1e50d0af4-2026-11-21.md`): 62 of 600 case-seeds (10.3%) ended in the safe fallback with a `player_character` denial. Maren pours a mug of cider and slides it toward Wren (the player's character); the claim names Wren, so FR-VERIFY-11 denied it as "the player character's actions", the repair could not keep the action without naming him, and the beat fell back. In the trace these beats reach the permission check as free relations the extraction backstop names (`slides_cup_to`, `gives_nod_to`, `turns_toward`, `present_with`, `serves_drink_to`), auto-registered with the weakest semantics, not as core predicates. #1014's real-use report showed the same for two AI characters at one place ("Malik leans toward Ethan", denied `other_character_secret`).
+**Decision:** The owner's option (a) on #979 (2026-11-23), widened to present characters (round two: own position; round three: free relations by a verb allowlist), applied by #979 (`core.verify.permission`, "The toward-another-character exception"). A `character` render's claim is permitted when all of these hold:
+- it is affirmed, present-time (its valid time does not end before the turn starts), on a `do` or `say` beat (never `think`), and not the reactive fallback (a reactive render's claim re-run as the narrator's own render);
+- it names exactly one modeled character besides the render's own (qualifiers count), which is the player's character or a character in the turn's present set (ADR-217's `present_for`, anchored on the turn actor's place, plus the turn actor when it is the player's character); the rendering character must be in that set too, so an off-scene primary acts toward no one. Without a present set (a caller that passes none), only the player's character qualifies;
+- its shape is one of: `holds` of the other character, of an item no modeled character is, whose detected transfer names the render's character as giver (#519, now for a present character too), and `spoke_to` the other character — both basis `own`, canonized as before; `present_at` of the render's character with the other character as object (its own position); or a free relation (`Layer.AUTO`) with the render's character as subject and the other character as object, named `present_with`, `beside`, `next_to`, `near` or `with`, or whose first name token, lemmatized by a suffix table (`-ing`, `-ed`, `-es`, `-s`, with `+e` and an undone doubled consonant) and an irregulars map, is in `OBSERVABLE_ACTION_VERBS` (slide, give, hand, pass, pour, serve, offer, nod, wave, smile, look, glance, turn, lean, step, sit, stand, walk, gesture, point, touch, hug, speak, talk, say, tell, ask, whisper, call, reply, answer) — basis `action_texture`.
+
+`action_texture` is a new permission basis: texture that `Verifier.canon_requests` never canonizes. A permitted claim of this rule is never the speaker's own backstory (`Permitted.toward`, read by `speech.own_backstory`). The check sits where #519's did: after locked canon, a State change and the resolution exemption, and after the present-bench exception (#832), which is still decided first; protected content still denies. The turn's present set and the claim's channel are recorded with each permission answer, so the rebase re-check reproduces it.
+**Alternatives considered:**
+- Option (b), naming the denied entity in the repair constraint: the rewrite would still drop the action, and the beat still reads worse; not chosen by the owner. The repair ladder's `_constraint` is unchanged.
+- Excluding the existing `texture` basis from canonization (the planner's first reading): `texture` already canonizes world texture (an unmodeled person, an item's place), so a new basis keeps that unchanged.
+- Extending the transfer table's verbs ("slides", "pours"): an unresolved item ("a mug of cider") never becomes a claim, so it would not reach the evidence.
+- Adding person-to-person position, gesture or attention core predicates: no new predicates; free relations cover them as texture.
+**Consequences:**
+- docs/03 FR-VERIFY-11 gains an *[amended by ADR-218]* marker; ADR-032 gains an Amended-by line.
+- No prompt string, constraint or model call changes, so `MODEL_CALL_REVISION` stays 6; `docs/openapi.json` is unchanged (the permission basis appears only as the turn report's `permitted:<basis>` code, which gains `permitted:action_texture`).
+- The live share of E-06 case-seeds ending in the safe fallback with a `player_character` denial (10.3% at `00ae51d`) is measured by #978's sampled E-06 run.
+- Tests: `tests/test_permission.py` (the matrix, `action_verb`, `_current`) and `tests/integration/test_toward_other.py` (the two stub turns).
 
 ---
 

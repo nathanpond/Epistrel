@@ -2212,6 +2212,11 @@ async def _check_turn(
     async with db.connect() as conn:
         verifier = await story_verifier(conn, read_set, story_id, models=models, budget=budget)
         verifier.introductions = introductions
+        # #979: the toward-another-character exception reads the turn's present set; the
+        # player's character counts when it is the turn actor (even unplaced).
+        verifier.present = frozenset(read.present_character_ids) | (
+            {read.actor.id} if read.actor.is_player else frozenset()
+        )
         # #198 (FR-CLOCK-19): a schedule statement is classified over the story's events.
         verifier.schedules = schedule_statements.Book(conn, story_id, turn)
         for earlier in answers_from:

@@ -740,6 +740,8 @@ class ClaimSource(Protocol):
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -812,6 +814,8 @@ class RecordsSource:
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -824,6 +828,8 @@ class RecordsSource:
             resolves=resolves,
             giver=giver,
             fiat_known=fiat_known,
+            present=present,
+            channel=channel,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -915,6 +921,8 @@ class CanonSource:
         resolves: str | None = None,
         giver: str | None = None,
         fiat_known: bool = False,
+        present: frozenset[str] | None = None,
+        channel: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -929,6 +937,8 @@ class CanonSource:
             resolves=resolves,
             giver=giver,
             fiat_known=fiat_known,
+            present=present,
+            channel=channel,
         )
 
     async def anchor(
@@ -1686,6 +1696,10 @@ class Verifier:
         self.schedules: schedules.Book | None = None
         """#198: the story's canon scheduled events a ``scheduled`` claim is classified over
         (``None``: no classification, as before #198)."""
+        self.present: frozenset[str] | None = None
+        """#979: the turn's present set (the turn actor added when it is the player's
+        character) the permission check's toward-another-character exception reads (``None``:
+        only the player's character counts as present)."""
 
     async def verify(
         self,
@@ -1779,7 +1793,14 @@ class Verifier:
             result = await self._hidden(result, claim, holder, position, mover)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+                result,
+                claim,
+                asserter,
+                at,
+                protected=protected,
+                resolves=resolves,
+                giver=giver,
+                channel=where.channel,
             )
         elif (
             asserter is not None
@@ -1791,7 +1812,14 @@ class Verifier:
             # is not the pinned one is unpermitted (``denied:external_value``) as well as
             # contradicted; a character's first-person claim (``believer``) is its belief's.
             denied = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+                result,
+                claim,
+                asserter,
+                at,
+                protected=protected,
+                resolves=resolves,
+                giver=giver,
+                channel=where.channel,
             )
             if (
                 denied.denied is not None
@@ -2180,6 +2208,7 @@ class Verifier:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        channel: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
             claim,
@@ -2188,6 +2217,8 @@ class Verifier:
             protected=protected,
             resolves=resolves,
             giver=giver,
+            present=self.present,
+            channel=channel,
         )
         if (
             isinstance(found, Denied)
@@ -2211,6 +2242,8 @@ class Verifier:
                 resolves=resolves,
                 giver=giver,
                 fiat_known=True,
+                present=self.present,
+                channel=channel,
             )
         anchor = None
         if isinstance(found, Permitted):
@@ -2252,7 +2285,8 @@ class Verifier:
         ``novel``) is a ``clock_anchor`` commitment (``anchors_clock``, ``visibility =
         engine``); with it off, ``time_is`` canonizes as in M4. #200: so does a character's
         sincere, belief-consistent time statement from ``exact`` awareness (``_anchors``); a
-        guess never does."""
+        guess never does. #979: nor a claim permitted as ``action_texture`` (an action toward
+        another character, texture only)."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -2287,6 +2321,8 @@ class Verifier:
                     continue  # #191: an owner's value (a State's) is never a fact
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
+            if permitted.basis is Basis.ACTION_TEXTURE:
+                continue  # #979: an action toward another character as texture, never canon
             found.append(
                 CanonRequest(
                     claim=r.claim,

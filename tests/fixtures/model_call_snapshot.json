@@ -499,6 +499,8 @@
   "schema:salience_detection": "502c3d670a604f6327c011b3f8fad146eba33132b5d4c972f5603f2e30861869",
   "schema:time_estimation": "4e65c457f59878c92277b50361ca791f1bdd61c5e806226209e76570dfd92279",
   "source:epistrel.core.states.effects.syntax": "0b29b02ea3b206ad4b305e6bebaae2f62ebb177f01266356062f67972fe450e9",
+  "source:epistrel.orchestrator.compose.compose.polish_params": "e763bdad97fff8f8e12689fd15b1ecc0829427efe7cc98bf796e639aa229d457",
+  "source:epistrel.orchestrator.lite.prompt.model_params": "f3e75f0c7bab94901affbbd049837927e66986b3365a943a7a2a4798715baf52",
   "source:epistrel.orchestrator.models.openai_compatible.provider_headers": "c56b67e7d902e5b19ea42bcf865677a3602c641394beac3bddf7209750639165",
   "source:epistrel.orchestrator.models.openai_compatible.request_body": "0a411c266be90b2e3b873b1dd080df75805bd33c1d08161d9328fefa3ea9bdb6",
   "source:epistrel.orchestrator.models.openai_compatible.sdk_args": "bdec8063ba8382add821107aef5579716d1bea7ac9699d6f605c62703bc235cd",
@@ -507,7 +509,8 @@
   "source:epistrel.orchestrator.models.provider_schema.is_anthropic": "d3c5f1384cf6eee88d26e284e300a98ada5e2ed00c2fa6b4155f418ffb391dec",
   "source:epistrel.orchestrator.models.provider_schema.json_schema_mode": "539edf89c20e1fc0fd9c70e2ace00aa8372122f6ce763199ebbcd578b676d4c7",
   "source:epistrel.orchestrator.models.provider_schema.strict_wire_schema": "ef6e5bdecbeaab4fae2ae4ffd42afea670c148beca454362aaff9d862920f176",
-  "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd"
+  "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd",
+  "source:epistrel.orchestrator.structured.render.render_params": "6e673767c52e1c8812109c366c71463760c8487056ef4a744929cdf7f2369b64"
  },
  "revision": 5
 }

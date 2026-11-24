@@ -17,7 +17,29 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   its history field and its variant names. The response schema is sent on the wire, and the
   input schema shapes what the template renders.
 - **Functions** (``source:<module>.<name>``): ``inspect.getsource`` of the structured-mode
-  choice and the request body builders (``SOURCES``).
+  choice, the request body builders and every ``*_params`` helper that computes a model call's
+  ``ModelParams`` (``SOURCES``; #1003): ``compose.compose.polish_params`` (the polish's token
+  ceiling), ``lite.prompt.model_params`` (Lite generation's) and
+  ``structured.render.render_params`` (a beat render's). A formula edit in one of them, such
+  as dropping ``LENGTH_FACTOR`` from ``polish_params``, changes its hash.
+
+  Found by grepping ``def .*_params`` under ``src/epistrel``. Excluded, because they make no
+  model call's params: ``models.config._params``, ``_image_params``, ``_wire_params`` and
+  ``check_port_params`` (they parse and validate the deployment's model-config rows, which are
+  data); ``models.capability.check_prompt_params`` (a capability probe, not a story call);
+  ``images.jobs``' ``params`` property (an image job's stored request, not ``ModelParams``);
+  and ``core.retrieval``'s ``position_params`` and ``scope_params`` (SQL bind parameters).
+
+  Not covered: params written inline at a call site rather than in a named function. Their
+  literals are invisible here unless they are a module-level plain-data constant (a
+  ``ModelParams`` instance is not plain data, so ``verify.verifier.BUILT_IN_PARAMS``'
+  ``max_tokens=100`` is not hashed). The inline sites found at #1003: ``directives``,
+  ``rewrite.lite``, ``rewrite.apply``, ``rewrite.parse``, ``embeddings.service``,
+  ``verify.extraction`` and ``verify.verifier`` (``BUILT_IN_PARAMS``),
+  ``images.prompt_builder``, ``models.structured`` (the temperature-0 merge),
+  ``structured.render``, ``structured.multi``, ``structured.simultaneous`` and
+  ``structured.pipeline``. The probes in ``models.capability`` and ``models.openai_compatible``
+  are excluded on purpose.
 
 It does not cover behaviour reached only through data, such as a model-config row, a stored
 guardrail policy or a story's settings; those are the deployment's, or in the fingerprint
@@ -25,7 +47,10 @@ already. It over-covers rather than under-covers: a constant in a guarded module
 sends still needs a bump when it changes.
 
 ``uv run python -m tests.model_call_support --write`` rewrites the snapshot. It refuses a
-changed set unless ``MODEL_CALL_REVISION`` is already above the snapshot's revision.
+changed set unless ``MODEL_CALL_REVISION`` is already above the snapshot's revision. Entries that
+are only added, with none changed or removed, are written at the current revision without a
+bump (#1003): widening the guard changes no call. A new constant or function that does change
+a call still needs the bump, which is the author's call; the writer names what it added.
 """
 
 from __future__ import annotations
@@ -92,6 +117,9 @@ SOURCES = (
     "epistrel.orchestrator.models.openai_compatible.sends_thinking",
     "epistrel.orchestrator.models.openai_compatible.sdk_args",
     "epistrel.orchestrator.models.structured.with_headroom",
+    "epistrel.orchestrator.compose.compose.polish_params",
+    "epistrel.orchestrator.lite.prompt.model_params",
+    "epistrel.orchestrator.structured.render.render_params",
     "epistrel.core.states.effects.syntax",
 )
 
@@ -244,7 +272,7 @@ def check_snapshot(path: Path = SNAPSHOT) -> None:
         else "`uv run python -m tests.model_call_support --write`"
     )
     assert differs == {"added": [], "removed": [], "changed": []}, (
-        f"what a model call sends changed ({how})"
+        f"what a model call sends changed ({how}): {differs}"
     )
     assert snapshot["revision"] == MODEL_CALL_REVISION, (
         f"MODEL_CALL_REVISION is {MODEL_CALL_REVISION} but the snapshot pins "
@@ -256,10 +284,15 @@ def write_snapshot(path: Path = SNAPSHOT) -> str:
     """Rewrite the snapshot at the current revision. Refused when the guarded set changed and
     the revision did not move."""
     current = entries()
+    added: list[str] = []
     if path.is_file():
         old = read_snapshot(path)
-        if old["entries"] != current and old["revision"] >= MODEL_CALL_REVISION:
-            changed = sorted(set(old["entries"].items()) ^ set(current.items()))
+        pinned: dict[str, str] = old["entries"]
+        if old["revision"] >= MODEL_CALL_REVISION:
+            added = sorted(set(current) - set(pinned))
+        kept = {key: current[key] for key in pinned if key in current}
+        if kept != pinned and old["revision"] >= MODEL_CALL_REVISION:
+            changed = sorted(set(pinned.items()) ^ set(kept.items()))
             raise SystemExit(
                 f"the guarded set changed ({len(changed)} entries differ) but "
                 f"MODEL_CALL_REVISION is still {MODEL_CALL_REVISION}: bump it first"
@@ -267,7 +300,8 @@ def write_snapshot(path: Path = SNAPSHOT) -> str:
     document = {"revision": MODEL_CALL_REVISION, "entries": current}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n", "utf-8")
-    return f"wrote {len(current)} entries at revision {MODEL_CALL_REVISION} to {path}"
+    note = f" (added without a bump: {', '.join(added)})" if added else ""
+    return f"wrote {len(current)} entries at revision {MODEL_CALL_REVISION} to {path}{note}"
 
 
 if __name__ == "__main__":

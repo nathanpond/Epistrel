@@ -240,7 +240,9 @@ when its Standard, Full and Max records match the presets' **current** fingerpri
 recomputed from the record's own models. Older records stay committed as history and read
 `uncertified (preset changed since certification …)` in INDEX. The fingerprint also covers the
 engine's model-call revision (`MODEL_CALL_REVISION` in `core/profiles/fingerprint.py`). A change
-to a Python-held prompt string, token cap, schema or the structured-mode choice must bump it.
+to a Python-held prompt string, token cap, schema or the structured-mode choice must bump it,
+and so must an edit to a function that computes a call's params, such as `polish_params`' token
+ceiling (#1003; the guarded functions are listed in `tests/model_call_support.py`).
 `tests/test_model_call_revision.py` fails until the revision and its snapshot move together:
 bump the constant, then run `uv run python -m tests.model_call_support --write`. The check is a
 release gate. `release.yml` runs `tests/integration/test_c_18_m11.py` with

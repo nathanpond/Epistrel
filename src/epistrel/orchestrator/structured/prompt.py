@@ -55,11 +55,20 @@ never dropped). The
 belief state and the private memories sit with the definition and the pins (U-31's top tier):
 they are never dropped before a retrieved item (they are bounded at the source,
 ``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
+
+**Cited lines** (#994, FR-TURN-8): the prompt shows no record ids, so a ``think`` that reasons
+toward a belief cites the text entries it rests on, copied. ``cite_lines`` maps each line the
+character's prompt showed under ``## What you remember``, ``## Retrieved`` and ``## Canon``
+after the cap (``normalize_cite``'d) to the records behind it (``event:<id>``,
+``<item kind>:<id>``, ``fact:<id>``), from the context's in-memory ids; a line the cap dropped
+is never in it. The commit resolves a copied cite through it (``turn_edges``). Nothing of it is
+persisted or traced.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from epistrel.core.epistemic.context import CharacterContext
@@ -280,6 +289,80 @@ def character_inputs(
     )
 
 
+_SPACES = re.compile(r"\s+")
+_QUOTES = (('"', '"'), ("'", "'"), ("\u201c", "\u201d"), ("\u2018", "\u2019"))
+FACT_RECORD = "fact"
+"""The record kind of a ``## Canon`` line in ``cite_lines`` (``fact:<id>``)."""
+
+
+def normalize_cite(text: str) -> str:
+    """#994: a cited text entry or a prompt line as ``cite_lines`` compares them: runs of
+    whitespace collapsed to one space, stripped, one leading ``- `` list marker dropped, then
+    one pair of surrounding quotes. Nothing else: case and punctuation are kept."""
+    found = _SPACES.sub(" ", text).strip()
+    if found.startswith("- "):
+        found = found[2:].strip()
+    for left, right in _QUOTES:
+        if len(found) >= 2 and found.startswith(left) and found.endswith(right):
+            found = found[1:-1].strip()
+            break
+    return found
+
+
+def cite_lines(context: CharacterContext, inputs: GenerationInputs) -> dict[str, frozenset[str]]:
+    """#994: the lines ``inputs`` (``character_inputs(context, …)``) showed under
+    ``## What you remember``, ``## Retrieved`` and ``## Canon``, normalised, each to the
+    records behind it (``event:<id>``, ``<item kind>:<id>``, ``fact:<id>``). ``capped`` keeps a
+    prefix of the retrieved and canon lines and a suffix of the working memory, so the shown
+    lines' ids are the same slice of the context's; a section whose lines came without ids, or
+    whose shown lines are not that slice, adds nothing. A line shown for two records maps to
+    both (an ambiguous cite resolves to none); the same record twice counts once."""
+    found: dict[str, set[str]] = {}
+
+    def add(lines: Sequence[str], keys: Sequence[str]) -> None:
+        for line, key in zip(lines, keys, strict=True):
+            normal = normalize_cite(line)
+            if normal:
+                found.setdefault(normal, set()).add(key)
+
+    working = list(inputs.working_memory)
+    kept = len(context.working_memory) - len(working)
+    if len(context.working_ids) == len(context.working_memory) and (
+        list(context.working_memory[kept:]) == working
+    ):
+        add(working, [f"event:{i}" for i in context.working_ids[kept:]])
+    retrieved = list(inputs.retrieved_memories)
+    if len(context.retrieved_ids) == len(context.retrieved) and (
+        list(context.retrieved[: len(retrieved)]) == retrieved
+    ):
+        add(retrieved, context.retrieved_ids[: len(retrieved)])
+    canon = list(inputs.canon_facts)
+    if len(context.canon_ids) == len(context.canon) and (
+        list(context.canon[: len(canon)]) == canon
+    ):
+        add(canon, [f"{FACT_RECORD}:{i}" for i in context.canon_ids[: len(canon)]])
+    return {line: frozenset(keys) for line, keys in found.items()}
+
+
+def resolve_cites(cites: Sequence[str], lines: Mapping[str, frozenset[str]]) -> list[str]:
+    """#994: the fact ids a ``think``'s ``cites`` name, given the render's ``cite_lines``. A
+    cite that copies a shown line resolves to that line's record when it is exactly one and a
+    canon fact; a line shown for a memory, or for more than one record, resolves to nothing.
+    A cite matching no shown line passes through as given (a real record id keeps its
+    acceptance; ``edges.fact_edges`` drops any that is not a fact id): nothing is invented."""
+    out: list[str] = []
+    for cite in cites:
+        records = lines.get(normalize_cite(cite))
+        if records is None:
+            out.append(cite)
+            continue
+        if len(records) == 1:
+            kind, _, record = next(iter(records)).partition(":")
+            if kind == FACT_RECORD:
+                out.append(record)
+    return list(dict.fromkeys(out))
+
+
 def narrator_inputs(
     sections: RenderSections,
     actor: CastEntry,
@@ -349,6 +432,7 @@ def working_line(kind: str, name: str | None, text: str, *, own: bool) -> str:
 
 
 __all__ = [
+    "FACT_RECORD",
     "KNOWLEDGE_STEERING",
     "PLAYER",
     "RESOLUTION_STEERING",
@@ -357,7 +441,10 @@ __all__ = [
     "age_inputs",
     "capped",
     "character_inputs",
+    "cite_lines",
     "narrator_inputs",
+    "normalize_cite",
+    "resolve_cites",
     "tokens",
     "working_line",
 ]

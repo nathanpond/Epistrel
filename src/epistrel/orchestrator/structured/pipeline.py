@@ -5636,6 +5636,8 @@ async def play(
                     interjections=turn_roles is not None and turn_roles.interjections,
                     player_requests=split.requests_for(read_k.character.id),
                 )
+                # #994: the lines this prompt showed, for the commit's cite resolution.
+                knowing = replace(knowing, cite_lines=prompts.cite_lines(knowing, inputs))
                 char_render, n = await render_beats(
                     models,
                     inputs,
@@ -7044,6 +7046,7 @@ async def play(
             ],
             depended=depended_pairs,
             mentions=await turn_edges.beat_mentions(conn, op.operation_id),
+            cite_lines={c.character_id: c.cite_lines for c in rendered.contexts},
         )
         if outcome_step:
             # #212: the intent's turn report stands; the completion adds its own section.

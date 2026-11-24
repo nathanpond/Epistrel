@@ -46,6 +46,11 @@ Its sections:
   clock on, so is every fact on a clock predicate (``time_is``, ``time_of_day_band``,
   ``elapsed_since``, ``scheduled_status``, ``clock_anchor``, ``current_time``) and every canon
   ``scheduled`` fact the character does not hold (``time_belief.hidden_canon``).
+- **Record ids beside the lines** (#994, FR-TURN-8): the context keeps, in memory only, the id
+  of the record behind each working-memory, retrieved and canon line (``working_ids``,
+  ``retrieved_ids``, ``canon_ids``, in line order). The prompt never shows them; the render's
+  commit uses them, through ``orchestrator.structured.prompt.cite_lines``, to resolve a
+  ``think`` that copies a shown line to the record it showed. Never persisted or traced.
 - **Your sense of time** (#200, FR-CLOCK-11; the story runs the clock): the character's time
   belief as text (``core.world_clock.time_belief``: derived from the story's
   ``time_awareness`` unless an observation, testimony or a gap overrides it), the time it
@@ -208,6 +213,20 @@ class CharacterContext:
     perceived them (a ``sequential`` turn; never another character's ``think`` or a ``latent``)."""
     retrieved: tuple[str, ...] = ()
     canon: tuple[str, ...] = ()
+    working_ids: tuple[str, ...] = field(default=(), compare=False, repr=False)
+    """#994: each ``working_memory`` line's beat event id, in line order."""
+    retrieved_ids: tuple[str, ...] = field(default=(), compare=False, repr=False)
+    """#994: each ``retrieved`` line's record as ``<item kind>:<id>``, in line order (empty
+    when the lines were given without them)."""
+    canon_ids: tuple[str, ...] = field(default=(), compare=False, repr=False)
+    """#994: each ``canon`` line's fact id, in line order (empty when the lines were given
+    without them)."""
+    cite_lines: Mapping[str, frozenset[str]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    """#994: the lines the render's prompt showed after the cap, normalised, to the records
+    behind them (``prompt.cite_lines``; set by the pipeline once the prompt is assembled). In
+    memory only: content, never persisted or traced (invariant 3)."""
     scene: str = ""
     own_age: str = ""
     """"You are N." (per-character partitions only)."""
@@ -364,6 +383,8 @@ def compose(
     just_now: ViewpointFiltered[WorkingBeat] | None = None,
     retrieved: ViewpointFiltered[str] | None = None,
     canon: ViewpointFiltered[str] | None = None,
+    retrieved_ids: Sequence[str] = (),
+    canon_ids: Sequence[str] = (),
     beliefs: Sequence[str] = (),
     nested_lines: Sequence[str] = (),
     speech_lines: Sequence[str] = (),
@@ -395,6 +416,9 @@ def compose(
         just_now=tuple(memory_line(b, names, character_id) for b in (just_now or ())),
         retrieved=tuple(retrieved or ()),
         canon=tuple(canon or ()),
+        working_ids=tuple(b.event_id for b in working),
+        retrieved_ids=tuple(retrieved_ids),
+        canon_ids=tuple(canon_ids),
         scene=scene,
         own_age=own_age,
         private_memories=tuple(private_memories[:PRIVATE_MAX]),
@@ -854,12 +878,16 @@ async def build_context(
     believed = await time_belief(conn, story_id, character_id, Position(state.turn))
     retrieved: list[str] = []
     canon: list[str] = []
+    retrieved_ids: list[str] = []
+    canon_ids: list[str] = []
     for item in retrieval.context.items:
         if item.kind == "canon":
             if item.item_id not in hidden:
                 canon.append(item.text)
+                canon_ids.append(str(item.item_id))
         else:
             retrieved.append(item.text)
+            retrieved_ids.append(f"{item.kind}:{item.item_id}")
     beliefs: list[str] = []
     nested_lines: list[str] = []
     speech_lines: list[str] = []
@@ -909,6 +937,8 @@ async def build_context(
         just_now=_seal(staged, viewpoint),
         retrieved=_seal(retrieved, viewpoint),
         canon=_seal(canon, viewpoint),
+        retrieved_ids=retrieved_ids,
+        canon_ids=canon_ids,
         beliefs=beliefs,
         nested_lines=nested_lines,
         speech_lines=speech_lines,

@@ -15837,3 +15837,71 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Multi-arch publish:** passed. `ghcr.io/nathanpond/epistrel` tags `0.4.1`, `0.4`, `0` and `latest` all point to `sha256:0656500516262664cf1c446c215ef498ae060aeaf368182167d4c756157f3c7f` (amd64 and arm64).
   - **GitHub release:** the workflow created it. A human summary went on top: the #1009 fix, uncertified under ADR-208, and the same known issues as v0.4.0.
 - **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.1
+
+## /n8-plan M12 — 2026-11-23
+
+- **Decision:** M12 is planned under two new epics: #1015 "Real-use fixes and consumer requests" and #1016 "M11 deferred test gaps". There are 24 stories, covering 25 in-scope items, and 13 outcomes.
+  - **New stories:** #1017 (consumer-written subject prompt), #1018 (`ci / evals` timeout raised to 60 minutes; related to #732), #1019 (no beats from off-scene characters; a bare name is not a line) and #1020 (reference images for subject consistency).
+  - **Existing issues** gained an "M12 plan" section in their body: #1012, #958, #979, #978, #996, #941, #947, #994, #988, #951, #1011, #1013, #1014, #998, #999, #1000, #1001, #1003, #1004 and #1005.
+  - #998–#1005 moved from v2's #935 to #1016.
+  - #979 is retitled to cover any present character.
+  - The M12 goal is amended to include consumer requests from real use.
+  **Why:** the owner approved the slate at the gate ("go").
+  **Issue:** #1015, #1016
+- **Decision (owner, triage and #1012):**
+  - **#1012:** the consumer may write the whole subject-image prompt, and minors are not refused for age; they are judged by the declared true age (#1012 split into #1012 and #1017).
+  - **Character consistency:** this means the same person across new scenes, so it is done with reference images, not a seed (#1020).
+  - #1013 and #1014 join M12.
+  - #960 moves to v2.
+  - **#1002:** the SQLSTATE label is ratified. #970's acceptance criterion 3 is amended and #1002 is closed.
+  **Issue:** #1012, #1017, #1020, #1013, #1014, #960, #1002, #970
+- **Decision (owner, round one):**
+  - #979 option (a).
+  - #978 option (a).
+  - #996: correct once, then drop.
+  - #941: warm up at start-up, after re-measuring, within a $1 cap.
+  - #994 option (b).
+  - #958 confirmed.
+  - **Live-run caps:** $2 for images and $5 for a sampled E-06 run.
+  - #1011 joins M12.
+  **Issue:** #979, #978, #996, #941, #994, #958, #1011
+- **Decision (owner, round two, "all recs good"):**
+  - **Unsupported ratio:** the image is generated anyway, with the requested and actual ratio recorded.
+  - **Live image check below 9 of 10:** tune once, then report and ship.
+  - **Consumer prompt:** nothing is appended, and `description` stays required.
+  - Ingested narration also writes memories, with no backfill.
+  - #978 passes silently.
+  - #979 allows the character's own position beside the player's character.
+  - **#941 off switch:** `EPISTREL_MODEL_WARMUP=0`.
+  - **New issue:** the evals timeout (#1018).
+  **Issue:** #1012, #1017, #958, #978, #979, #941, #1018
+- **Decision (owner, #1013/#1014 triage):**
+  - A beat that fails repair is dropped when its speaker has a real line, and the fallback is used at most once per speaker.
+  - **Repair budget:** one per character generation, tracked by metrics. The owner: "if it's going to constantly require repairing one per character, then we might as well just get three separate replies".
+  - **Copied line:** regenerated once, otherwise dropped.
+  - #979 is widened to characters present at the same place.
+  - `degradation_details` gives the cause for each beat.
+  - **Off-scene reactions:** the owner said characters "definitely were not there" (#1019).
+  **Issue:** #1014, #1013, #979, #1019
+- **Decision (owner, round three):**
+  - **Free relations:** a verb allowlist accepts them as texture, never canon (option (a)).
+  - **An off-scene character named in `render_character_ids`:** still renders, and is reported as not present.
+  - **The present set:** anchored on the turn actor's place. The whole cast counts only in a story with no placements.
+  - **References:** only the same principal's images, and only from one subject. The new image keeps that subject's id.
+  **Issue:** #979, #1019, #1020
+- **Decision (planner, shown at the gate):**
+  - #1011 stays blocked by the first nine stories only (#1012, #1017, #958, #979, #978, #996, #941, #947, #994), so it lands before the 2026-12-07 expiry.
+  - **#1014:** a turn-level final pass removes any fallback for a speaker who has a real line anywhere in the turn.
+  - **#1013:** `simultaneous` copies are judged in request order.
+  - **#979:** the speech verbs are on the allowlist, and the player's character qualifies when it is the turn actor.
+  - **`MODEL_CALL_REVISION`:** one bump on the milestone branch, carried by whichever story lands first.
+  - **Dependency order:** #1014 → #1019 → #979 → #978; #1014 → #1013; #1012 → #1017 → #1020.
+  **Issue:** #1011, #1014, #1013, #979
+- **Decision (process):** the executor simulation ran twice on every story. The new and widened stories ran twice more after round three.
+  - The simulation found three wrong premises, and the plan was changed for each:
+    - non-last primaries already had their own repair budget;
+    - E-06's claims toward the player's character reach `permission()` as invented relations, not core predicates;
+    - subject assets already record their true age.
+  - The coverage check's last run found 15 gaps, all fixed with its minimal fixes and not re-run.
+  - The Audit milestone (M13) gains M12 emphases: consumer prompts and references as safety surfaces, the widening of permission as a place where things could leak, and repair drops and per-beat causes filtered by viewpoint.
+  **Issue:** M12, M13

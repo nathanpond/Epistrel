@@ -706,7 +706,8 @@ judges.
 
 `e03.judge_agreement` counts each labelled **pair** (two a window: the entailed reflection and
 the non-entailed one). `nfr_qual_3.faithfulness` counts only when that agreement's mean across
-seeds is at least 75%; below it the row is report only, with a note quoting the agreement.
+seeds is at least 75% on at least 200 pairs in total across seeds (ADR-209); below either the
+row is report only, with a note quoting the agreement and any shortfall of pairs.
 
 `evals rejudge --suite e03 --from-journal <journal>` judges a results journal's E-03
 reflections and labelled pairs again with the run's `entailment` judge, offline (judge calls

@@ -1297,18 +1297,29 @@ def journal_scope(suite: Suite, config: AdapterConfig, fingerprint_value: str | 
 
 
 def trusted(metrics: list[MetricResult], by: str, threshold: float) -> list[MetricResult]:
-    """``metrics`` under ``Suite.trusted_by`` (#747, ADR-204): unchanged when ``by``'s mean
-    across seeds is at least ``threshold``; else every floored row (``by`` aside) is
-    ``report_only``, with a note quoting the agreement."""
+    """``metrics`` under ``Suite.trusted_by`` (#747, ADR-204, ADR-209): unchanged when ``by``'s
+    mean across seeds is at least ``threshold`` on at least ``judging.CALIBRATION_MIN_PAIRS``
+    labelled pairs in total across seeds (its ``sample_size`` times its ``seed_count``); else
+    every floored row (``by`` aside) is ``report_only``, with a note quoting the agreement and
+    any shortfall of pairs. A missing or empty ``by`` row is untrusted."""
     found = next((m for m in metrics if m.id == by), None)
     agreement = found.mean if found is not None else None
-    if agreement is not None and agreement >= threshold:
+    pairs = found.sample_size * found.seed_count if found is not None else 0
+    enough = pairs >= judges.CALIBRATION_MIN_PAIRS
+    if agreement is not None and agreement >= threshold and enough:
         return metrics
-    shown = "was not measured" if agreement is None else f"is {agreement:.2%}"
-    note = (
-        f"report only: the judge's agreement with the labelled pairs (`{by}`) {shown}, "
-        f"below {threshold:.0%} (ADR-204)"
-    )
+    if agreement is None:
+        reason = f"(`{by}`) was not measured"
+    elif agreement < threshold:
+        reason = f"(`{by}`) is {agreement:.2%}, below {threshold:.0%}"
+    else:
+        reason = f"(`{by}`) is {agreement:.2%}"
+    if agreement is not None and not enough:
+        reason += (
+            f", on {pairs} pairs, fewer than the {judges.CALIBRATION_MIN_PAIRS} it needs "
+            f"({judges.CALIBRATION_MIN_PAIRS - pairs} short)"
+        )
+    note = f"report only: the judge's agreement with the labelled pairs {reason} (ADR-204)"
     return [
         m.model_copy(update={"verdict": Verdict.report_only, "note": note})
         if m.id != by and m.rule is not Rule.informational

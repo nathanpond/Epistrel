@@ -26,6 +26,7 @@ from epistrel.evals.report import Report
 from epistrel.evals.runner import AdapterConfig, Progress, run_fingerprint, run_suites
 from epistrel.evals.suites import CaseModel
 from epistrel.evals.trace import CallTrace, TraceFile, structured_mode, trace_path
+from epistrel.orchestrator.models.adapter import Message
 from epistrel.orchestrator.models.call_trace import CALL_TRACE, Exchange
 from epistrel.tools import model_matrix
 from tests.auth_support import auth_settings
@@ -397,6 +398,65 @@ def test_records_carry_the_mode_the_judge_flag_and_capped_text(tmp_path: Path) -
     assert second["complete"] is True
     assert second["error"]["status"] == 400
     assert second["raised"] == "X"
+
+
+class _Sink:
+    """A trace sink that keeps what it is handed."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, Any], list[Exchange]]] = []
+
+    def record(self, call: dict[str, Any], exchanges: list[Exchange]) -> None:
+        self.calls.append((call, list(exchanges)))
+
+
+EMBEDDED_TEXT = "Wren hid the brass key under the third stair."
+"""A text only the embedding call carries: the trace must never hold it (#737)."""
+
+
+@pytest.mark.integration
+async def test_an_embedding_under_a_trace_sink_is_not_traced(pg_url: str) -> None:
+    """#1004 (#737: "embedding calls are not traced"): under a trace sink, an ``/embeddings``
+    call through the engine's embedding service (the ``openai`` SDK adapter against a local
+    mock) hands the sink nothing, and no record holds its text or names the ``embedding``
+    purpose.
+
+    Complement asserted: a chat call in the same context is traced (one record, its request as
+    sent), and the mock saw the embedding request, so it was made."""
+    from tests.embedding_support import embedding_db
+    from tests.model_support import OPERATOR_HEADERS, put_key
+
+    sink = _Sink()
+    async with embedding_db(pg_url, model_adapter="openai", embedding_adapter="openai") as s:
+        with mock_openai(models=(MODEL,), embedding_dimension=8) as server:
+            for purpose, model in (("default", MODEL), ("embedding", "mock-embed")):
+                await put_key(s.client, purpose, "k-trace")
+                written = await s.client.put(
+                    f"/admin/model-config/{purpose}",
+                    json={"base_url": f"{server.root}/v1", "model": model},
+                    headers=OPERATOR_HEADERS,
+                )
+                assert written.status_code == 200, written.text
+            token = CALL_TRACE.set(sink)
+            try:
+                embedded = await s.lib.models.embeddings.embed([EMBEDDED_TEXT])
+                answered = await s.lib.models.complete(
+                    "generation", (Message(role="user", content="Say hello."),)
+                )
+            finally:
+                CALL_TRACE.reset(token)
+            sent = [r.body for r in server.requests if r.path.endswith("/embeddings")]
+    assert len(embedded.vectors) == 1
+    assert any(EMBEDDED_TEXT in json.dumps(body) for body in sent)
+    assert answered.text
+    assert len(sink.calls) == 1, [call for call, _ in sink.calls]
+    ((call, exchanges),) = sink.calls
+    assert call["purpose"] == "generation"
+    assert len(exchanges) == 1
+    assert exchanges[0].body["messages"] == [{"role": "user", "content": "Say hello."}]
+    traced = json.dumps([[c, [e.body for e in ex]] for c, ex in sink.calls], default=str)
+    assert EMBEDDED_TEXT not in traced
+    assert '"embedding"' not in traced
 
 
 def test_a_deployed_engine_has_no_trace_setting() -> None:

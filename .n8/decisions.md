@@ -15970,3 +15970,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#1001, AC4, orchestrator):** the template rewording moved the template hashes and all four preset fingerprints (`docs/evals/INDEX.md` regenerated; Full `38ccaf185a56` → `1f802a7fd14f`). It needs no `MODEL_CALL_REVISION` bump of its own, because templates are fingerprint inputs and ADR-200 keeps them out of the revision guard. AC4's "`MODEL_CALL_REVISION` … move" is met by the branch's one bump, which a later story carries (#1014 changes what a turn sends). AC4 stays unchecked until that bump lands, then it is checked with a pointer to the commit.
   **Why:** a bump for a template-only change would be redundant. The milestone ships with the bump either way.
   **Issue:** #1001
+- **Decision (#1004, #747, Discretion):** `runner.trusted` counts the `trusted_by` row's pairs as `sample_size × seed_count` (the smallest seed's count times the seeds, so it never overstates), inclusive at `judging.CALIBRATION_MIN_PAIRS` (200). A missing row or one measured on no pairs is untrusted; the note keeps the agreement wording and adds "on N pairs, fewer than the 200 it needs (K short)". Documented as ADR-209 (amends ADR-204, which had applied the 75% and left the pair count out), with NFR-QUAL-3, docs/04's E-03 entry, `docs/evals/README.md`, the e03 module docstring and its reading notes amended.
+  **Why:** #747's AC says "≥ 75% on ≥ 200 pairs"; the epic allows this one runtime change. ADR-204's text stated the rule without the minimum, so the change is an amendment, not a correction.
+  **Issue:** #1004
+- **Decision (#1004, #747, Rule 3):** `test_e_03`'s stub sample rises from 30 to 50 windows, so its two seeds give 200 labelled pairs and its trusted run keeps its verdict under the new minimum (at 30 it had 120 and would be report only).
+  **Why:** the existing test's passed verdict would otherwise break on the runtime change. CI's stub certify (`--sample 100 --seeds 2`, 400 pairs) still gates.
+  **Issue:** #1004
+- **Decision (#1004, #602, Discretion):** the route test freezes the planner's clock inside `check_deadline` alone (a wrapper sets `planner.time.monotonic` to the turn's `started`), so a deadline exactly at the estimate is exact to the second; estimates of 1 s per call make the minimum a whole number. The claim-before-pre-check order is left as is and noted in the test's docstring.
+  **Why:** a frozen global clock would stall the turn's own budget; the plan says to patch the clock.
+  **Issue:** #1004
+- **Decision (#1004, #754, Discretion):** `SLICE_MAX` is lowered to Ann's stored count less one after two stored beliefs are written for her, and the partition read runs inside the batched pass through a new `probe` hook on the test file's `_resolved`.
+  **Why:** the holder must hold stored rows and pending ones, so the merge is exercised on both.
+  **Issue:** #1004
+- **Decision (#1004, #748, Discretion):** the salience route is injected through the run's dials (`run(..., dials=...)`, the `run --dial` path, the scratch stories' overrides) rather than a monkeypatch of `routes_of`. The test also asserts Max alone gives no route, which is why the old half was vacuous.
+  **Why:** the dials are the real configuration path, so the test still pins setup's read of the effective configuration.
+  **Issue:** #1004
+- **Decision (#1004, #735/#737, Discretion):** #735's test opens the exchange list (`call_trace.EXCHANGES`) that `ModelAccessLayer.send` hands its sink, over the existing mock transport (the thinking fallback needs an api.anthropic.com base URL). #737's test is an integration test on `embedding_db` with the `openai` model and embedding adapters against `mock_openai`, under a recording `CALL_TRACE` sink.
+  **Why:** #735 needs the api.anthropic.com host, which `mock_openai` cannot be; #737 needs the real embedding service and `send`.
+  **Issue:** #1004
+- **Decision (#1004):** red-first, one mutant each (source edited, run, reverted): #747 pre-fix `trusted` (199 pairs: `assert <Verdict.passed> is <Verdict.report_only>`); #602 `>=` → `>` (`2 failed`, the route test `assert 422 == 200`); #754 `_merged` returns `stored` (pending rows missing from the read); #748 setup's route `None` (`[('recall', {})]`); #937 both `repair_ages` calls → pass-through (`never reached pipeline.repair_ages`) and both `compose_turn` calls → `None` (the case errors); #735 the refused request removed from the exchanges (`assert 1 == 2`); #737 the embedding service records to the sink (`assert 2 == 1`). Each passes on the clean tree.
+  **Why:** the epic's AC2.
+  **Issue:** #1004
+- **Decision (#1004, #747, Rule 3):** two existing tests asserted E-03's faithfulness verdict on samples below the new 200-pair minimum and now expect `report_only`: `tests/evals/test_judge_for.py::test_e03_entailment_goes_to_its_own_judge` (4 windows × 2 seeds = 16 pairs; it also asserts the note names "16 pairs") and `tests/evals/test_harness.py::test_harness_stub_run` (12 windows × 2 seeds = 48 pairs; e03's expected suite verdict is `report_only`). Neither test is about the verdict (one pins judge routing, the other runs every suite end to end), so raising their samples would only add CI time.
+  **Why:** the runtime change makes these verdicts report only by design (ADR-209's consequence for sampled runs).
+  **Issue:** #1004

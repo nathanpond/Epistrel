@@ -50,7 +50,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190, 192, 199, 206 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204, 205 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185, 194, 195, 196, 197, 198, 200, 201, 202, 203, 204, 205, 209 |
 | NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176, 205 |
@@ -267,11 +267,12 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 201 | Structured calls get token headroom, and calls to api.anthropic.com disable thinking | Current | — |
 | 202 | E-06's repeatability counts only on a host that honours temperature 0 | Current | — |
 | 203 | E-06 judges structure on the model's render, and a released fallback is reported apart | Current | — |
-| 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Current | — |
+| 204 | E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own | Partly superseded | — |
 | 205 | Q-04 counts a disclosure only when the asked character's context held the fact | Current | — |
 | 206 | A structured turn's deadline is checked up front against per-model latency estimates | Current | — |
 | 207 | A real-use fixes milestone follows performance tuning: real-use fixes are M12 and the audit M13 | Current | — |
 | 208 | An owner waiver lets one named version release without current certification records | Current | — |
+| 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
 
 ---
 
@@ -2291,11 +2292,11 @@ Tuning and its exit certification come after every milestone that may change a p
 - Tests: `tests/eval/test_e_06.py`, `test_e_06__m11_render_structure` (a replaced say beat and a dropped think beat read as rendered; complement: an empty original or a think-only render is a miss) and `test_e_06__m11_fallback_conforms` (a valid render under a fallback conforms and is counted in `e06.released_fallback`).
 
 ### ADR-204 — E-03's faithfulness counts only when its judge agrees with the labelled pairs, and entailment may have a judge of its own
-**Status:** Accepted.
+**Status:** Accepted. **Amended by** ADR-209 (the agreement also needs at least 200 labelled pairs in total across seeds).
 **Context:** #747. E-03 judges each reflection against its window's episodes with the `entailment` purpose. On a single-model run that judge is the model under test. In the #818 baseline on `claude-haiku-5-5` (2026-11-19/21), `nfr_qual_3.faithfulness` passed on Standard and Max and failed on Full (98.21% ± 1.55%), while the same judge agreed with only 61.78% of E-03's labelled windows on Full (`e03.judge_agreement`). A verdict from a judge that mis-calls more than a third of the labelled windows says little about the consolidation. The owner's round-two decision on #747 (R4, 2026-11-16) is that the verdict counts only when the judge is trustworthy, and that certification may use a separate, stronger judge for `entailment` (`claude-sonnet-5-5`, cost seen and accepted).
 **Decision:** Applied by #747 (NFR-QUAL-3, NFR-QUAL-8). Amends NFR-QUAL-3 and docs/04 §8's E-03 entry.
 - `e03.judge_agreement` is counted per labelled **pair**: a window's labelled entailed reflection judged entailed is one good pair, and its labelled non-entailed reflection judged not entailed is another (two pairs a window, 300 a seed on the 150-window set). Before this ADR it was one observation a window, true only when both matched.
-- `nfr_qual_3.faithfulness`'s verdict counts only when the mean across seeds of `e03.judge_agreement` is at least 75% (`judging.CALIBRATION_FLOOR`, the quality judge's calibration floor). Below it, or when it was not measured, the row is `report_only` with a note quoting the agreement (`Suite.trusted_by`, applied by `runner.trusted`). This holds for self-judged runs too. The labelled pairs are the `entailment` judge's calibration: no separate calibration set is needed.
+- `nfr_qual_3.faithfulness`'s verdict counts only when the mean across seeds of `e03.judge_agreement` is at least 75% (`judging.CALIBRATION_FLOOR`, the quality judge's calibration floor) *[superseded by ADR-209: and only on at least 200 labelled pairs in total across seeds]*. Below it, or when it was not measured, the row is `report_only` with a note quoting the agreement (`Suite.trusted_by`, applied by `runner.trusted`). This holds for self-judged runs too. The labelled pairs are the `entailment` judge's calibration: no separate calibration set is needed.
 - `--judge-model-for P=MODEL`, `--judge-base-url-for P=URL` and `--judge-api-key-env-for P=ENVVAR` (on `run`, `certify`, `calibrate-judge` and the new `rejudge`) give one judge purpose (`entailment` or `quality_judge`) a judge of its own, over `--judge-model` for that purpose. Keys come from the environment only. Each distinct judge endpoint is probed once.
 - A judge for `entailment` does not enter the configuration fingerprint. The report names it (`Report.judges` and a "Judge for `entailment`" line, and E-03's suite Judge), the certification record names it (`CertificationRecord.judges`, record only, `schema_version` 3), and the results journal files E-03's lines under it (`runner.journal_scope`), so a resumed run never reuses another judge's verdicts. A `quality_judge` judge still enters the fingerprint as before (#475).
 - `evals rejudge --suite e03 --from-journal <journal>` judges a journal's reflections and the labelled pairs again with the candidate judge, offline (judge calls only), and names each failing window's cause (`evals.rejudge`).
@@ -2392,6 +2393,20 @@ Tuning and its exit certification come after every milestone that may change a p
 - A waived version's responses still report `uncertified`. The waiver changes what may be tagged, not what the engine claims.
 - Tests: `tests/evals/test_certify_presets.py::test_an_owner_waiver_lets_only_its_own_version_release_uncertified` (another version, or a waiver missing a preset, still fails) and `::test_committed_waivers_are_well_formed`. The complement `test_the_current_fingerprint_guard_refuses_stale_records` runs with no waivers.
 - docs/04 C-18's M11 part and `docs/evals/README.md` name the waiver route.
+
+
+---
+
+### ADR-209 — E-03's judge is trusted only on at least 200 labelled pairs
+**Status:** Accepted. Amends ADR-204 (when the judge is trusted).
+**Context:** #1004 (found by `/n8-verify M11` on #747). #747's acceptance criteria say the `entailment` judge is trusted at "≥ 75% on ≥ 200 pairs", the same minimum the quality judge's calibration has (`judging.CALIBRATION_MIN_PAIRS`). ADR-204 and `runner.trusted` applied the 75% and left the pair count out, so a run of a few windows could give faithfulness a verdict on a handful of pairs.
+**Decision:** Applied by #1004 (NFR-QUAL-3). Amends NFR-QUAL-3 and docs/04 §8's E-03 entry.
+- `runner.trusted` keeps a suite's floored rows only when its `trusted_by` row's mean across seeds is at least the threshold **and** the row counted at least `judging.CALIBRATION_MIN_PAIRS` (200) pairs in total across seeds, inclusive. The count is the row's `sample_size` (the smallest seed's) times its `seed_count`, so it never overstates.
+- Below either, or with the row missing or measured on no pairs, the floored rows are `report_only`. The note quotes the agreement and, when pairs are short, how many were counted and how many short.
+**Alternatives considered:** A per-seed minimum of 200: the committed set has 150 windows (300 pairs a seed), but CI's stub certify samples 100 windows on two seeds, and the calibration's own minimum is a total, not per seed.
+**Consequences:**
+- A sampled run below 100 windows on two seeds reports faithfulness only. CI's stub certify (`--sample 100 --seeds 2`, 400 pairs) still gates. The committed reports are not rewritten.
+- Tests: `tests/eval/test_e_03.py::test_e_03__the_judge_needs_two_hundred_pairs` (199 pairs at perfect agreement is untrusted, 200 is trusted, also as 100 on each of two seeds); `test_e_03` samples 50 windows so its two seeds give 200 pairs. `tests/evals/test_judge_for.py` (16 pairs) and `tests/evals/test_harness.py`'s stub run (48 pairs) expect E-03 report only.
 
 ---
 

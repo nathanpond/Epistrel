@@ -216,7 +216,15 @@ async def test_e03_entailment_goes_to_its_own_judge(
     assert result.judge is not None
     assert (result.judge.model, result.judge.self_judged) == (SONNET, False)
     metrics = {m.id: m for m in result.metrics}
-    assert (metrics[FAITHFULNESS].verdict, metrics[JUDGE_AGREEMENT].mean) == (Verdict.passed, 1.0)
+    # #1004 (ADR-209): four windows on two seeds are 16 labelled pairs, short of the 200 the
+    # judge's trust needs, so faithfulness is report only, however well the judge agreed.
+    assert (metrics[FAITHFULNESS].verdict, metrics[JUDGE_AGREEMENT].mean) == (
+        Verdict.report_only,
+        1.0,
+    )
+    note = metrics[FAITHFULNESS].note
+    assert note is not None
+    assert "16 pairs" in note
     assert report.judge is None
     assert set(report.judges) == {ENTAILMENT.name}
     assert report.judges[ENTAILMENT.name].model == SONNET

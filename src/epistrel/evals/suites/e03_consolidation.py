@@ -19,7 +19,8 @@ measure how far its judging can be trusted. A run with a second judge model (``-
 - ``nfr_qual_3.faithfulness`` (rate, ≥ 98 %): every reflection the window produced is entailed
   by its episodes (a window that produced none is not observed). Its verdict counts only when
   the judge is trusted (``trusted_by``, ADR-204): ``e03.judge_agreement``'s mean across seeds is
-  at least 75 % (``judging.CALIBRATION_FLOOR``); below it the row is report-only.
+  at least 75 % (``judging.CALIBRATION_FLOOR``) on at least 200 pairs in total across seeds
+  (``judging.CALIBRATION_MIN_PAIRS``, ADR-209); below either the row is report-only.
 - ``e03.produced`` (report-only): the consolidation wrote at least one reflection.
 - ``e03.judge_agreement`` (report-only): per labeled **pair** (#747: two a window, the
   ``entailed`` reflection and the ``non_entailed`` one), the judge's verdict matched the label.
@@ -179,7 +180,8 @@ class E03Suite(Suite):
         "suite's Judge line names it. `e03.judge_agreement` shows how well the judge judges "
         "the labeled pairs (each window's entailed and non-entailed reflection, counted "
         "separately). `nfr_qual_3.faithfulness` counts only when that agreement is at least "
-        "75% (ADR-204); below it the row is report only. A window that produced no reflection "
+        "75% on at least 200 pairs across seeds (ADR-204, ADR-209); below either the row is "
+        "report only. A window that produced no reflection "
         "is not counted in `nfr_qual_3.faithfulness`, but is in `e03.produced`.",
     )
 

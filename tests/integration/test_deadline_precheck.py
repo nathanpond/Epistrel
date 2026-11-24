@@ -15,12 +15,15 @@ estimates.
 - ``POST /engine-profiles/{id}/validate`` warns ``below_safety_minimum`` with ``setting:
   budgets.deadline_ms`` and the same figures; a deadline above the estimate warns of nothing.
 - The in-turn gates use each kind's own estimate, and a call that just fits may start.
+- #1004: a deadline exactly at the estimate passes ``check_deadline`` (the clock frozen), and
+  the same over REST gives 200.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2 as httpx
@@ -32,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core import latency
 from epistrel.core.db import make_engine
+from epistrel.core.errors import DeadlineBelowSafetyMinimum
 from epistrel.core.profiles.reservation import (
     Reservation,
     budget_warnings,
@@ -42,6 +46,8 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.seeds.profiles import structured_m4_settings
 from epistrel.core.settings_schema import LatencyEstimateSettings
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.structured import planner
+from epistrel.orchestrator.structured.planner import Timing, TurnPlan, check_deadline
 from epistrel.testing.profiles import structured_m4
 from tests.auth_support import auth_settings
 from tests.character_support import OPERATOR
@@ -184,6 +190,32 @@ def test_each_kind_starts_by_its_own_estimate_and_a_call_that_just_fits_starts()
     assert TurnBudget(estimates={"salience": 99.0}).can_start("salience")  # no deadline
 
 
+def _frozen(monkeypatch: pytest.MonkeyPatch, now: float) -> None:
+    """``planner``'s clock stands at ``now``: no time is spent since a turn started there."""
+    monkeypatch.setattr(planner, "time", SimpleNamespace(monotonic=lambda: now))
+
+
+def test_a_deadline_at_the_estimate_passes_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1004 (#602's test plan): with no time spent, a deadline exactly at the timed minimum
+    passes (``>=``); a hair below it is refused with the figures.
+
+    Complement asserted: the refusal names the deadline and the estimate."""
+    plan = TurnPlan(
+        primaries=1, beats_planned=1, reservation=Reservation(extraction=1, composed=1), optional=()
+    )
+    timing = Timing(models={"generation": "m"}, estimates={"*": {"generation": 3.0, "*": 1.0}})
+    _frozen(monkeypatch, 100.0)
+    # generation 3 s, then two extraction backstops at 1 s each.
+    check_deadline(plan, timing, deadline_s=5.0, started=100.0)
+    with pytest.raises(DeadlineBelowSafetyMinimum) as refused:
+        check_deadline(plan, timing, deadline_s=4.99, started=100.0)
+    assert refused.value.details["deadline_s"] == 4.99
+    assert refused.value.details["estimated_minimum_s"] == 5.0
+    # Time spent counts against the deadline: 0.5 s since the start leaves 4.5 s.
+    with pytest.raises(DeadlineBelowSafetyMinimum):
+        check_deadline(plan, timing, deadline_s=5.0, started=99.5)
+
+
 # -- the REST surfaces ---------------------------------------------------------------------------
 
 
@@ -229,6 +261,53 @@ async def test_a_deadline_below_the_timed_minimum_is_refused_before_any_call(
         )
         assert played.status_code == 200, played.text
         assert _rejected() == before + 1
+
+
+async def test_a_deadline_at_the_estimate_plays(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1004 (#602's test plan): an explicit ``budget.deadline_s`` exactly at the timed minimum
+    gives 200. The pre-check's clock is frozen at the turn's start (``check_deadline`` sees no
+    time spent), so the deadline is the estimate to the second. The pre-check runs after the
+    idempotency claim (``call.claim``), not before it as #602's plan said; a refusal releases
+    the row (``test_a_deadline_below_the_timed_minimum_is_refused_before_any_call``), so the
+    order is left as it is.
+
+    Complement asserted: one second less is refused with the same estimate."""
+    real = planner.check_deadline
+
+    def frozen(plan: TurnPlan, timing: Timing, *, deadline_s: float, started: float) -> None:
+        with monkeypatch.context() as patch:
+            _frozen(patch, started)
+            real(plan, timing, deadline_s=deadline_s, started=started)
+
+    monkeypatch.setattr(planner, "check_deadline", frozen)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, ids = await structured_story(client, "Wren", "Ada")
+        # Every call 1 s: the minimum is a whole number of seconds, its slots' count.
+        assert (await _estimates(client, {"*": {"*": 1.0}})).status_code == 200
+        refused = await respond(
+            client, story, body(ids["Wren"], "Hello.", budget={"deadline_s": 1})
+        )
+        assert refused.status_code == 422, refused.text
+        details = refused.json()["error"]["details"]
+        at = details["estimated_minimum_s"]
+        assert at == len(details["slots"]) > 1
+
+        below = await respond(
+            client, story, body(ids["Wren"], "Hello.", budget={"deadline_s": at - 1})
+        )
+        assert below.status_code == 422, below.text
+        assert below.json()["error"]["details"]["estimated_minimum_s"] == at
+
+        lib.models.stub.script("generation", [render(beat("say", "Hello, Wren."))])
+        played = await respond(
+            client, story, body(ids["Wren"], "Hello.", budget={"deadline_s": at})
+        )
+        assert played.status_code == 200, played.text
 
 
 async def test_a_profile_deadline_below_the_estimate_is_never_refused(

@@ -15905,3 +15905,23 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - The coverage check's last run found 15 gaps, all fixed with its minimal fixes and not re-run.
   - The Audit milestone (M13) gains M12 emphases: consumer prompts and references as safety surfaces, the widening of permission as a place where things could leak, and repair drops and per-beat causes filtered by viewpoint.
   **Issue:** M12, M13
+
+## /n8-exec M12 — 2026-11-23
+
+- **Decision:** the milestone branch `milestone/m12-real-use-fixes` is cut from `main` at b87ef43 (pulled first, at the owner's request) and merges the open state PR's branch `n8/plan-m12-state` (#1021) first, as M11 did. Both only append to `.n8/decisions.md`.
+  **Issue:** #1015, #1016
+- **Decision:** the per-story gate is the targeted set run locally: the story's own tests, every test file that reads a module the story changed, `ruff check`, `ruff format --check`, `mypy` and `lint-imports`, plus any eval, ADR or part checks the story touches. The full suite is CI's sharded run on the milestone PR.
+  **Why:** `exec.full_suite` is `sequential`, but the full local suite takes about 10 hours. M9, M10 and M11 used the same gate for that reason.
+  **Issue:** M12
+- **Decision:** each story is implemented by a fresh subagent working on the milestone branch, one story at a time, from the issue alone. The orchestrating session reads each result, checks the commit and the targeted test evidence, and posts or verifies the completion comment.
+  **Why:** 24 stories don't fit one context. Running them one at a time on one checkout avoids conflicting appends to this log and conflicting snapshot regenerations.
+  **Issue:** M12
+- **Decision:** order. First the independent stories:
+  1. #1016's children (#998, #999, #1000, #1001, #1003, #1004, #1005);
+  2. CI: #951, #1018;
+  3. #958, #996, #941, #947, #994, #988, #1012 and #1014.
+
+  Then the dependent chains: #1017 → #1020, #1013, #1019 → #979 → #978. #1011 runs last.
+
+  Live paid checks are batched and run by the orchestrating session within the owner's caps: images $2 (#1012, #1017, #1020), E-06 $5 (#978, #979), #941 $1. Story agents make no hosted or paid call.
+  **Issue:** M12

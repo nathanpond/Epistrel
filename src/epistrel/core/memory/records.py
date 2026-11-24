@@ -49,6 +49,17 @@ non-perceiver gets nothing. The rest is the episodic writer's: the guard, the er
 the hooks, inert unless ``episodic`` is on. The player's character gets its memories too (it
 holds no beliefs, FR-EPI-12).
 
+**A player's message** (#958; FR-MEM-1, ADR-211). ``write_message(conn, operation, …)``
+writes the memories of a message recorded with no response, an ingested ``player_turn`` or
+``narration``, in its operation's commit with no model call: the shared writer at perception
+``none``, else the beats routed over the scene at the turn's start and ``write_perceived``. A
+player message's memories (provenance ``player``) belong to the message, not to its response:
+both writers take up a row a variant of the same message (``MessageKey``: the actor, ``say``,
+``do`` and stored qualifiers) already holds for the same holder and text instead of writing a
+second one, and ``follow_messages`` (a ``core.membership`` follower) keeps each such row
+``active`` while an active turn variant at its turn records the same message. A regenerate or a
+swap keeps them; truncating past the message retires them.
+
 **Semantic memories and reflections** (FR-MEM-2,3; #143). ``write_consolidated(conn,
 operation, rows, covered)`` is the writer the consolidation job calls in its positioned
 operation's commit (``core.memory.consolidation`` builds the rows): ``semantic`` and
@@ -113,6 +124,7 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -156,7 +168,14 @@ from epistrel.core.erasure.records import memory_record
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position as NarrativePosition
-from epistrel.core.membership import active_only, active_operation, insert_derived
+from epistrel.core.membership import (
+    active_only,
+    active_operation,
+    flip_rows,
+    insert_derived,
+    not_superseded,
+    register_follower,
+)
 from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
@@ -554,12 +573,27 @@ async def write_episodic(
     await guard.check_content(
         conn, story_id, contents, base_revision=operation.base_revision, path=__name__
     )
+    return await _insert_episodic(conn, operation, story_id, rows)
+
+
+async def _insert_episodic(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    story_id: str,
+    rows: list[dict[str, Any]],
+) -> list[Memory]:
+    """Insert the episodic ``rows`` a writer built, after taking up the player-message rows a
+    variant of the same message already holds (``_reuse_message_rows``, #958); index the new
+    rows for erasure and run the hooks over them. Answers every memory the write stands for,
+    taken-up rows included."""
+    rows, reused = await _reuse_message_rows(conn, operation, story_id, rows)
     await insert_derived(conn, memories, rows)
     await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
     ids = tuple(str(r["id"]) for r in rows)
-    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
-        await hook(conn, story_id, ids)
-    return await memories_by_id(conn, story_id, ids)
+    if ids:
+        for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
+            await hook(conn, story_id, ids)
+    return await memories_by_id(conn, story_id, (*ids, *reused))
 
 
 ROUTED: frozenset[str] = frozenset({"say", "do", "narration", "think"})
@@ -713,12 +747,7 @@ async def write_perceived(
     await guard.check_content(
         conn, story_id, contents, base_revision=operation.base_revision, path=__name__
     )
-    await insert_derived(conn, memories, rows)
-    await index_records(conn, [memory_record(SimpleNamespace(**r)) for r in rows])
-    ids = tuple(str(r["id"]) for r in rows)
-    for hook in [*MEMORY_HOOKS, *EPISODIC_HOOKS]:
-        await hook(conn, story_id, ids)
-    return await memories_by_id(conn, story_id, ids)
+    return await _insert_episodic(conn, operation, story_id, rows)
 
 
 async def write_observed(
@@ -790,6 +819,288 @@ async def memory_sink(
 
 
 perception.register_perception_sink(memory_sink)
+
+
+# -- a player's message (#958) ----------------------------------------------------------------
+
+MessageKey = tuple[str | None, str | None, str | None, str]
+"""What makes two ``player_input`` events the same message: the actor, the ``say``, the ``do``
+and the stored perception qualifiers (a regenerate replays them; a correction changes them)."""
+
+
+def _message_key(character_id: Any, payload: Mapping[str, Any] | None) -> MessageKey:
+    found = payload or {}
+    qualifiers = found.get("perception") or None
+    return (
+        None if character_id is None else str(character_id),
+        found.get("say") or None,
+        found.get("do") or None,
+        json.dumps(qualifiers, sort_keys=True),
+    )
+
+
+async def _message_keys(
+    conn: AsyncConnection, story_id: str, event_ids: Iterable[str]
+) -> dict[str, MessageKey]:
+    """The message key of each of ``event_ids`` that is a ``player_input`` event."""
+    wanted = sorted({str(i) for i in event_ids})
+    if not wanted:
+        return {}
+    found = await conn.execute(
+        select(events.c.id, events.c.character_id, events.c.payload).where(
+            events.c.story_id == story_id,
+            events.c.id.in_(wanted),
+            events.c.type == "player_input",
+        )
+    )
+    return {str(r.id): _message_key(r.character_id, r.payload) for r in found}
+
+
+def _message_rows_at(story_id: str, turns: Iterable[int]) -> Any:
+    """The player-message memories (``episodic``, provenance ``player``) of ``story_id`` at
+    ``turns``, in any membership but ``superseded``."""
+    m = memories
+    return select(
+        m.c.id,
+        m.c.operation_id,
+        m.c.narrative_turn,
+        m.c.holder_character_id,
+        m.c.text,
+        m.c.source_event_ids,
+    ).where(
+        m.c.story_id == story_id,
+        m.c.kind == MemoryKind.EPISODIC.value,
+        m.c.provenance == RecordProvenance.PLAYER.value,
+        m.c.narrative_turn.in_(sorted(set(turns))),
+        not_superseded(m),
+    )
+
+
+async def _reuse_message_rows(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    story_id: str,
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """#958: one memory per perceiver per player message, whatever the number of variants. A
+    new player-input row (provenance ``player``, sourced from a ``player_input`` event) whose
+    holder and text a row at the same turn already has, from another operation recording the
+    same message (``MessageKey``), is not written: that row is made ``active`` instead (a
+    regenerate retired it with the old variant a moment before). Answers the rows still to
+    insert and the ids taken up."""
+    turn = operation.narrative_turn
+    candidates = [
+        r
+        for r in rows
+        if r.get("provenance") == RecordProvenance.PLAYER.value and r.get("source_event_ids")
+    ]
+    if turn is None or not candidates:
+        return rows, []
+    keys = await _message_keys(conn, story_id, (r["source_event_ids"][0] for r in candidates))
+    if not keys:
+        return rows, []
+    existing = [
+        r
+        for r in (await conn.execute(_message_rows_at(story_id, [turn]))).all()
+        if str(r.operation_id) != operation.operation_id and r.source_event_ids
+    ]
+    if not existing:
+        return rows, []
+    theirs = await _message_keys(conn, story_id, (str(r.source_event_ids[0]) for r in existing))
+    held: dict[tuple[MessageKey, str | None, str], str] = {}
+    for r in sorted(existing, key=lambda r: str(r.id)):
+        key = theirs.get(str(r.source_event_ids[0]))
+        if key is not None:
+            holder = None if r.holder_character_id is None else str(r.holder_character_id)
+            held.setdefault((key, holder, r.text), str(r.id))
+    kept: list[dict[str, Any]] = []
+    reused: list[str] = []
+    for row in rows:
+        key = keys.get(str((row.get("source_event_ids") or [""])[0]))
+        hit = (
+            None
+            if key is None or row.get("provenance") != RecordProvenance.PLAYER.value
+            else held.get((key, row.get("holder_character_id"), row["text"]))
+        )
+        if hit is None:
+            kept.append(row)
+        else:
+            reused.append(hit)
+    if reused:
+        await flip_rows(conn, memories, reused, Membership.ACTIVE, story_id=story_id)
+    return kept, reused
+
+
+async def follow_messages(
+    conn: AsyncConnection,
+    story_id: str | None,
+    operation_ids: tuple[str, ...],
+    to: Membership,
+) -> None:
+    """``core.membership``'s follower for player-message memories (#958): after a flip of
+    ``operation_ids``, each such memory at their turns is ``active`` while an active committed
+    turn operation at its turn records the same message (``MessageKey``), whichever variant
+    wrote it: a regenerate or a swap that keeps the message keeps its memories, and truncating
+    past the message retires them (``to``), untruncating restores them. One memory per holder
+    and text stays active; a duplicate a pre-#958 regenerate wrote goes ``dormant``."""
+    o, e = operations, events
+    found = await conn.execute(
+        select(o.c.story_id, o.c.narrative_turn)
+        .where(
+            o.c.operation_id.in_(list(operation_ids)),
+            o.c.kind == OperationKind.TURN.value,
+            o.c.narrative_turn.is_not(None),
+            o.c.slot_k.is_(None),
+            true() if story_id is None else o.c.story_id == story_id,
+        )
+        .distinct()
+    )
+    turns_of: dict[str, set[int]] = {}
+    for r in found:
+        turns_of.setdefault(str(r.story_id), set()).add(int(r.narrative_turn))
+    for story, turns in turns_of.items():
+        rows = [r for r in (await conn.execute(_message_rows_at(story, turns))).all()]
+        if not rows:
+            continue
+        keys = await _message_keys(
+            conn, story, (str(r.source_event_ids[0]) for r in rows if r.source_event_ids)
+        )
+        live = await conn.execute(
+            select(e.c.operation_id, e.c.narrative_turn, e.c.character_id, e.c.payload)
+            .join(o, o.c.operation_id == e.c.operation_id)
+            .where(
+                e.c.story_id == story,
+                e.c.type == "player_input",
+                e.c.narrative_turn.in_(sorted(turns)),
+                e.c.slot_k.is_(None),
+                o.c.kind == OperationKind.TURN.value,
+                o.c.status == OperationStatus.COMMITTED.value,
+                active_operation(o),
+            )
+        )
+        active: dict[tuple[int, MessageKey], str] = {
+            (int(r.narrative_turn), _message_key(r.character_id, r.payload)): str(r.operation_id)
+            for r in live
+        }
+        chosen: dict[tuple[int, MessageKey, str | None, str], str] = {}
+        losers: list[str] = []
+        for r in sorted(rows, key=lambda r: str(r.id)):
+            key = keys.get(str(r.source_event_ids[0])) if r.source_event_ids else None
+            if key is None or (int(r.narrative_turn), key) not in active:
+                continue
+            slot = (
+                int(r.narrative_turn),
+                key,
+                None if r.holder_character_id is None else str(r.holder_character_id),
+                r.text,
+            )
+            first = chosen.get(slot)
+            if first is None:
+                chosen[slot] = str(r.id)
+            elif str(r.operation_id) == active[(slot[0], key)]:
+                losers.append(first)  # the active variant's own row wins
+                chosen[slot] = str(r.id)
+            else:
+                losers.append(str(r.id))
+        keep = set(chosen.values())
+        await flip_rows(conn, memories, keep, Membership.ACTIVE, story_id=story)
+        await flip_rows(
+            conn, memories, losers, Membership.DORMANT, story_id=story, only_from=Membership.ACTIVE
+        )
+        if Membership(to) is not Membership.ACTIVE:
+            rest = [str(r.id) for r in rows if str(r.id) not in keep and str(r.id) not in losers]
+            await flip_rows(
+                conn, memories, rest, Membership(to), story_id=story, only_from=Membership.ACTIVE
+            )
+
+
+register_follower(follow_messages)
+
+
+async def write_message(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    actor: str | None,
+    say: str | None = None,
+    do: str | None = None,
+    narration: str | None = None,
+    event_type: str,
+) -> list[Memory]:
+    """The memories of a message recorded with no response (#958, FR-MEM-1): an ingested
+    ``player_turn`` (``say``/``do`` of ``actor``, provenance ``player``) or an ingested
+    ``narration`` (provenance ``director``), written in ``operation``'s commit with no model
+    call. At perception ``none`` it is the shared writer (``write_episodic``: one holder-less
+    row per beat); above it, the beats are routed by ``perception.route_turn`` over the scene
+    at the turn's start (``core.epistemic.scene.load_scene``) and every perceiver gets its
+    row (``write_perceived``: presence, location, whisper and the minors rule). Inert unless
+    the story keeps episodic memory."""
+    from epistrel.core.epistemic import scene as scenes
+
+    story_id = operation.story_id
+    turn = operation.narrative_turn
+    if story_id is None or turn is None:
+        raise InvalidRequest("a message's memory belongs to a story's turn", {"field": "operation"})
+    settings = (await effective_configuration(conn, story_id, validate=False)).settings
+    if not module_on(settings, EPISODIC_MODULE):
+        return []
+    event_id = await conn.scalar(
+        select(events.c.id)
+        .where(
+            events.c.operation_id == operation.operation_id,
+            events.c.type.in_(("player_input", "message_rendered")),
+        )
+        .order_by(events.c.seq)
+        .limit(1)
+    )
+    if event_id is None:
+        return []
+    beats: list[Beat] = []
+    if narration and narration.strip():
+        beats.append(
+            Beat(
+                "narration",
+                narration,
+                str(event_id),
+                beat=1,
+                provenance=RecordProvenance.DIRECTOR,
+                event_type=event_type,
+            )
+        )
+    for kind, text in (("say", say), ("do", do)):
+        if text and text.strip():
+            beats.append(
+                Beat(
+                    cast(BeatKind, kind),
+                    text,
+                    str(event_id),
+                    beat=1,
+                    character_id=actor,
+                    provenance=RecordProvenance.PLAYER,
+                    event_type=event_type,
+                )
+            )
+    if not beats:
+        return []
+    level = await scenes.current_level(conn, story_id)
+    if level == perception.NONE:
+        return await write_episodic(conn, operation, beats, settings=settings)
+    state, _ = await scenes.load_scene(conn, story_id, turn)
+    results = perception.route_turn(
+        [
+            perception.RouteBeat(
+                kind=_route_kind(b.kind),
+                beat=1,
+                actor=b.character_id,
+                sound=perception.sound_of(b.text) if b.kind == "do" else None,
+                source=b,
+            )
+            for b in beats
+        ],
+        state,
+        level,
+    )
+    return await write_perceived(conn, operation, results, settings=settings)
 
 
 CONSOLIDATED_KINDS: frozenset[MemoryKind] = frozenset({MemoryKind.SEMANTIC, MemoryKind.REFLECTION})
@@ -1757,7 +2068,8 @@ async def memories_through(
 ) -> list[Memory]:
     """The story's memories in the corrected view through ``through_turn`` (the head when
     ``None``): active, at or before it (position-less rows always), and every source event of
-    an active committed operation at or before it (FR-STORE-13). Ordered by position."""
+    an active committed operation at or before it (FR-STORE-13); a player message's memory
+    (#958) by its own membership and position. Ordered by position."""
     m, e, o = memories, events, operations
     source_out = and_(
         e.c.id == any_(m.c.source_event_ids),
@@ -1774,8 +2086,18 @@ async def memories_through(
     where = [
         m.c.story_id == story_id,
         active_only(m),
-        not_(
-            exists(select(e.c.id).join(o, o.c.operation_id == e.c.operation_id).where(source_out))
+        or_(
+            # #958: a player message's memory follows the message, not the variant whose
+            # event it cites (``follow_messages``): its own membership answers for it.
+            and_(
+                m.c.kind == MemoryKind.EPISODIC.value,
+                m.c.provenance == RecordProvenance.PLAYER.value,
+            ),
+            not_(
+                exists(
+                    select(e.c.id).join(o, o.c.operation_id == e.c.operation_id).where(source_out)
+                )
+            ),
         ),
     ]
     if through_turn is not None:
@@ -1823,6 +2145,7 @@ __all__ = [
     "committed_turns",
     "decayed_importance",
     "episodic_on",
+    "follow_messages",
     "half_life_turns",
     "has_unscored",
     "memories_by_id",
@@ -1844,6 +2167,7 @@ __all__ = [
     "working_memory",
     "write_author",
     "write_consolidated",
+    "write_message",
     "write_observed",
     "write_perceived",
     "write_resolution",

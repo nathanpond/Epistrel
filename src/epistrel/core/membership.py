@@ -23,7 +23,9 @@ for position-less consolidation or backfill rows) and a timeline membership
   written over a rewound tail). Rows already at ``to`` keep their stamp (stacked truncations),
   ``superseded`` rows are never touched, and valid-time and narrative position are never
   written: membership is not valid-time (FR-BITEMP-5). ``flip_by_sources`` is the second entry
-  point, for rows that follow their source events rather than an operation (#143's reflections).
+  point, for rows that follow their source events rather than an operation (#143's reflections),
+  and ``flip_rows`` the third, for named rows a follower moves (#958: a player message's
+  memories follow the message across its turn's variants).
 - **The reads.** Views and retrieval read derived rows only through ``active_only(table)`` (or
   ``active_only_sql(alias)`` in raw SQL) and the coordinate helpers ``position_of``,
   ``valid_time_of`` and ``tx_time_of``, which keep the three coordinates apart.
@@ -514,6 +516,40 @@ async def flip_by_sources(
     return changed
 
 
+async def flip_rows(
+    conn: AsyncConnection,
+    table: Table,
+    row_ids: Iterable[str],
+    to: Membership,
+    *,
+    story_id: str,
+    only_from: Membership | None = None,
+) -> int:
+    """Move the named rows of registered derived ``table`` to ``to`` (#958: rows whose
+    membership follows something besides their own operation, a player message's memories
+    following the message across its response's variants, ``core.memory.records``).
+    ``only_from``: only the rows now at that membership. Rows already at ``to`` keep their
+    stamp and ``superseded`` rows are never touched, as in every flip. Returns the rows
+    changed."""
+    target = _target(to)
+    ids = _ids(row_ids)
+    if not ids:
+        return 0
+    entry = derived_entry(table)
+    t = entry.table
+    matches: ColumnElement[bool] = t.c.id.in_(ids)
+    if only_from is not None:
+        matches = and_(matches, t.c.membership == Membership(only_from).value)
+    return await _flip_where(conn, entry, matches, target, story_id)
+
+
+def not_superseded(table: FromClause) -> ColumnElement[bool]:
+    """Rows of registered derived ``table`` that a newer derivation has not superseded, in any
+    other membership (#958: a player message's memory a later variant may take up again)."""
+    derived_entry(table)
+    return table.c.membership != Membership.SUPERSEDED.value
+
+
 async def supersede(
     conn: AsyncConnection, table: Table, row_ids: Iterable[str], *, story_id: str
 ) -> int:
@@ -772,12 +808,14 @@ __all__ = [
     "excluding",
     "flip_by_sources",
     "flip_membership",
+    "flip_rows",
     "follow",
     "follow_membership_change",
     "included_operations",
     "included_through",
     "including",
     "insert_derived",
+    "not_superseded",
     "position_group",
     "position_group_check",
     "position_key",

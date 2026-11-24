@@ -16,14 +16,14 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177, 201 |
-| FR-STORE | §2 | 018, 045, 054, 071, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 157, 167, 172, 175, 176, 187, 188 |
+| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177, 201, 211 |
+| FR-STORE | §2 | 018, 045, 054, 071, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 157, 167, 172, 175, 176, 187, 188, 211 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 122, 144, 169, 174, 175 |
 | FR-BITEMP | §3 | 189 |
-| FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
+| FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191, 211 |
 | FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174, 193 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173, 199 |
-| FR-TURN | §6 | 024, 043, 143, 166, 169, 170, 202, 203 |
+| FR-TURN | §6 | 024, 043, 143, 166, 169, 170, 202, 203, 211 |
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
@@ -92,7 +92,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 025 | Belief formation is explicit, typed, and resolved as-of the exposure frame | Amended | 027, 034, 041, 069, 075 |
 | 026 | Presence is not perception; route by an authoritative audience, with an envelope/content split | Amended | 043, 047, 071 |
 | 027 | Three coordinates (narrative position, valid-time, transaction-time), explicit timeline membership, and amendments | Amended | 028, 042, 060, 072, 076, 079 |
-| 028 | Event model: turn index ≠ seq; operations and categories; continuations and swap-on-undo | Amended | 041, 072, 086 |
+| 028 | Event model: turn index ≠ seq; operations and categories; continuations and swap-on-undo | Amended | 041, 072, 086, 211 |
 | 029 | Optimistic concurrency, per-story turn policy, and idempotent mutations | Partly superseded | 040, 045, 052 |
 | 030 | Story States and owned values; authorities decide objective truth, not knowledge | Amended | 037, 038, 039, 060 |
 | 031 | Multi-character interaction modes, participation roles, and adjudication | Partly superseded | 047, 059, 126 |
@@ -275,6 +275,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 208 | An owner waiver lets one named version release without current certification records | Current | — |
 | 209 | E-03's judge is trusted only on at least 200 labelled pairs | Current | — |
 | 210 | The repair budget is per render, and a failed beat beside its speaker's real line is dropped | Current | — |
+| 211 | A player's message writes memories without a response, and they follow the message, not its response | Current | — |
 
 ---
 
@@ -505,7 +506,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-028 — Event model: turn index ≠ seq; operations and categories; continuations and swap-on-undo
 **Status:** Accepted. Corrects ADR-027's definition of narrative position.
-**Amended by:** ADR-041 — lazy belief resolutions; ADR-072 — inter-turn operations (State sets, settlements) occupy slots `N⁺k` instead of "the current head"; ADR-086 — backfill is its own operation, pausing the story while it re-derives from the transcript
+**Amended by:** ADR-041 — lazy belief resolutions; ADR-072 — inter-turn operations (State sets, settlements) occupy slots `N⁺k` instead of "the current head"; ADR-086 — backfill is its own operation, pausing the story while it re-derives from the transcript; ADR-211 — a player message's memories follow the message across its turn's variants, not only the operation that wrote them ("Records follow their operation's membership")
 **Context:** ADR-027 defined narrative position as the `seq` of the introducing message and treated a message as a contiguous `seq` range. But consolidation, rejected renders, external reads, rewrite discussions, and control actions also produce events that interleave with turns. A reflection computed between turns belongs to neither; a rejected draft is not story content. Separately, undoing a rewind after new turns had been written had no defined behavior.
 **Decision:** `seq` is global recording order only. **Narrative position is the turn index plus variant**, advanced only by narrative turns. Every event carries an **operation ID** (turn, consolidation, rewrite session, control, maintenance) and a **category** (narrative state, input, derived, amendment, audit, control); categories govern view inclusion, and audit records are never read by story views. Records follow their operation's membership. **Derived records are judged by provenance in the corrected-history view and by creation time in the as-originally-recorded view.** Derivation jobs declare a **source window**, read only those inputs, and drop their output if any input is discarded before commit. Each turn has a **variant ID**; exactly one variant per position is active and the active variants form one chain. **Undoing a rewind** reactivates when nothing new was written; otherwise it defaults to a **swap** (original continuation active, newer one dormant, itself reversible), with the option to promote the dormant continuation into its own story by fork. Undo never rejects or destructively overwrites. **Resolutions follow the membership of the operation that produced them**, so each continuation keeps its own; amendments survive a swap and are re-checked against the restored chain.
 **Consequences:** Narrative position is stable regardless of how much background or audit activity occurs; consolidation can't commit against a timeline the user just abandoned; nothing a player writes is lost to an undo. Adds an `operations` table, category and variant fields, and source-window tracking on derived records.
@@ -2431,6 +2432,26 @@ Tuning and its exit certification come after every milestone that may change a p
 - `turn_report.repairs` keeps its per-claim entries with int rungs: a dropped line is rung 4 with `dropped: true`.
 - Entries in `degradation_details` gain optional fields; stored entries without them read as before.
 - Tests: `tests/integration/test_i_12.py::test_i_12__m12_render_budget`, `::test_i_12__m12_render_budget_limit`, `::test_i_12__m12_drop_rule` and `::test_i_12__m12_per_beat_cause`; the units in `tests/test_repair_render_budget.py`.
+
+---
+
+### ADR-211 — A player's message writes memories without a response, and they follow the message, not its response
+**Status:** Accepted. Amends ADR-028 (records follow their operation's membership) for a player message's memories. Extends ADR-169's routing to ingested messages.
+**Context:** #958, from real use. A consumer (Social Gambit) runs group scenes where the player speaks and the next speaker is chosen separately. Two gaps showed up. First, an ingested `player_turn` (FR-RESP-10) was recorded in history, but no perceiver got an episodic memory of it, so a present character lost the line once it left working memory (20 beats). Second, a player's input inside a generated turn was remembered through rows owned by the turn's operation. That operation is also the response's, so a regenerate or swap retired the message's memories with the reply and wrote new copies for the new variant. The plan assumed the message had an operation of its own. It doesn't: the input event commits with the response, and each regenerated variant records the input again.
+**Decision:** Applied by #958 (FR-MEM-1, FR-TURN-2 amended).
+- **Every kept message writes memories.** An ingested `player_turn` (`say`/`do`, provenance `player`) or `narration` (provenance `director`, visibility `objective`) writes them in a commit step of its own operation, with no model call (`core.memory.records.write_message`). At perception `none` this is the shared writer, one holder-less row per beat. Above `none`, the beats route through `perception.route_turn` over the scene at the turn's start, and `write_perceived` writes one row per perceiver under the presence, location and minors rules (and the whisper rules for a generated turn's input). The beats' `event_type` is the ingest kind. An ingest replay writes nothing, and with `memory.episodic` off nothing is written.
+- **One row per perceiver per message.** A message is identified by its `player_input` event's actor, `say`, `do` and stored perception qualifiers at a turn. Before inserting, both episodic writers look for rows of the same message (in any variant of the turn) with the same holder and text. If one exists, the writer reactivates it instead of writing a new one. This is a check before insert under the story lock, with no new constraint.
+- **Membership follows the message.** A `core.membership` follower (`records.follow_messages`) runs after every operation flip. For each player-message memory at the turns the flip touched, the row is active while an active committed turn operation at its turn records the same message, whichever variant wrote it. Otherwise it takes the flip's membership. So a regenerate or swap that keeps the message keeps its memories, and truncating past the message retires them. Untruncate restores them. A corrected input (`correct`, FR-RESP-14) is a new message: the old rows stay with the old variant. Rows are flipped through `core.membership.flip_rows`. FR-STORE-13's view through N (`memories_through`) reads a player-message memory by its own membership and position, not by whether the variant whose event it cites is active.
+**Alternatives considered:**
+- Committing the player's input as its own operation before generation. This would change the event model of a turn: atomic commit, a failed turn recording nothing, regenerate and swap over variants, idempotency. That is far beyond the gap.
+- Moving the rows to the active variant's operation on each regenerate or swap. That rewrites `operation_id` and `source_event_ids` of existing rows, and a swap back would have to move them again.
+- A unique constraint on (message, holder). The message spans events of several variants, so no column holds it.
+**Consequences:**
+- A regenerated or swapped turn adds memories for its response only. A pre-#958 story's duplicate message rows, one per variant, collapse to one active row the next time a flip touches their turn. No story is backfilled.
+- Ingest's commit reads the effective configuration and, above perception `none`, the scene once per narrative event.
+- Not covered, and open with the owner: a `respond` call that names nobody to answer. Omitting `render_character_ids` means every cast member except the actor (FR-RESP-5), `[]` is refused with 422, and a reply-less respond result has no specified shape. A consumer records a line without a reply through ingest.
+- No `MODEL_CALL_REVISION` change: no model call sends anything new.
+- Tests: `tests/integration/test_player_message_memories.py` (ingest perceivers and the absent character, ingested narration, episodic off, replay; the player's whisper; regenerate, swap, truncate and untruncate; retrieval 25 beats later).
 
 ---
 

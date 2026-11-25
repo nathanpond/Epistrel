@@ -22,6 +22,11 @@ budget with room for one regeneration), the drop rule (a fallback line beside it
 line, one fallback line per speaker, a lone failing beat, a narration) and the per-beat cause in
 ``respond`` and the history read. ``test_i_12__m12_name_only`` (M12, #1019, FR-REPAIR-2): a
 narrowing that leaves only a name is not accepted at rung 1.
+
+``test_i_12__m12_outcome_step_*`` (M12, #1033, #1034, FR-REPAIR-5): a staged turn's outcome
+step. The intent's narrator line drops the outcome step's fallback (and its complement), and
+the outcome step's repairs reach respond's and the history's ``degradation_details`` (and
+the complement: the intent's entries, once).
 """
 
 from __future__ import annotations
@@ -66,10 +71,13 @@ from epistrel.core.verify.neighborhood import Edge, Neighborhood, Seed, fact_nei
 from epistrel.core.verify.rules import Rule, VerdictKind
 from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.structured import staged
 from epistrel.orchestrator.verify.verifier import story_verifier
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import partition_support as parts
+from tests import provider_support as ps
+from tests import state_support as ss
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.canon_support import KNOWS, LOCATED_AT, PRINCIPAL, World, at, commit, supersede, world
@@ -1191,3 +1199,202 @@ async def test_i_12__m12_name_only(
             else:
                 assert name_only == []
             assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 0
+
+
+# -- M12: a staged turn's outcome step (#1033, #1034) ----------------------------------------
+
+FORGE = "The forge glows."
+TAKES = "Mira takes the coins."
+EDGE = "Mind the edge."
+WENT = "The purchase went through."
+MIRA_SEVENTY = "Mira is seventy years old."
+"""Canon has Mira at 64; no sentence is left to narrow and no number to substitute, so a
+failed regeneration ends the beat at the safe fallback."""
+
+
+async def _shop(client: Any, engine: AsyncEngine, epistrel: Any) -> tuple[str, str, Any]:
+    """Cal buys from Mira (64 in canon); Cal's gold is owned by a ``synchronous`` write-capable
+    provider, so a turn that spends it is staged (#212) and its outcome narrated by the outcome
+    step. Returns the story, Cal and the scripted provider."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name, confirmation="synchronous"))
+    fake = ps.ScriptedProvider(name, default=300).attach(epistrel)
+    story, ids = await structured_story(client, "Cal", "Mira")
+    await age_fact(engine, story, ids["Mira"], 64)
+    await override(client, story, {"budgets": {"model_calls": 40}})
+    await ss.set_level(engine, story, "on")
+    await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+    return story, ids["Cal"], fake
+
+
+async def _purchase(
+    client: Any,
+    stub: Any,
+    fake: Any,
+    story: str,
+    cal: str,
+    *,
+    do: str,
+    outcome: dict[str, Any],
+    said: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One staged purchase the game confirms. The intent narrates "The forge glows." when the
+    narrator is triggered (``do`` names no one); Mira takes the coins (the gold effect) and
+    says ``said``; the outcome step narrates ``outcome``. Every regeneration fails."""
+    stub.reset()
+    fake.script_writes("gold", "confirmed")
+    stub.when(staged.OUTCOME_STEP, es.render(outcome), purpose="generation")
+    mira = es.render(
+        beat("do", TAKES, effects=[es.effect("gold", scope_key=cal, delta=-50, reason="a sword")]),
+        said or beat("say", EDGE, intent="sincere"),
+    )
+    ms.renders_for(stub, "Mira", mira)
+    es.narrator(stub, es.render(beat("narration", FORGE)))
+    stub.fault("regeneration", "timeout")
+    answer = await respond(client, story, body(cal, None, do=do))
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+def _seventy() -> dict[str, Any]:
+    return beat("narration", MIRA_SEVENTY, propositions=[claim("Mira", "age", "70")])
+
+
+def _narrations(played: dict[str, Any]) -> list[str]:
+    return [b["text"] for b in played["beats"] if b["kind"] == "beat_narration"]
+
+
+async def _history_details(client: Any, story: str, turn: int) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"/stories/{story}/history", params={"viewpoint": "omniscient"}, headers=READ
+    )
+    assert response.status_code == 200, response.text
+    (found,) = [t for t in response.json()["turns"] if t["turn"] == turn]
+    return [d for d in found.get("degradation_details", []) if "beat" in d]
+
+
+async def _close_shop(engine: AsyncEngine, story: str) -> None:
+    await ps.drop_outbox_jobs(engine, story)
+    await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_outcome_step_drop(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1033, #1034 (FR-REPAIR-5): the narrator has a real line in a staged turn's intent ("The
+    forge glows."). The outcome step's narration contradicts canon and its regeneration fails,
+    so the beat ends at the safe fallback. The intent's line counts for the drop rule
+    (``render_outcome_step`` passes ``before=``), so the fallback is dropped: no narration but
+    the intent's commits. The drop is reported ``repair_dropped``/``speaker_has_line`` in
+    ``turn_report.staged.outcome_step.repairs``, in respond's ``degradation_details`` and in
+    the history read of the turn (#1034: before, only the intent's repairs reached them)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        played = await _purchase(
+            client, stub, fake, story, cal, do="buys the sword", outcome=_seventy()
+        )
+        assert _narrations(played) == [FORGE]
+        assert MIRA_SEVENTY not in played["message"]["text"]
+        report = await turn_report(engine, story)
+        (repair,) = report["staged"]["outcome_step"]["repairs"]
+        assert (repair["verdict"], repair["dropped"]) == ("contradicted", True)
+        dropped = {
+            "step": "repair_dropped",
+            "cause": "speaker_has_line",
+            "beat": repair["beat"],
+            "character_id": None,
+            "rung": "dropped",
+            "violations": ["contradicted"],
+        }
+        details = _repair_details(played)
+        assert dropped in details, details
+        assert "repair_dropped" in played["degradation"]
+        assert dropped in await _history_details(client, story, played["turn"])
+        await _close_shop(engine, story)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_outcome_step_lone_fallback(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1033's complement, #1034 (FR-REPAIR-5): Cal's action names Mira, so the narrator has no
+    line in the intent. The outcome step's failing narration has no earlier line of its speaker
+    to drop it for, so its safe fallback commits, reported ``safe_fallback`` with its beat,
+    speaker, rung and violation codes in respond and in the history read; nothing is
+    ``repair_dropped``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        played = await _purchase(
+            client, stub, fake, story, cal, do="buys the sword from Mira", outcome=_seventy()
+        )
+        (fallback,) = _narrations(played)
+        assert fallback not in (FORGE, MIRA_SEVENTY)
+        report = await turn_report(engine, story)
+        (repair,) = report["staged"]["outcome_step"]["repairs"]
+        assert (repair["verdict"], repair["dropped"]) == ("contradicted", False)
+        committed = next(b for b in played["beats"] if b["kind"] == "beat_narration")
+        assert committed["beat"] == repair["beat"]
+        entry = {
+            "step": "safe_fallback",
+            "cause": "repair",
+            "beat": repair["beat"],
+            "character_id": None,
+            "rung": "safe_fallback",
+            "violations": ["contradicted"],
+        }
+        details = _repair_details(played)
+        assert entry in details, details
+        assert not [d for d in details if d["step"] == "repair_dropped"]
+        assert entry in await _history_details(client, story, played["turn"])
+        await _close_shop(engine, story)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_outcome_step_no_repair(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1034's complement (FR-REPAIR-5): the intent repairs a beat (Mira's "I am seventy years
+    old." fails and is dropped beside her real ``do``) and the outcome step repairs nothing.
+    respond's and the history's per-beat entries are the intent's, each once, none at an
+    outcome-step beat."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        said = beat(
+            "say",
+            "I am seventy years old.",
+            intent="sincere",
+            propositions=[claim("I", "age", "70")],
+        )
+        played = await _purchase(
+            client,
+            stub,
+            fake,
+            story,
+            cal,
+            do="buys the sword",
+            outcome=beat("narration", WENT),
+            said=said,
+        )
+        assert WENT in _narrations(played)
+        report = await turn_report(engine, story)
+        assert report["staged"]["outcome_step"]["repairs"] == []
+        (first,) = report["staged"]["outcome_step"]["beats"]
+        details = _repair_details(played)
+        assert [d["step"] for d in details if d["step"] == "repair_dropped"] == ["repair_dropped"]
+        assert all(d["beat"] < first for d in details), details
+        assert len({json.dumps(d, sort_keys=True) for d in details}) == len(details)
+        assert await _history_details(client, story, played["turn"]) == details
+        await _close_shop(engine, story)

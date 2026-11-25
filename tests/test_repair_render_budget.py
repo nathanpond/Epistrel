@@ -8,9 +8,12 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from epistrel.api.routes.history import DegradationBody, TurnSummaryModel
 from epistrel.core.epistemic.stage import StagedBeat, TurnStage
 from epistrel.core.history import HistoryItem, TurnSummary, visible_details
+from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.repair.rungs import FALLBACK, REGENERATION, RepairClass
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.permission import Denied, Reason
@@ -33,6 +36,7 @@ from epistrel.orchestrator.repair.ladder import (
     violation_code,
     violation_codes,
 )
+from epistrel.orchestrator.structured import pipeline
 from epistrel.orchestrator.structured.pipeline import (
     CHARACTER_RENDER,
     FOLLOW_UP_RENDER,
@@ -321,6 +325,149 @@ def test_a_staged_fallback_alone_stays() -> None:
     stage = _staged(earlier, _beat(3))
     drop_fallbacks(checked, stage)
     assert [b.beat for b in checked.beats] == [2, 3, 5]
+    assert stage.get(2) is not None
+    assert repair.drop_cause is None
+    assert not [d for d in checked.degradation if d[0] == REPAIR_DROPPED]
+    assert FALLBACK_LINE in checked.degradation
+
+
+# -- the final repair_turn of a sequential turn runs the drop pass (#1029) ----------------------
+
+
+class _Connection:
+    async def __aenter__(self) -> object:
+        return object()
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _Db:
+    def connect(self) -> _Connection:
+        return _Connection()
+
+
+ACCEPTED = "Bo shrugs it off."
+
+
+class _Ladder:
+    """``RepairLadder`` as ``repair_turn`` builds it: every beat it is given regenerates once
+    and is accepted (the calling primary's render)."""
+
+    def __init__(self, *_: Any, **__: Any) -> None:
+        self.renders: list[str] = []
+        self.regenerated: list[str] = []
+
+    async def run(
+        self, beat: TurnBeat, violations: Sequence[CheckedClaim], budget: TurnBudget
+    ) -> RepairResult:
+        self.renders.append(CHARACTER_RENDER)
+        self.regenerated.append(CHARACTER_RENDER)
+        return _result(
+            TurnBeat(kind=beat.kind, beat=beat.beat, text=ACCEPTED, character_id=beat.character_id),
+            rung=REGENERATION,
+            fallback=False,
+            degradation=(),
+        )
+
+
+def _violation(number: int) -> CheckedClaim:
+    """A claim of beat ``number`` the verifier flagged for repair."""
+    return CheckedClaim(
+        claim=cast(Any, SimpleNamespace(beat=number)),
+        result=cast(Any, SimpleNamespace(needs_repair=True, hallucinated=False)),
+    )
+
+
+async def _final_repair(
+    monkeypatch: pytest.MonkeyPatch, *, follow_up_line: bool, flagged: bool
+) -> tuple[Checked, TurnStage, RepairResult]:
+    """The final ``repair_turn`` of a two-primary sequential turn, as ``respond_turn`` calls it
+    (``follow_up_render=True``, ``only`` the last render's and the follow-up's beats, the
+    turn's stage). The first render staged the narrator's fallback line (beat 2) and Ada's
+    line (beat 3); the last render is Bo's line (beat 4), flagged for repair when ``flagged``;
+    the follow-up render adds a real narration (beat 5) when ``follow_up_line``."""
+    monkeypatch.setattr(pipeline, "RepairLadder", _Ladder)
+
+    async def section(*_: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(pipeline, "read_section", section)
+    monkeypatch.setattr(
+        pipeline,
+        "DetectionConfig",
+        SimpleNamespace(of=lambda *_: SimpleNamespace(extraction_on=False)),
+    )
+    earlier, ada, bo = _narration(2), _beat(3), _beat(4, who=BO)
+    repair = _result(earlier)
+    beats = [earlier, ada, bo, *([_narration(5)] if follow_up_line else [])]
+    checked = _checked(beats, [repair])
+    checked.follow_up_beats = frozenset({5}) if follow_up_line else frozenset()
+    if flagged:
+        checked.checked = [_violation(4)]
+    stage = _staged(earlier, ada)
+    configuration = SimpleNamespace(
+        settings=ProfileSettings.model_validate({"repair": {"max_attempts": 1}})
+    )
+    read = SimpleNamespace(
+        turn=3,
+        resolved=SimpleNamespace(temperature=0.7, top_p=1.0, max_tokens=400),
+        names={},
+        name_words={},
+    )
+    rendered = SimpleNamespace(
+        finish_reason="stop", sketches={}, narrator_inputs=None, character_inputs=None
+    )
+    found = await pipeline.repair_turn(
+        cast(Any, _Db()),
+        cast(Any, None),
+        "story",
+        cast(Any, read),
+        cast(Any, rendered),
+        checked,
+        operation_id="op",
+        read_set=cast(Any, None),
+        configuration=cast(Any, configuration),
+        budget=cast(Any, None),
+        context=SimpleNamespace(active=()),
+        render_ids=[ADA, BO],
+        fallback=cast(Any, None),
+        narrator_inputs=cast(Any, None),
+        only=frozenset({4, *checked.follow_up_beats}),
+        stage=stage,
+        follow_up_render=True,
+    )
+    return found, stage, repair
+
+
+@pytest.mark.parametrize("flagged", [False, True], ids=["no_ladder", "ladder"])
+async def test_the_final_repair_drops_a_staged_fallback(
+    monkeypatch: pytest.MonkeyPatch, flagged: bool
+) -> None:
+    """#1029 (#1014, FR-REPAIR-5): the final ``repair_turn`` of a sequential turn (the
+    follow-up its own render) runs the drop pass over the whole turn: the narrator's fallback
+    line a first render staged leaves the turn and the stage once the follow-up render gives
+    the narrator a real line (``speaker_has_line``, ``repair_dropped``). Both of its returns:
+    no beat needing repair (no ladder built), and a flagged beat the ladder regenerates."""
+    checked, stage, repair = await _final_repair(monkeypatch, follow_up_line=True, flagged=flagged)
+    assert [b.beat for b in checked.beats] == [3, 4, 5]
+    assert stage.get(2) is None
+    assert [b.beat for b in stage.beats] == [3]
+    assert repair.drop_cause == SPEAKER_HAS_LINE
+    assert (REPAIR_DROPPED, SPEAKER_HAS_LINE) in checked.degradation
+    assert FALLBACK_LINE not in checked.degradation
+    if flagged:
+        assert next(b for b in checked.beats if b.beat == 4).text == ACCEPTED
+
+
+@pytest.mark.parametrize("flagged", [False, True], ids=["no_ladder", "ladder"])
+async def test_the_final_repair_keeps_a_lone_staged_fallback(
+    monkeypatch: pytest.MonkeyPatch, flagged: bool
+) -> None:
+    """#1029 complement: no later line from the narrator, so its staged fallback line stays,
+    in the turn and the stage."""
+    checked, stage, repair = await _final_repair(monkeypatch, follow_up_line=False, flagged=flagged)
+    assert [b.beat for b in checked.beats] == [2, 3, 4]
     assert stage.get(2) is not None
     assert repair.drop_cause is None
     assert not [d for d in checked.degradation if d[0] == REPAIR_DROPPED]

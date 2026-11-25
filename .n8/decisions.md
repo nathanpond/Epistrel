@@ -16375,3 +16375,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (#978):** I filed #1024 (needs-triage) for repair constraints that name a place by its raw entity id, and didn't fix it in this milestone run.
   **Why:** it predates M12 (15.5% of baseline case-seeds) and is outside #978's scope.
   **Issue:** #1024
+
+## /n8-exec M12 — 2026-11-24 (round 2: #1027)
+
+- **Decision:** Scoped this run to #1027, the one open M12 story. #1024 is needs-triage intake and #1015 is the epic, so neither was executed.
+  **Why:** `/n8-verify M12` round 1 left #1027 as the only failing row. Every other row is recorded with its commit.
+  **Issue:** #1027
+- **Decision:** Made #1027's guard a turn-level unit test, not a stub integration turn. The three tests in `tests/test_repair_render_budget.py` call `pipeline.drop_fallbacks` with a real `Checked` and `TurnStage`, where an earlier render's fallback repair is in `checked.repairs` and its beat is staged: (a) a later real line drops it (`speaker_has_line`, out of the turn and the stage); (b) a later fallback of the same speaker is the duplicate and the staged one stays; (c) complement: a staged fallback alone stays.
+  **Why:** The issue's fix asked for "an integration case (stub)". In a stub turn, though, a later narrator line can only come from the follow-up render. That needs a two-primary sequential turn with an owed salient reference, and the setup would mostly test the follow-up. A character speaker cannot get a line in a later primary's render either. The direct call covers the code path the mutant breaks. The mutant (repairs whose beat is staged left out of `drop_plan`'s input) fails (a) and (b); (c) passes, as a complement should.
+  **Issue:** #1027
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, not a local full run.
+  **Why:** The change is test-only, and the local full suite takes about 6 h serially (see the M12 verify record). Locally: ruff, format, mypy strict and import contracts are clean, and 46 related tests passed (`test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`). CI runs every shard.
+  **Issue:** #1027

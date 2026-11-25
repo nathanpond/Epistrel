@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from epistrel.api.routes.history import DegradationBody, TurnSummaryModel
+from epistrel.core.epistemic.stage import StagedBeat, TurnStage
 from epistrel.core.history import HistoryItem, TurnSummary, visible_details
 from epistrel.core.repair.rungs import FALLBACK, REGENERATION, RepairClass
 from epistrel.core.turns.beats import TurnBeat
@@ -35,6 +36,8 @@ from epistrel.orchestrator.repair.ladder import (
 from epistrel.orchestrator.structured.pipeline import (
     CHARACTER_RENDER,
     FOLLOW_UP_RENDER,
+    Checked,
+    drop_fallbacks,
     render_key,
 )
 from epistrel.orchestrator.verify.extraction import CheckedClaim
@@ -223,6 +226,105 @@ def test_a_dropped_beat_reports_repair_dropped() -> None:
     assert settled.rung_name == "state_settled"
     think = _result(_beat(5, "think"), fallback=False, kept=False)
     assert think.rung_name == "dropped"
+
+
+# -- the turn-level drop pass, across renders (#1027) ---------------------------------------------
+
+
+NARRATION = "narration"
+FALLBACK_LINE = (SAFE_FALLBACK, "repair")
+
+
+def _narration(number: int) -> TurnBeat:
+    return _beat(number, NARRATION, who=None, narrator=True)
+
+
+def _checked(beats: Sequence[TurnBeat], repairs: Sequence[RepairResult]) -> Checked:
+    """A turn's ``Checked`` after its renders: ``repairs`` include an earlier render's, whose
+    beats are staged; the flat degradation reports the fallback line, as ``repair_turn``
+    leaves it."""
+    return Checked(
+        beats=list(beats),
+        input_claims=[],
+        input_mentions=[],
+        outcomes=[],
+        checked=[],
+        requests=[],
+        latent=[],
+        mentions={b.beat: () for b in beats},
+        verifier=None,
+        salient=[],
+        degradation=[FALLBACK_LINE],
+        repairs=list(repairs),
+    )
+
+
+def _staged(*beats: TurnBeat) -> TurnStage:
+    """The turn's stage with ``beats`` staged by an earlier render."""
+    stage = TurnStage("op", 3, 0)
+    for b in beats:
+        stage.stage(
+            StagedBeat(
+                beat=b.beat,
+                kind=b.kind,
+                character_id=b.character_id,
+                text=b.text,
+                narrator=b.narrator,
+            )
+        )
+    return stage
+
+
+def test_a_staged_fallback_is_dropped_by_a_later_line() -> None:
+    """#1027 (#1014, FR-REPAIR-5): a sequential turn whose first render's narration failed and
+    became the narrator's fallback line (beat 2, staged before the next primary rendered), and
+    a later render's real narration (beat 5). The turn-level drop pass at the end of the last
+    ``repair_turn`` drops the earlier render's staged fallback (``speaker_has_line``): it
+    leaves the turn and the stage, and the turn no longer reports ``safe_fallback``."""
+    earlier = _narration(2)
+    line = _narration(5)
+    repair = _result(earlier)
+    checked = _checked([earlier, _beat(3), line], [repair])
+    stage = _staged(earlier, _beat(3))
+    drop_fallbacks(checked, stage)
+    assert [b.beat for b in checked.beats] == [3, 5]
+    assert stage.get(2) is None
+    assert [b.beat for b in stage.beats] == [3]
+    assert repair.drop_cause == SPEAKER_HAS_LINE
+    assert repair.beat is None
+    assert (REPAIR_DROPPED, SPEAKER_HAS_LINE) in checked.degradation
+    assert FALLBACK_LINE not in checked.degradation
+
+
+def test_a_later_fallback_duplicates_a_staged_one() -> None:
+    """#1027: the speaker's staged fallback line (an earlier render's) is its one fallback
+    line; a later render's fallback line for the same speaker goes (``duplicate_fallback``)
+    and the staged one stays, in the turn and the stage."""
+    earlier, later = _beat(2), _beat(5)
+    kept, duplicate = _result(earlier), _result(later)
+    checked = _checked([earlier, _beat(3, who=BO), later], [kept, duplicate])
+    stage = _staged(earlier, _beat(3, who=BO))
+    drop_fallbacks(checked, stage)
+    assert [b.beat for b in checked.beats] == [2, 3]
+    assert stage.get(2) is not None
+    assert (kept.drop_cause, duplicate.drop_cause) == (None, DUPLICATE_FALLBACK)
+    assert (REPAIR_DROPPED, DUPLICATE_FALLBACK) in checked.degradation
+    assert FALLBACK_LINE in checked.degradation  # the kept line still reports it
+
+
+def test_a_staged_fallback_alone_stays() -> None:
+    """#1027 complement: a staged fallback line whose speaker says nothing else this turn
+    stays, in the turn and the stage; nothing is reported dropped."""
+    earlier = _narration(2)
+    repair = _result(earlier)
+    checked = _checked([earlier, _beat(3), _beat(5, who=BO)], [repair])
+    stage = _staged(earlier, _beat(3))
+    drop_fallbacks(checked, stage)
+    assert [b.beat for b in checked.beats] == [2, 3, 5]
+    assert stage.get(2) is not None
+    assert repair.drop_cause is None
+    assert not [d for d in checked.degradation if d[0] == REPAIR_DROPPED]
+    assert FALLBACK_LINE in checked.degradation
 
 
 # -- the per-beat cause --------------------------------------------------------------------------

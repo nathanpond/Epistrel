@@ -16457,3 +16457,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #1037
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2–5. A serial local full run takes about 6 h. Locally: ruff, format and mypy strict (1662 files) are clean and all 8 import contracts are kept. 835 tests passed across 26 paths: the changed test files, every test file that reads `write_report`, `complete_staged`, `turn_report.staged` or the two counters, the repair, copied-lines, staged-turn and sequential/simultaneous/reactive suites, and the marker and gate checks.
   **Issue:** #1037, #1038, #1039, #1040, #1041, #1042
+- **Decision:** The CI pending budget for PR #1044 is 83 minutes: 1.5 × the longest check on PR #1036 (55 min).
+  **Why:** `reference/github.md` derives the budget from the last merged milestone PR; a budget above 30 minutes is logged.
+  **Issue:** #1037
+- **Decision:** PR #1044's first CI run had one red check, `test (integration-i-z)`: `test_config_revalidation__perception` timed out on its 5-second latch wait (`1 failed, 1355 passed`). Treated as a flake and filed as #1045, not fixed here. CI is re-run by pushing this log entry; this counts as red attempt 1 of 3.
+  **Why:** The PR changes `complete_staged` and `write_report` only and that test runs no staged turn; at the same SHA it passed 4 of 4 local runs. Changing another story's test timeout inside this PR would be scope creep.
+  **Issue:** #1037

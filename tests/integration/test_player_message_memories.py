@@ -16,6 +16,9 @@ the stub adapter.
   them and untruncating restores them.
 - ``test_message_memory__retrieved_after_working_memory``: 25 beats later the message has left
   Jenni's working memory and her retrieval still returns its memory.
+- ``test_shared_memory__one_row_per_beat`` (#1042): under shared memory (perception ``none``)
+  the message's say and do are two holder-less rows citing the message's event, and a
+  regenerate keeps them.
 """
 
 from __future__ import annotations
@@ -319,3 +322,89 @@ async def test_message_memory__retrieved_after_working_memory(
             )
         finally:
             await ps.forget_perception(engine)
+
+
+LIFTS = "lifts the third floorboard"
+
+
+async def _shared_rows(engine: AsyncEngine, story: str) -> list[Any]:
+    """The player-message memories of turn 1 with what they cite."""
+    return await rows(
+        engine,
+        "SELECT id, holder_character_id, text, membership, source_event_ids "
+        "FROM memories WHERE story_id = :s AND provenance = 'player' AND narrative_turn = 1 "
+        "ORDER BY id",
+        s=story,
+    )
+
+
+async def _message_event(engine: AsyncEngine, story: str) -> str:
+    (found,) = await rows(
+        engine,
+        "SELECT id FROM events WHERE story_id = :s AND type = 'player_input' ORDER BY seq",
+        s=story,
+    )
+    return str(found.id)
+
+
+def _assert_shared(found: list[Any], event_id: str) -> None:
+    """Two active holder-less rows, the say's and the do's, each citing the message's event."""
+    assert len(found) == 2, found
+    assert {r.holder_character_id for r in found} == {None}
+    assert {r.membership for r in found} == {"active"}
+    assert sorted(WORDS in r.text for r in found) == [False, True]
+    assert sorted(LIFTS in r.text for r in found) == [False, True]
+    assert all(event_id in [str(e) for e in r.source_event_ids] for r in found), found
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+async def test_shared_memory__one_row_per_beat(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#1042 (#958; FR-MEM-1, FR-TURN-2): a shared-memory story (perception ``none``, the
+    default). An ingested ``player_turn`` with a say and a do writes two holder-less episodic
+    rows, one per observable beat, each citing the message's event, with no model call. A
+    responded message writes the same two rows, and a regenerate (the response discarded)
+    keeps them: same ids, still active."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        # -- an ingested player turn
+        story, ids = await structured_story(client, "Wren", "Jenni")
+        stub.reset()
+        await _ingest(
+            client,
+            story,
+            {
+                "client_event_id": "m-1",
+                "kind": "player_turn",
+                "actor_character_id": ids["Wren"],
+                "say": WORDS,
+                "do": LIFTS,
+            },
+        )
+        assert stub.calls == []
+        _assert_shared(await _shared_rows(engine, story), await _message_event(engine, story))
+
+        # -- a responded message, then its response discarded
+        story, ids = await structured_story(client, "Wren", "Jenni")
+        stub.script("generation", [render(beat("say", "First answer.", intent="sincere"))])
+        response = await respond(
+            client,
+            story,
+            {
+                "actor_character_id": ids["Wren"],
+                "player_input": {"say": WORDS, "do": LIFTS},
+                "render_character_ids": [ids["Jenni"]],
+            },
+        )
+        assert response.status_code == 200, response.text
+        event_id = await _message_event(engine, story)
+        before = await _shared_rows(engine, story)
+        _assert_shared(before, event_id)
+        stub.script("generation", [render(beat("say", "Second answer.", intent="sincere"))])
+        regenerated = await client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE)
+        assert regenerated.status_code == 200, regenerated.text
+        after = await _shared_rows(engine, story)
+        assert [r.id for r in after] == [r.id for r in before]  # none written twice
+        _assert_shared(after, event_id)

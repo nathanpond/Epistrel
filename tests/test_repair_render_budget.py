@@ -5,6 +5,7 @@ and its viewpoint filter, as pure units. The end-to-end parts are I-12 M12
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -469,6 +470,124 @@ async def test_the_final_repair_keeps_a_lone_staged_fallback(
     checked, stage, repair = await _final_repair(monkeypatch, follow_up_line=False, flagged=flagged)
     assert [b.beat for b in checked.beats] == [2, 3, 4]
     assert stage.get(2) is not None
+    assert repair.drop_cause is None
+    assert not [d for d in checked.degradation if d[0] == REPAIR_DROPPED]
+    assert FALLBACK_LINE in checked.degradation
+
+
+# -- the outcome step's drop pass counts the intent's beats (#1031) -----------------------------
+
+
+FALLBACK_TEXT = "Ada changes the subject."
+
+
+class _FallbackLadder(_Ladder):
+    """``RepairLadder`` as ``repair_turn`` builds it: every beat it is given ends at the safe
+    fallback line (rung 4)."""
+
+    async def run(
+        self, beat: TurnBeat, violations: Sequence[CheckedClaim], budget: TurnBudget
+    ) -> RepairResult:
+        self.renders.append(CHARACTER_RENDER)
+        line = TurnBeat(
+            kind=beat.kind, beat=beat.beat, text=FALLBACK_TEXT, character_id=beat.character_id
+        )
+        return replace(_result(line), original=beat)
+
+
+async def _outcome_repair(
+    monkeypatch: pytest.MonkeyPatch, intent: Checked
+) -> tuple[Checked, RepairResult]:
+    """A staged turn's outcome step, as ``render_outcome_step`` calls ``repair_turn``: no
+    ``only``, no stage, no follow-up render, and ``before`` the intent step's ``Checked``.
+    The outcome step rendered one ``say`` by Ada (beat 5), flagged for repair; the ladder ends
+    it at the safe fallback line."""
+    monkeypatch.setattr(pipeline, "RepairLadder", _FallbackLadder)
+
+    async def section(*_: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(pipeline, "read_section", section)
+    monkeypatch.setattr(
+        pipeline,
+        "DetectionConfig",
+        SimpleNamespace(of=lambda *_: SimpleNamespace(extraction_on=False)),
+    )
+    outcome = _checked([_beat(5)], [])
+    outcome.degradation = []
+    outcome.checked = [_violation(5)]
+    configuration = SimpleNamespace(
+        settings=ProfileSettings.model_validate({"repair": {"max_attempts": 1}})
+    )
+    read = SimpleNamespace(
+        turn=3,
+        resolved=SimpleNamespace(temperature=0.7, top_p=1.0, max_tokens=400),
+        names={},
+        name_words={},
+    )
+    rendered = SimpleNamespace(
+        finish_reason="stop", sketches={}, narrator_inputs=None, character_inputs=None
+    )
+    found = await pipeline.repair_turn(
+        cast(Any, _Db()),
+        cast(Any, None),
+        "story",
+        cast(Any, read),
+        cast(Any, rendered),
+        outcome,
+        operation_id="op",
+        read_set=cast(Any, None),
+        configuration=cast(Any, configuration),
+        budget=cast(Any, None),
+        context=SimpleNamespace(active=()),
+        render_ids=[ADA, BO],
+        fallback=cast(Any, None),
+        narrator_inputs=cast(Any, None),
+        before=intent,
+    )
+    (repair,) = found.repairs
+    return found, repair
+
+
+async def test_the_outcome_step_drops_a_fallback_after_an_intent_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1031 (#1014, FR-REPAIR-5): Ada has a real line in the intent step (beat 2), so her
+    outcome-step beat that ended at the safe fallback is dropped: it leaves the turn, reported
+    ``repair_dropped``/``speaker_has_line``; the intent's beat is never dropped."""
+    line = _beat(2)
+    intent = _checked([line, _beat(3, who=BO)], [])
+    checked, repair = await _outcome_repair(monkeypatch, intent)
+    assert checked.beats == []
+    assert repair.drop_cause == SPEAKER_HAS_LINE
+    assert repair.beat is None
+    assert (REPAIR_DROPPED, SPEAKER_HAS_LINE) in checked.degradation
+    assert FALLBACK_LINE not in checked.degradation
+    assert intent.beats == [line, _beat(3, who=BO)]
+
+
+async def test_the_outcome_step_drops_a_second_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1031: the intent step already keeps Ada's one fallback line (beat 2), so her outcome
+    step's fallback line goes (``duplicate_fallback``) and the intent's stays."""
+    earlier = _beat(2)
+    kept = _result(earlier)
+    intent = _checked([earlier, _beat(3, who=BO)], [kept])
+    checked, repair = await _outcome_repair(monkeypatch, intent)
+    assert checked.beats == []
+    assert repair.drop_cause == DUPLICATE_FALLBACK
+    assert (REPAIR_DROPPED, DUPLICATE_FALLBACK) in checked.degradation
+    assert kept.drop_cause is None
+    assert intent.beats[0] is earlier
+
+
+async def test_the_outcome_step_keeps_a_lone_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1031 complement: Ada says nothing in the intent step (only Bo and the narrator do), so
+    her lone outcome-step fallback line stays."""
+    intent = _checked([_beat(3, who=BO), _narration(4)], [])
+    checked, repair = await _outcome_repair(monkeypatch, intent)
+    assert [(b.beat, b.text) for b in checked.beats] == [(5, FALLBACK_TEXT)]
     assert repair.drop_cause is None
     assert not [d for d in checked.degradation if d[0] == REPAIR_DROPPED]
     assert FALLBACK_LINE in checked.degradation

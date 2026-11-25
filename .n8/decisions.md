@@ -16399,3 +16399,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in round 2.
   **Why:** The change is test-only, and a serial local full run takes about 6 h. Locally: ruff, format, mypy strict (1662 files) and the 8 import contracts are clean. 50 related tests passed: `test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`.
   **Issue:** #1029
+
+## /n8-exec M12 — 2026-11-24 (round 4: #1031)
+
+- **Decision:** Scoped this run to #1031, the one open M12 bug from verify round 3. #1024 is needs-triage intake and #1015 is the epic, so neither was executed.
+  **Why:** Every other M12 row is recorded with its commit (verify round 3, a1fc90dd).
+  **Issue:** #1031
+- **Decision:** The guard calls `pipeline.repair_turn(..., before=<intent Checked>)` the way `render_outcome_step` does: no `only`, no stage, no follow-up render. It uses fakes: the `RepairLadder` fake ends the flagged outcome `say` at the safe fallback, a `db.connect()` does nothing, and `read_section`/`DetectionConfig` are patched. There are 3 tests in `tests/test_repair_render_budget.py`. In the first, Ada has a real intent line, so `speaker_has_line` drops the fallback. In the second, the intent keeps Ada's fallback, so `duplicate_fallback` drops the outcome one and the intent's stays. The third is a complement: with no earlier line from Ada, her lone fallback stays.
+  **Why:** The AC allow "through `repair_turn(..., before=...)`, or through the outcome step on the stub". The direct call exercises the exact `before=` → `drop_plan(earlier=...)` wiring that #1031's mutant breaks. With the mutant (`earlier=(), earlier_results=()`), the first two tests fail and the complement passes.
+  **Issue:** #1031
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2 and 3. The sequential local full run was started and then stopped.
+  **Why:** The change is test-only, and a serial local full run takes about 6 h. Locally: ruff, format and mypy strict (1662 files) are clean, and all 8 import contracts are kept. 88 related tests passed: `test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`, `test_u_18`, `integration/test_i_23`.
+  **Issue:** #1031

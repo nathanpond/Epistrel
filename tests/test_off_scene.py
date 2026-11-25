@@ -22,7 +22,15 @@ from typing import Any, cast
 
 from epistrel.core.epistemic.scene import present_for
 from epistrel.core.projections.structured import EntityRef, SceneView, scene
-from epistrel.core.repair.rungs import FALLBACK, NARROWING, REGENERATION, name_only, name_words
+from epistrel.core.repair.rungs import (
+    FALLBACK,
+    NARROWING,
+    REGENERATION,
+    SUBSTITUTION,
+    name_only,
+    name_words,
+    substitute,
+)
 from epistrel.core.states.effects import STATE_UNDECLARED, Finding
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.detect import DetectedClaim
@@ -168,6 +176,67 @@ async def test_a_regenerated_name_is_not_a_line() -> None:
     assert result.beat is not None
     assert result.beat.text == "Fine, Mr. Pond."
     assert any(r.rung == REGENERATION and r.reasons == (NAME_ONLY,) for r in result.rejected)
+
+
+def _swapped(text: str, answers: Sequence[str] = ()) -> tuple[RepairLadder, list[str], Any, Any]:
+    """A ladder whose rung 2 swaps "Malik" for "Nathan Pond" (``rungs.substitute``, as
+    ``RepairLadder._substitution`` does once it has the canon value), and a one-sentence
+    ``say`` of Carlos's, contradicted as a whole (so rung 1 has no sentence to remove)."""
+    ladder, asked = _ladder(answers)
+
+    def swap(beat: TurnBeat, *_: Any) -> tuple[str, list[Any]] | None:
+        made = substitute(beat.text, "Malik", "Nathan Pond")
+        return None if made is None else (made, [])
+
+    ladder._substitution = swap  # type: ignore[method-assign,assignment]
+    beat = TurnBeat(kind="say", beat=3, text=text, character_id=CARLOS)
+    violation = CheckedClaim(
+        claim=DetectedClaim(
+            span=(3, 0, len(text)),
+            layer="detector",
+            category="declared",
+            channel="say",
+            speaker=CARLOS,
+        ),
+        result=VerifyResult(
+            claim=None, verdict=Verdict(VerdictKind.CONTRADICTED), kind=VerdictKind.CONTRADICTED
+        ),
+    )
+    return ladder, asked, beat, [violation]
+
+
+async def test_a_substituted_name_is_not_a_line() -> None:
+    """#1041 (#1019): rung 2 is held to the same check. "Malik." with the name swapped for
+    canon's is "Nathan Pond.", only a name: it is not accepted at rung 2 and is recorded with
+    the ``name_only`` reason; the next rung runs and its regeneration is accepted."""
+    ladder, asked, beat, violations = _swapped("Malik.", ["It was Nathan Pond."])
+    result = await ladder.run(beat, violations, TurnBudget(max_calls=50))
+    assert result.rung == REGENERATION
+    assert result.beat is not None
+    assert result.beat.text == "It was Nathan Pond."
+    assert asked == ["Malik."]
+    (swapped,) = [r for r in result.rejected if r.rung == SUBSTITUTION]
+    assert (swapped.text, swapped.reasons) == ("Nathan Pond.", (NAME_ONLY,))
+    assert not [r for r in result.rejected if r.rung == NARROWING]
+
+    # With no regeneration either, it ends at the fallback line, never at the name.
+    ladder, _, beat, violations = _swapped("Malik.")
+    result = await ladder.run(beat, violations, TurnBudget(max_calls=50))
+    assert result.rung == FALLBACK
+    assert result.beat is not None
+    assert result.beat.text == "Carlos Rivera changes the subject."
+
+
+async def test_a_substitution_with_a_word_is_a_line() -> None:
+    """The complement: "It was Malik." swapped to "It was Nathan Pond." is accepted at rung 2,
+    and no regeneration is asked for."""
+    ladder, asked, beat, violations = _swapped("It was Malik.", ["Never mind."])
+    result = await ladder.run(beat, violations, TurnBudget(max_calls=50))
+    assert result.rung == SUBSTITUTION
+    assert result.beat is not None
+    assert result.beat.text == "It was Nathan Pond."
+    assert asked == []
+    assert not [r for r in result.rejected if r.reasons == (NAME_ONLY,)]
 
 
 def test_a_state_narrowing_to_a_name_leaves_nothing() -> None:

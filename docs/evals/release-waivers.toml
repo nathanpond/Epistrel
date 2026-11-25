@@ -29,3 +29,15 @@ Social Gambit's structured generations. It bumps MODEL_CALL_REVISION to 5, which
 preset fingerprint. The presets were already uncertified (#819 is in v2, ADR-208). The owner \
 chose on #1010 to waive the gate for 0.4.1 too. Responses at these fingerprints report \
 `uncertified`."""
+
+[[waiver]]
+version = "0.4.2"
+presets = ["standard", "full", "max"]
+decided = "2026-11-25"
+source = "https://github.com/nathanpond/Epistrel/pull/1056"
+reason = """\
+An intermediate patch release of M12's real-use fixes so far (#1025 to #1055), cut while M12 is \
+still open. The presets were already uncertified (#819 is in v2, ADR-208) and nothing here \
+recertifies them. Asked at /n8-release 0.4.2 how the release should pass this gate, the owner \
+chose "Waive for 0.4.2" over a paid three-preset recertification. Responses at these \
+fingerprints report `uncertified`."""

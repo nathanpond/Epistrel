@@ -596,13 +596,24 @@ def deterministic_outcome(
     ]
 
 
-async def write_report(conn: AsyncConnection, *, operation_id: str, report: dict[str, Any]) -> None:
+async def write_report(
+    conn: AsyncConnection,
+    *,
+    operation_id: str,
+    report: dict[str, Any],
+    details: Sequence[Mapping[str, Any]] | None = None,
+) -> None:
     """The completion's ``turn_report.staged`` (ids, statuses, counts and repair codes only),
-    beside the intent's report, in the completion's commit."""
+    beside the intent's report, in the completion's commit. #1034: ``details`` (the whole
+    turn's ``degradation_details``, the outcome step's repairs included) replace the intent's
+    ``degradation`` and ``degradation_details``."""
     found = await conn.scalar(
         select(operations.c.turn_report).where(operations.c.operation_id == operation_id)
     )
     merged = {**(found if isinstance(found, dict) else {}), "staged": report}
+    if details is not None:
+        merged["degradation"] = list(dict.fromkeys(str(d["step"]) for d in details))
+        merged["degradation_details"] = [dict(d) for d in details]
     await conn.execute(
         update(operations)
         .where(operations.c.operation_id == operation_id)

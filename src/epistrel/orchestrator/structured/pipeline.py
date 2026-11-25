@@ -7660,6 +7660,9 @@ async def play(
         # #214: what the outcome step held and did not spend goes back before the composition.
         budget.release_to(0)
         merged = _merge_checked(_copy_checked(ctx.checked), checked_out)
+        # #1034 (FR-REPAIR-5): the outcome step's repairs are the turn's. The response
+        # (``result``) and the stored report (the history read) read the merged check.
+        found[:] = [merged]
         heard = await audience_of(
             db,
             story_id,
@@ -7731,8 +7734,14 @@ async def play(
             },
             "composition": composition.report(),
         }
+        steps = _degradation(gated[0] if gated else None, released[0] if released else None, merged)
         op.add_commit_step(
-            partial(staged_turns.write_report, operation_id=op.operation_id, report=report)
+            partial(
+                staged_turns.write_report,
+                operation_id=op.operation_id,
+                report=report,
+                details=[s.payload() for s in steps],
+            )
         )
         # #265: the intent's illustration points, queued in the completion's commit.
         op.add_commit_step(partial(auto_images.queue_staged, op=op, pipeline=STRUCTURED))

@@ -16411,3 +16411,19 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2 and 3. The sequential local full run was started and then stopped.
   **Why:** The change is test-only, and a serial local full run takes about 6 h. Locally: ruff, format and mypy strict (1662 files) are clean, and all 8 import contracts are kept. 88 related tests passed: `test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`, `test_u_18`, `integration/test_i_23`.
   **Issue:** #1031
+
+## /n8-exec M12 — 2026-11-25 (round 5: #1033, #1034)
+
+- **Decision:** Scoped this run to #1033 and #1034, the two open M12 bugs from verify round 4. #1024 is needs-triage intake and #1015 is the epic, so neither was executed. Both bugs land in one commit with both `Refs` lines. They share the new staged-turn tests, and #1033's drop assertion in respond depends on #1034's fix.
+  **Why:** Every other M12 row is recorded with its commit (verify round 4, f02dbc31).
+  **Issue:** #1033, #1034
+- **Decision (#1034, Rule 1):** `complete_staged` now sets `found[:] = [merged]`, the intent's `Checked` with the outcome step's laid over it. `result()` therefore builds respond's `degradation`/`degradation_details` from the whole turn. The completion's report commit passes the same `_degradation(gated, released, merged)` to `staged.write_report(..., details=...)`, which replaces the intent's stored `degradation`/`degradation_details`, and history reads those. I did not add a second, append-only field: the stored turn report now describes the whole committed turn, the way a non-staged turn's report does. Outcome-step beats already carry the committed turn's numbers (`start + n`), so no renumbering was needed.
+  **Issue:** #1034
+- **Decision (#1033):** The guard is a stub turn through `respond`, as the issue asked. A synchronous provider stages the purchase and the game confirms it. The outcome narration "Mira is seventy years old." contradicts canon (64): there's no sentence left to narrow and no number to substitute, and the regeneration is faulted, so the beat ends at the safe fallback. A State finding (`external_outcome_unconfirmed`) can't be used here, because it settles at the deterministic rung (`state_settled`) and never at the fallback. For the complement, Cal's `do` names Mira ("buys the sword from Mira"), so the narrator isn't triggered at intent (no `unaddressed`) and has no earlier line. The three tests are in `tests/integration/test_i_12.py` (`test_i_12__m12_outcome_step_{drop,lone_fallback,no_repair}`, part M12 / FR-REPAIR-5). I ran three mutants. Removing `before=ctx.checked` fails `_drop`. Removing `found[:] = [merged]` fails `_drop` and `_lone_fallback`. Removing `details=` fails `_drop` and `_lone_fallback` at the history read. The `_no_repair` complement passes under all three.
+  **Issue:** #1033, #1034
+- **Decision:** Filed #1035 (needs-triage) and didn't fix it here: an outcome-step regeneration that repeats an unconfirmed outcome is accepted. That's verify round 4's low-confidence lead, now reproduced on the stub. It's a separate defect in the repair recheck, outside #1034's reporting scope.
+  **Issue:** #1035
+- **Decision:** No `MODEL_CALL_REVISION` bump. The fix changes only what is reported, not what a turn sends to a model.
+  **Issue:** #1034
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2–4. The change is small, and a serial local full run takes about 6 h.
+  **Issue:** #1033, #1034

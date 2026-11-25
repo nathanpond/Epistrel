@@ -7660,6 +7660,10 @@ async def play(
         # #214: what the outcome step held and did not spend goes back before the composition.
         budget.release_to(0)
         merged = _merge_checked(_copy_checked(ctx.checked), checked_out)
+        if rendered_out.clock_effects_dropped:
+            # #1046 (#996): a clock change the outcome step's own render dropped is the turn's
+            # too (``_degradation`` lists a step once, however many renders dropped one).
+            merged.degradation.append((CLOCK_EFFECT_DROPPED, "state"))
         # #1034 (FR-REPAIR-5): the outcome step's repairs are the turn's. The response
         # (``result``) and the stored report (the history read) read the merged check.
         found[:] = [merged]

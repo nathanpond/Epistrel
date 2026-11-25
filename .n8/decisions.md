@@ -16463,3 +16463,17 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** PR #1044's first CI run had one red check, `test (integration-i-z)`: `test_config_revalidation__perception` timed out on its 5-second latch wait (`1 failed, 1355 passed`). Treated as a flake and filed as #1045, not fixed here. CI is re-run by pushing this log entry; this counts as red attempt 1 of 3.
   **Why:** The PR changes `complete_staged` and `write_report` only and that test runs no staged turn; at the same SHA it passed 4 of 4 local runs. Changing another story's test timeout inside this PR would be scope creep.
   **Issue:** #1037
+
+## /n8-exec M12 — 2026-11-25 (round 7: #1046)
+
+- **Decision:** Scoped this run to #1046 alone, on the owner's instruction after verify round 6: "do #1046, leave the others in M12 but don't work them yet. I want to cut an intermediate release". #1047–#1054 stay open in M12; #1048, #1051 and #1052 are still `sev:high`.
+  **Issue:** #1046
+- **Decision (#1046, Rule 1):** `complete_staged` appends `(clock_effect_dropped, "state")` to the merged check's degradation when the outcome step's render dropped a clock effect. respond (`result`), the stored report, the history read and the post-commit `count_degradation` all read the merged check, so nothing else changes. No "already there" guard: `_degradation` lists a step once, and a guard would be code no test can fail (checked: the guarded and unguarded forms pass and fail the same tests).
+  **Why:** The alternative was passing the outcome step's `Rendered` into `_degradation` at three call sites. The merged check is already the one place #1034 and #1037 made the turn's truth.
+  **Issue:** #1046
+- **Decision (#1046):** The outcome step's `latent_holder_repairs` is not carried. The outcome step keeps only narration beats, so a latent beat its render repaired is discarded with nothing left to report.
+  **Issue:** #1046
+- **Decision (#1046):** Tests are `test_i_12__m12_outcome_step_clock_drop[outcome_step|both|intent]` and `test_i_12__m12_outcome_step_no_clock_drop` in `tests/integration/test_i_12.py`, beside the staged-turn helpers they use. With the fix reverted `[outcome_step]` fails; with the drop reported unconditionally the complement fails. The `[intent]` case is part of #1046's "deduped against the intent's" and also fails under #1047's mutant (the intent's render passed as `None` at the completion); #1047 is left open for verify to judge.
+  **Issue:** #1046, #1047
+- **Decision:** No `MODEL_CALL_REVISION` bump: reporting only. The gate is the targeted local set plus CI's sharded full suite, as in rounds 2–6. Locally: ruff, format and mypy strict (1662 files) clean, 8 import contracts kept, 714 passed across `test_i_12`, the clock-effect, staged-turn, two-stage, repair-budget, effect-prose, conditional-effects and budget-surface files and `tests/gates`.
+  **Issue:** #1046

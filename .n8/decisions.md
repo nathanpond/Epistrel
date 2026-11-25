@@ -16387,3 +16387,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, not a local full run.
   **Why:** The change is test-only, and the local full suite takes about 6 h serially (see the M12 verify record). Locally: ruff, format, mypy strict and import contracts are clean, and 46 related tests passed (`test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`). CI runs every shard.
   **Issue:** #1027
+
+## /n8-exec M12 — 2026-11-24 (round 3: #1029)
+
+- **Decision:** Scoped this run to #1029, the one open M12 bug from verify round 2. #1024 is needs-triage intake and #1015 is the epic, so neither was executed.
+  **Why:** Every other M12 row is recorded with its commit (verify round 2, 527f44c).
+  **Issue:** #1029
+- **Decision:** The guard calls `pipeline.repair_turn` with `follow_up_render=True`, not the whole sequential stub turn. It uses fakes: `RepairLadder` accepts one regeneration, a `db.connect()` does nothing, and `read_section`/`DetectionConfig` are patched. The merged `Checked` holds the first render's staged narrator fallback, Ada's staged line, Bo's last-render line and a follow-up narration. It is parametrized over both returns: no beat flagged (no ladder) and Bo's beat flagged (ladder). A complement has no follow-up line. 4 tests in `tests/test_repair_render_budget.py`.
+  **Why:** The AC allow "drives `repair_turn` (or the sequential turn)". A stub sequential turn needs a follow-up render triggered by an owed salient reference, as #1027's entry found; most of that setup would test the follow-up rather than the drop wiring. The direct call exercises the exact wiring the mutants break. Mutant 1 (skip at the final call) fails `[ladder]`. Mutant 2 (skip at the `ladder is None` return) fails `[no_ladder]`. Both complements pass under each mutant.
+  **Issue:** #1029
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in round 2.
+  **Why:** The change is test-only, and a serial local full run takes about 6 h. Locally: ruff, format, mypy strict (1662 files) and the 8 import contracts are clean. 50 related tests passed: `test_repair_render_budget`, `integration/test_i_12`, `test_copied_lines`, `test_repair_fallback`, `test_off_scene`.
+  **Issue:** #1029

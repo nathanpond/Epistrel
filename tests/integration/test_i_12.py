@@ -73,6 +73,7 @@ from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.structured import staged
 from epistrel.orchestrator.verify.verifier import story_verifier
+from tests import clock_support as cs
 from tests import commit_support
 from tests import effect_support as es
 from tests import multi_support as ms
@@ -1649,4 +1650,144 @@ async def test_i_12__m12_outcome_step_counts(
         }
         assert _repairs_since(counted) == {"dropped": 2.0}
         assert _degraded("repair_dropped") - degraded == 1
+        await _close_shop(engine, story)
+
+
+CLOCK_CHANGE = {
+    "kind": "change",
+    "state": "world_clock",
+    "delta": 30,
+    "reason": "evening falls",
+    "silent": True,
+}
+CLOCK_DROPPED = {"step": "clock_effect_dropped", "cause": "state"}
+
+
+def _clock_drops(details: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [d for d in details if d["step"] == "clock_effect_dropped"]
+
+
+async def _history_clock_drops(client: Any, story: str, turn: int) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"/stories/{story}/history", params={"viewpoint": "omniscient"}, headers=READ
+    )
+    assert response.status_code == 200, response.text
+    (found,) = [t for t in response.json()["turns"] if t["turn"] == turn]
+    return _clock_drops(found.get("degradation_details", []))
+
+
+async def _turn_clock_changes(engine: AsyncEngine, story: str) -> list[Any]:
+    return list(
+        await rows(
+            engine,
+            "SELECT c.id FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+            "WHERE c.story_id = :s AND d.name = 'world_clock' AND c.source = 'turn'",
+            s=story,
+        )
+    )
+
+
+async def _clock_purchase(
+    client: Any,
+    stub: Any,
+    fake: Any,
+    story: str,
+    cal: str,
+    *,
+    intent_clock: bool,
+    outcome_clock: bool,
+) -> dict[str, Any]:
+    """One staged purchase with the world clock on. Mira's render (the intent) and the outcome
+    step's render each carry a ``world_clock`` change when asked to, on the first answer and
+    on the corrected retry, so the change is dropped."""
+    stub.reset()
+    fake.script_writes("gold", "confirmed")
+    outcome = beat("narration", WENT, effects=[CLOCK_CHANGE] if outcome_clock else [])
+    stub.when(staged.OUTCOME_STEP, es.render(outcome), purpose="generation")
+    spent = [es.effect("gold", scope_key=cal, delta=-50, reason="a sword")]
+    ms.renders_for(
+        stub,
+        "Mira",
+        es.render(beat("do", TAKES, effects=spent + ([CLOCK_CHANGE] if intent_clock else []))),
+    )
+    answer = await respond(client, story, body(cal, None, do="buys the sword from Mira"))
+    assert answer.status_code == 200, answer.text
+    return dict(answer.json())
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+@pytest.mark.parametrize(
+    ("intent_clock", "outcome_clock"),
+    [(False, True), (True, True), (True, False)],
+    ids=["outcome_step", "both", "intent"],
+)
+async def test_i_12__m12_outcome_step_clock_drop(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+    intent_clock: bool,
+    outcome_clock: bool,
+) -> None:
+    """#1046 (#996, FR-CLOCK-12): a staged turn whose outcome-step render changes
+    ``world_clock`` is 200, the clock does not move, and the drop is recorded
+    (``clock_effect_dropped``) once in respond, in the stored report, in the history read and
+    in ``epistrel_turn_degradation_total``; once too when the intent's render dropped one as
+    well, and when only the intent's did."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        await cs.set_level(engine, story, "on")
+        degraded = _degraded("clock_effect_dropped")
+        played = await _clock_purchase(
+            client,
+            stub,
+            fake,
+            story,
+            cal,
+            intent_clock=intent_clock,
+            outcome_clock=outcome_clock,
+        )
+        assert WENT in _narrations(played)
+        report = await turn_report(engine, story)
+        assert report["staged"]["outcome_step"]["deterministic"] is False
+        assert played["degradation"].count("clock_effect_dropped") == 1
+        assert _clock_drops(played["degradation_details"]) == [CLOCK_DROPPED]
+        assert report["degradation"].count("clock_effect_dropped") == 1
+        assert _clock_drops(report["degradation_details"]) == [CLOCK_DROPPED]
+        assert await _history_clock_drops(client, story, played["turn"]) == [CLOCK_DROPPED]
+        assert _degraded("clock_effect_dropped") - degraded == 1
+        assert await _turn_clock_changes(engine, story) == []
+        await cs.set_level(engine, story, None)
+        await _close_shop(engine, story)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_outcome_step_no_clock_drop(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1046's complement: a staged turn whose renders leave the clock alone reports no
+    ``clock_effect_dropped`` anywhere and counts none."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        await cs.set_level(engine, story, "on")
+        degraded = _degraded("clock_effect_dropped")
+        played = await _clock_purchase(
+            client, stub, fake, story, cal, intent_clock=False, outcome_clock=False
+        )
+        assert WENT in _narrations(played)
+        report = await turn_report(engine, story)
+        assert "clock_effect_dropped" not in played["degradation"]
+        assert _clock_drops(played["degradation_details"]) == []
+        assert "clock_effect_dropped" not in report["degradation"]
+        assert _clock_drops(report["degradation_details"]) == []
+        assert await _history_clock_drops(client, story, played["turn"]) == []
+        assert _degraded("clock_effect_dropped") == degraded
+        await cs.set_level(engine, story, None)
         await _close_shop(engine, story)

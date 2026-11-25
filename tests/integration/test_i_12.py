@@ -73,10 +73,12 @@ from epistrel.core.views import audit_view
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.structured import staged
 from epistrel.orchestrator.verify.verifier import story_verifier
+from tests import commit_support
 from tests import effect_support as es
 from tests import multi_support as ms
 from tests import partition_support as parts
 from tests import provider_support as ps
+from tests import reactive_support as rs
 from tests import state_support as ss
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
@@ -87,7 +89,7 @@ from tests.fixtures.key_room import key_room
 from tests.memory_support import use_structured
 from tests.projection_support import truncate
 from tests.respond_support import body, respond, respond_client
-from tests.story_support import READ, override
+from tests.story_support import READ, create, override, story_body
 from tests.structured_turn_support import (
     age_fact,
     beat,
@@ -687,6 +689,30 @@ def _renders(regenerated: bool) -> float:
     return REGISTRY.get_sample_value("epistrel_repair_renders_total", {"regenerated": label}) or 0.0
 
 
+def _repairs_by_rung() -> dict[str, float]:
+    """``epistrel_repairs_total`` by ``rung``, summed over its classes."""
+    found: dict[str, float] = {}
+    for metric in REGISTRY.collect():
+        for sample in metric.samples:
+            if sample.name == "epistrel_repairs_total":
+                rung = sample.labels["rung"]
+                found[rung] = found.get(rung, 0.0) + sample.value
+    return found
+
+
+def _repairs_since(before: dict[str, float]) -> dict[str, float]:
+    """The rungs ``epistrel_repairs_total`` counted since ``before``, each with its delta."""
+    return {
+        rung: value - before.get(rung, 0.0)
+        for rung, value in _repairs_by_rung().items()
+        if value != before.get(rung, 0.0)
+    }
+
+
+def _degraded(step: str) -> float:
+    return REGISTRY.get_sample_value("epistrel_turn_degradation_total", {"step": step}) or 0.0
+
+
 def _texts(played: dict[str, Any]) -> list[str]:
     return [b["text"] for b in played["beats"] if str(b["kind"]).startswith("beat_")]
 
@@ -818,6 +844,80 @@ async def test_i_12__m12_render_budget_limit(
         assert report["budget"]["used"] <= cap, report["budget"]
 
 
+KNOCK_TEXT = "Someone knocks at the door."
+"""The knock fixture's salient ``do`` (``tests/commit_support``): who knocked is open, so the
+turn owes a follow-up render."""
+RAIN = "Rain taps the window."
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_render_budget_follow_up(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1039 (#1014, FR-REPAIR-5): the last primary and the follow-up render are two renders,
+    each with its own ``repair.max_attempts``. Sequential turn, ``max_attempts: 1``: Bo (the
+    last primary) knocks, which owes a follow-up, and says a flagged line; the follow-up
+    narrates a flagged beat. Both regenerate and neither falls back (before #1014 they shared
+    one attempt, and the follow-up's beat was ``skipped_max_attempts``)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, "Ada", "Bo")
+        async with engine.begin() as conn:
+            await store.add_entity(conn, story, "item", "door")
+            await store.add_entity(conn, story, "person", "mailman")
+            await registry.auto_register(conn, story, "knocked_at")
+        stub.reset()
+        ms.renders_for(stub, "Ada", ms.render(beat("say", "Evening, all.", intent="sincere")))
+        ms.renders_for(stub, "Bo", ms.render(beat("do", KNOCK_TEXT), _old()))
+        stub.when(
+            "## Settle now",
+            es.render(
+                beat(
+                    "narration",
+                    "The mailman knocked at the door.",
+                    propositions=[claim("mailman", "knocked_at", "door")],
+                ),
+                _narrated_old("Bo"),
+            ),
+            purpose="generation",
+        )
+        stub.when(
+            KNOCK_TEXT,
+            commit_support.salience_answer((3, KNOCK_TEXT, commit_support.KNOCK)),
+            purpose="salience_detection",
+        )
+        # The first match wins: the follow-up's regeneration prompt holds Bo's line before it.
+        stub.when("Bo is seventy", _regenerated(RAIN), purpose="regeneration")
+        stub.when(SEVENTY, _regenerated(SAY_REGENERATED), purpose="regeneration")
+        accepted = _regenerations("accepted")
+        skipped = _regenerations("skipped_max_attempts")
+        answer = await respond(
+            client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"], ids["Bo"]])
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        report = await turn_report(engine, story)
+        follow = report["commit"]["follow_up"]
+        assert follow["ran"] is True, follow
+        texts = _texts(played)
+        assert SAY_REGENERATED in texts, texts
+        assert RAIN in texts, texts
+        assert [b["kind"] for b in played["beats"] if b["text"] == RAIN] == ["beat_narration"]
+        assert next(b["beat"] for b in played["beats"] if b["text"] == RAIN) in follow["beats"]
+        assert not [t for t in texts if t.endswith(FALLBACK_SUFFIX) or t == "A moment passes."]
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 2
+        assert report["repair"] == {
+            "renders": 2,
+            "renders_regenerated": 2,
+            "regenerations": 2,
+            "fallbacks": 0,
+            "dropped": 0,
+        }
+        assert _regenerations("accepted") - accepted == 2
+        assert _regenerations("skipped_max_attempts") == skipped
+        assert "repair_deterministic" not in played["degradation"]
+
+
 @pytest.mark.part("M12", "FR-REPAIR-5")
 async def test_i_12__m12_drop_rule(
     stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
@@ -847,8 +947,11 @@ async def test_i_12__m12_drop_rule(
             ],
         )
         stub.script("regeneration", [still])
+        counted = _repairs_by_rung()
         played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
         assert _texts(played) == ["The fire is warm."], _texts(played)
+        # #1038: a dropped beat counts as ``rung="dropped"`` only, not also at its numeric rung.
+        assert _repairs_since(counted) == {"dropped": 2.0}
         assert FALLBACK_SUFFIX not in played["message"]["text"]
         dropped = [d for d in _repair_details(played) if d["step"] == "repair_dropped"]
         assert [(d["cause"], d["rung"], d["character_id"]) for d in dropped] == [
@@ -879,8 +982,11 @@ async def test_i_12__m12_drop_rule(
         stub.reset()
         stub.script("generation", [render(_old())])
         stub.script("regeneration", [still])
+        counted = _repairs_by_rung()
         played = (await respond(client, story, body(ids["Wren"], "How old are you?"))).json()
         assert played["message"]["text"] == 'Ada: "Ada changes the subject."'
+        # #1038's complement: a committed fallback counts at its own rung, never as dropped.
+        assert _repairs_since(counted) == {"safe_fallback": 1.0}
         assert "repair_dropped" not in played["degradation"]
 
         # -- (d) a failing narration next to an accepted one is dropped
@@ -1126,6 +1232,88 @@ async def test_i_12__m12_copied_lines_complements(
         assert (await turn_report(engine, story))["multi"]["copied"] == 0
 
 
+ECHOED = "A long slow nod toward the door."
+"""A 6-word sentence: a copy under #1013 when another speaker's later beat repeats it."""
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_single_primary(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1040 (#1013's scope, FR-MULTI-11): a single-primary turn is not checked for copied
+    lines. Jenni is the only primary; the reaction she narrates for Ada repeats a 6-word
+    sentence of Jenni's own ``do``. Both beats commit as rendered: no ``copied_line``
+    violation, no regeneration, no ``epistrel_copied_lines_total`` count, and
+    ``turn_report.multi.copied`` is 0."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine)
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Jenni",
+            rs.render(beat("do", ECHOED), reactions=[rs.reaction(b["Ada"], ECHOED)]),
+        )
+        regenerated, dropped = _copied("regenerated"), _copied("dropped")
+        answer = await respond(
+            client,
+            b.story_id,
+            body(b["Cal"], "Well that sucked.", render_character_ids=[b["Jenni"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert _lines(played, b.ids) == {"Jenni": [ECHOED], "Ada": [ECHOED]}, played["beats"]
+        assert not [c for c in stub.calls if c.purpose == "regeneration"]
+        assert "repair_dropped" not in played["degradation"]
+        assert not [d for d in played["degradation_details"] if "copied_line" in json.dumps(d)]
+        assert (_copied("regenerated"), _copied("dropped")) == (regenerated, dropped)
+        report = await turn_report(engine, b.story_id)
+        assert not report.get("multi", {}).get("copied")
+        assert "repairs" not in report
+        copied = [
+            v
+            for e in await _audit(engine, b.story_id, "render_rejected")
+            for v in e.payload.verdicts
+            if v.get("cause") == "copied_line"
+        ]
+        assert copied == []
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_lite(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1040 (#1013's scope, FR-MULTI-11): a Lite turn is not checked for copied lines. Its one
+    reply has Malik and Jared say the same 6-word sentence; it commits as generated, with one
+    ``generation`` call, no regeneration, no ``epistrel_copied_lines_total`` count and no
+    ``multi`` or ``repairs`` in the turn report."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        created = await create(client, story_body("Wren", "Malik", "Jared"))
+        story = created["story_id"]
+        ids = {c["name"]: c["id"] for c in created["characters"]}
+        stub.reset()
+        reply = f'Malik: "{ECHOED}"\n\nJared: "{ECHOED}"'
+        stub.script("generation", [reply])
+        regenerated, dropped = _copied("regenerated"), _copied("dropped")
+        answer = await respond(
+            client,
+            story,
+            body(ids["Wren"], "Well that sucked.", render_character_ids=[ids["Malik"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert played["message"]["text"] == reply
+        assert [c.purpose for c in stub.calls if c.purpose in ("generation", "regeneration")] == [
+            "generation"
+        ]
+        assert "repair_dropped" not in played["degradation"]
+        assert (_copied("regenerated"), _copied("dropped")) == (regenerated, dropped)
+        report = await turn_report(engine, story)
+        assert "multi" not in report
+        assert "repairs" not in report
+
+
 @pytest.mark.part("M12", "FR-MULTI-8; FR-REPAIR-5")
 async def test_i_12__m12_copied_lines_simultaneous(
     stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
@@ -1250,7 +1438,7 @@ async def _purchase(
     )
     ms.renders_for(stub, "Mira", mira)
     es.narrator(stub, es.render(beat("narration", FORGE)))
-    stub.fault("regeneration", "timeout")
+    stub.fault("regeneration", "timeout", n=2)
     answer = await respond(client, story, body(cal, None, do=do))
     assert answer.status_code == 200, answer.text
     return dict(answer.json())
@@ -1295,6 +1483,7 @@ async def test_i_12__m12_outcome_step_drop(
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         story, cal, fake = await _shop(client, engine, epistrel)
+        counted, degraded = _repairs_by_rung(), _degraded("repair_dropped")
         played = await _purchase(
             client, stub, fake, story, cal, do="buys the sword", outcome=_seventy()
         )
@@ -1315,6 +1504,16 @@ async def test_i_12__m12_outcome_step_drop(
         assert dropped in details, details
         assert "repair_dropped" in played["degradation"]
         assert dropped in await _history_details(client, story, played["turn"])
+        # #1037: the outcome step's repair is in the turn's totals and in the counters.
+        assert report["repair"] == {
+            "renders": 1,
+            "renders_regenerated": 1,
+            "regenerations": 1,
+            "fallbacks": 0,
+            "dropped": 1,
+        }
+        assert _repairs_since(counted) == {"dropped": 1.0}
+        assert _degraded("repair_dropped") - degraded == 1
         await _close_shop(engine, story)
 
 
@@ -1333,6 +1532,7 @@ async def test_i_12__m12_outcome_step_lone_fallback(
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         story, cal, fake = await _shop(client, engine, epistrel)
+        counted, degraded = _repairs_by_rung(), _degraded("safe_fallback")
         played = await _purchase(
             client, stub, fake, story, cal, do="buys the sword from Mira", outcome=_seventy()
         )
@@ -1355,6 +1555,10 @@ async def test_i_12__m12_outcome_step_lone_fallback(
         assert entry in details, details
         assert not [d for d in details if d["step"] == "repair_dropped"]
         assert entry in await _history_details(client, story, played["turn"])
+        # #1037: a committed outcome-step fallback is counted at its own rung.
+        assert (report["repair"]["fallbacks"], report["repair"]["dropped"]) == (1, 0)
+        assert _repairs_since(counted) == {"safe_fallback": 1.0}
+        assert _degraded("safe_fallback") - degraded == 1
         await _close_shop(engine, story)
 
 
@@ -1378,6 +1582,7 @@ async def test_i_12__m12_outcome_step_no_repair(
             intent="sincere",
             propositions=[claim("I", "age", "70")],
         )
+        counted, degraded = _repairs_by_rung(), _degraded("repair_dropped")
         played = await _purchase(
             client,
             stub,
@@ -1397,4 +1602,51 @@ async def test_i_12__m12_outcome_step_no_repair(
         assert all(d["beat"] < first for d in details), details
         assert len({json.dumps(d, sort_keys=True) for d in details}) == len(details)
         assert await _history_details(client, story, played["turn"]) == details
+        # #1037's complement: an outcome step that repairs nothing adds nothing to the
+        # intent's totals or counters.
+        assert report["repair"]["dropped"] == 1
+        assert _repairs_since(counted) == {"dropped": 1.0}
+        assert _degraded("repair_dropped") - degraded == 1
+        await _close_shop(engine, story)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_outcome_step_counts(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1037 (FR-REPAIR-5): both stages of a staged turn drop a beat. The intent drops Mira's
+    failing ``say`` beside her real ``do``, and the outcome step drops its failing narration
+    beside the intent's. ``turn_report.repair`` totals the turn (two renders, two dropped),
+    ``epistrel_repairs_total{rung="dropped"}`` counts both beats, and
+    ``epistrel_turn_degradation_total{step="repair_dropped"}`` counts the step once for the
+    turn (the completion doesn't count a step the intent already counted)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, cal, fake = await _shop(client, engine, epistrel)
+        said = beat(
+            "say",
+            "I am seventy years old.",
+            intent="sincere",
+            propositions=[claim("I", "age", "70")],
+        )
+        counted, degraded = _repairs_by_rung(), _degraded("repair_dropped")
+        played = await _purchase(
+            client, stub, fake, story, cal, do="buys the sword", outcome=_seventy(), said=said
+        )
+        assert _narrations(played) == [FORGE]
+        dropped = [d for d in _repair_details(played) if d["step"] == "repair_dropped"]
+        assert len(dropped) == 2, dropped
+        report = await turn_report(engine, story)
+        assert report["repair"] == {
+            "renders": 2,
+            "renders_regenerated": 2,
+            "regenerations": 2,
+            "fallbacks": 0,
+            "dropped": 2,
+        }
+        assert _repairs_since(counted) == {"dropped": 2.0}
+        assert _degraded("repair_dropped") - degraded == 1
         await _close_shop(engine, story)

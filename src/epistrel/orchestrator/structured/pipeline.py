@@ -7741,6 +7741,8 @@ async def play(
                 operation_id=op.operation_id,
                 report=report,
                 details=[s.payload() for s in steps],
+                # #1037 (FR-REPAIR-5): the turn's repair totals, the outcome step's included.
+                repair=(repair_totals(merged) if merged.repairs or merged.repair_renders else None),
             )
         )
         # #265: the intent's illustration points, queued in the completion's commit.
@@ -7748,6 +7750,19 @@ async def play(
         op.turn_stage = StagedTurnStage.COMPLETED
         op.stage_turn(staged_turns.COMPLETION)
         await op.commit()
+        # #1037 (FR-REPAIR-5): the outcome step's repairs and the degradation steps it added,
+        # counted at the completion's commit (the intent's were counted at the intent's).
+        for repaired in checked_out.repairs:
+            count_repair(
+                repaired.rung, repaired.repair_class.value, dropped=repaired.drop_cause is not None
+            )
+        counted = {
+            s.step
+            for s in _degradation(
+                gated[0] if gated else None, released[0] if released else None, ctx.checked
+            )
+        }
+        count_degradation(dict.fromkeys(s.step for s in steps if s.step not in counted))
 
     async def result(conn: AsyncConnection | AsyncEngine, committed: Operation) -> RespondResult:
         # #177: the committed turn's beats through the same audience filter.

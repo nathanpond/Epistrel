@@ -602,11 +602,13 @@ async def write_report(
     operation_id: str,
     report: dict[str, Any],
     details: Sequence[Mapping[str, Any]] | None = None,
+    repair: Mapping[str, int] | None = None,
 ) -> None:
     """The completion's ``turn_report.staged`` (ids, statuses, counts and repair codes only),
     beside the intent's report, in the completion's commit. #1034: ``details`` (the whole
     turn's ``degradation_details``, the outcome step's repairs included) replace the intent's
-    ``degradation`` and ``degradation_details``."""
+    ``degradation`` and ``degradation_details``. #1037: ``repair`` (the whole turn's repair
+    totals) replaces the intent's ``repair``."""
     found = await conn.scalar(
         select(operations.c.turn_report).where(operations.c.operation_id == operation_id)
     )
@@ -614,6 +616,8 @@ async def write_report(
     if details is not None:
         merged["degradation"] = list(dict.fromkeys(str(d["step"]) for d in details))
         merged["degradation_details"] = [dict(d) for d in details]
+    if repair is not None:
+        merged["repair"] = dict(repair)
     await conn.execute(
         update(operations)
         .where(operations.c.operation_id == operation_id)

@@ -16427,3 +16427,39 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #1034
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2–4. The change is small, and a serial local full run takes about 6 h.
   **Issue:** #1033, #1034
+
+## /n8-exec M12 — 2026-11-25 (round 6: #1037–#1042)
+
+- **Decision:** Scoped this run to #1037–#1042, the six open M12 bugs from verify round 5. #1024 is needs-triage intake and #1015 is the epic, so neither was executed. #1037–#1040 land in one commit with four `Refs` lines: their tests share `tests/integration/test_i_12.py` and its new counter helpers. #1041 and #1042 each have their own commit.
+  **Why:** Every other M12 row is recorded with its commit (verify round 5, 6a53e861).
+  **Issue:** #1037, #1038, #1039, #1040, #1041, #1042
+- **Decision (#1037, Rule 1):** `complete_staged` passes `repair_totals(merged)` to `staged.write_report(..., repair=...)`, which replaces the intent's `turn_report.repair`, the way #1034 replaced `degradation_details`. After the completion commits it calls `count_repair` for each outcome-step repair and `count_degradation` for the steps the merged turn has that the intent's own `_degradation` didn't. The intent's repairs and steps were counted at the intent's commit, so the completion counts only what the outcome step added.
+  **Why:** The alternatives were to count the whole merged turn at completion (double-counts the intent) or to defer the intent's counting to completion (a staged turn that never completes would count nothing). The counting sits after `op.commit()`, not in a commit step, so a completion that fails to commit counts nothing.
+  **Issue:** #1037
+- **Decision (#1037):** `_purchase` in `test_i_12.py` now faults two regenerations (`n=2`), not one. Its docstring already said "Every regeneration fails", and the new both-stages test needs the intent's and the outcome step's regenerations to fail. Four tests guard the fix; five mutants were run and each fails at least two of them (no `repair=`, no `count_repair`, no `count_degradation`, no dedupe against the intent, and #1038's `dropped=False`).
+  **Issue:** #1037, #1038
+- **Decision (#1039):** The guard is the stub sequential turn the issue asked for, but the issue's mutant (`follow_up_render=False`) does **not** fail it, and no multi-primary turn can make it fail. With several primaries the narrator's beats are repaired with the first primary and never reach the final `repair_turn`; the follow-up's narration beats and the last primary's say/do beats already have different render keys without the flag. I checked this by running the mutant against the new test (passes). The test does fail when the two renders share a budget: with `render_of` returning one key, the follow-up's beat is `skipped_max_attempts` and dropped. I'm reporting #1039 as done on that basis, with the unkillable mutant stated in its completion comment for verify to judge.
+  **Why:** The issue's gap is "nothing guards the last primary and the follow-up having separate budgets", and the test now guards that. Its named mutant is equivalent for this turn shape, so "fails under the mutant above" can't be met by any test of the described turn.
+  **Issue:** #1039
+- **Decision (#1039):** Filed #1043 (needs-triage) and didn't fix it here. The flag does matter in a single-primary turn, where it is false: the narrator's render and the follow-up render share one `max_attempts`, against #1014's AC wording. Reproduced on the stub. Whether that is a defect or intended is a triage call (#1014's planner note describes a third arrangement).
+  **Why:** It's production behaviour outside a test-only issue's scope.
+  **Issue:** #1039, #1043
+- **Decision (#1040):** The single-primary guard uses a narrated reaction as the second speaker: Jenni is the only primary and the reaction she narrates for Ada repeats a 6-word sentence of her `do`. The issue's mutant fails it. The Lite guard is a Lite turn whose one reply has two speakers say the same sentence. The issue's mutant can't fail the Lite test, because the Lite pipeline never calls `repair_turn`; the test guards the AC's "Lite is unchanged" against a future change to Lite itself. Stated in the completion comment.
+  **Why:** The issue asks for "the same check for a Lite turn" and that "each fails under the mutant"; the second is impossible for Lite, whose code the mutant doesn't touch.
+  **Issue:** #1040
+- **Decision (#1041):** The ladder test replaces `RepairLadder._substitution` with a function that calls the real `rungs.substitute` ("Malik" → "Nathan Pond"), the way the file's `_ladder` already replaces `_regenerate`. It doesn't build a registry, a contradicted fact and a functional predicate to drive the real `_substitution`.
+  **Why:** The guard under test is the shared `name_only` check in `attempt()` at rung 2, and the fake reaches it with the real swap. The issue's mutant fails the test; the complement (a swap that leaves a word) is accepted at rung 2.
+  **Issue:** #1041
+- **Decision (#1042):** The new test in `test_player_message_memories.py` has no `part` marker, like the file's other tests.
+  **Why:** The file gates from #958's milestone already; adding an M12 part for FR-MEM-1 would put one requirement's tests in two milestones (invariant 7).
+  **Issue:** #1042
+- **Decision:** No `MODEL_CALL_REVISION` bump. #1037 changes only what is reported and counted, not what a turn sends to a model.
+  **Issue:** #1037
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 2–5. A serial local full run takes about 6 h. Locally: ruff, format and mypy strict (1662 files) are clean and all 8 import contracts are kept. 835 tests passed across 26 paths: the changed test files, every test file that reads `write_report`, `complete_staged`, `turn_report.staged` or the two counters, the repair, copied-lines, staged-turn and sequential/simultaneous/reactive suites, and the marker and gate checks.
+  **Issue:** #1037, #1038, #1039, #1040, #1041, #1042
+- **Decision:** The CI pending budget for PR #1044 is 83 minutes: 1.5 × the longest check on PR #1036 (55 min).
+  **Why:** `reference/github.md` derives the budget from the last merged milestone PR; a budget above 30 minutes is logged.
+  **Issue:** #1037
+- **Decision:** PR #1044's first CI run had one red check, `test (integration-i-z)`: `test_config_revalidation__perception` timed out on its 5-second latch wait (`1 failed, 1355 passed`). Treated as a flake and filed as #1045, not fixed here. CI is re-run by pushing this log entry; this counts as red attempt 1 of 3.
+  **Why:** The PR changes `complete_staged` and `write_report` only and that test runs no staged turn; at the same SHA it passed 4 of 4 local runs. Changing another story's test timeout inside this PR would be scope creep.
+  **Issue:** #1037

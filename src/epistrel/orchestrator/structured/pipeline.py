@@ -3047,6 +3047,7 @@ async def repair_turn(
                 render_of=render_of,
                 cast_names=read.names,
                 name_words=read.name_words,
+                introduced=checked.introductions.names,
             )
         result = await ladder.run(beat, violations, budget)
         _merge_repair(checked, result)

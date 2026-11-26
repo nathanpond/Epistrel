@@ -754,6 +754,7 @@ class RepairLadder:
         render_of: RenderOf | None = None,
         cast_names: Mapping[str, str] | None = None,
         name_words: frozenset[str] | None = None,
+        introduced: Callable[[], Mapping[str, str]] | None = None,
     ) -> None:
         self.db = db
         self.models = models
@@ -773,6 +774,9 @@ class RepairLadder:
         self.cast_names: Mapping[str, str] = cast_names or {}
         """#1013: the render's cast names, for a copied line's ``no_copy`` constraint."""
         self.name_words = name_words or frozenset()
+        self.introduced: Callable[[], Mapping[str, str]] = introduced or dict
+        """#1024: the names of the places and objects the turn minted (``Introductions.names``),
+        not yet entities, so a constraint names them, never by id."""
         self.used: dict[Hashable, int] = {}
         """#1014: the regenerations each render has used."""
         self.renders: list[Hashable] = []
@@ -844,6 +848,8 @@ class RepairLadder:
             props = [f.proposition for f in (*contradicted.values(), *neighbors.values())]
             props += [v.claim.proposition for v in violations if v.claim.proposition is not None]
             names = await _names(conn, self.story_id, props)
+            for minted, name in self.introduced().items():
+                names.setdefault(minted, name)  # #1024
             made = [await self._constraint(v, registry, names) for v in violations]
             # #1013: one ``no_copy`` line per source speaker, however many sentences it copied.
             copies = list(dict.fromkeys(c for c in made if c.kind == "no_copy"))

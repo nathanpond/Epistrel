@@ -27,6 +27,12 @@ narrowing that leaves only a name is not accepted at rung 1.
 step. The intent's narrator line drops the outcome step's fallback (and its complement), and
 the outcome step's repairs reach respond's and the history's ``degradation_details`` (and
 the complement: the intent's entries, once).
+
+M12 round 8 adds: a rejected regeneration's metric and a think's repair entry read at two
+viewpoints (``test_i_12__m12_failed_regeneration``, #1051, #1053), the render counters with an
+unregenerated render (``..._render_budget_limit``, #1052), a player-echo and a simultaneous
+middle primary's copy (``..._copied_lines_player_echo``, ``..._simultaneous_middle``, #1048,
+#1049) and an escalated character's copy (``..._copied_lines_escalated``, #944).
 """
 
 from __future__ import annotations
@@ -1482,6 +1488,53 @@ async def test_i_12__m12_copied_lines_simultaneous_middle(
         assert NO_COPY in prompt
         report = await turn_report(engine, story)
         assert report["multi"]["mode"] == "simultaneous"
+        assert report["multi"]["copied"] == 1
+
+
+VOTE_LINE = "Good idea. First vote's usually the most important one."
+"""#944's line: the render target's, which an escalated character repeated word for word."""
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_escalated(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#944 (FR-MULTI-11, FR-MULTI-10): with interjections off, only Bobby is a render target.
+    Ada, present and default-``reactive``, reacts with speech longer than an interjection, so she
+    escalates (respond's ``roles``: ``primary``, ``escalated``) and renders her own line,
+    which repeats Bobby's word for word. The copy is regenerated (``no_copy`` naming Bobby),
+    the turn commits two distinct lines, ``multi.copied`` is 1."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine)
+        stub.reset()
+        long = rs.reaction(
+            b["Ada"], '"I told you this would happen, Bobby, every time."', kind="interjection"
+        )
+        ms.renders_for(
+            stub,
+            "Bobby",
+            rs.render(beat("say", VOTE_LINE, intent="sincere"), reactions=[long]),
+        )
+        ms.renders_for(stub, "Ada", rs.render(beat("say", VOTE_LINE, intent="sincere")))
+        stub.script("regeneration", [_regenerated(JARED_OWN)])
+        answer = await respond(
+            client,
+            b.story_id,
+            body(b["Cal"], "Let's vote first.", render_character_ids=[b["Bobby"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert rs.character_renders(stub) == ["Bobby", "Ada"]
+        assert played["roles"][b["Ada"]] == {"role": "primary", "source": "escalated"}
+        ids = {"Bobby": b["Bobby"], "Ada": b["Ada"]}
+        lines = _lines(played, ids)
+        assert lines["Bobby"] == [VOTE_LINE], lines
+        assert JARED_OWN in lines["Ada"], lines
+        assert VOTE_LINE not in lines["Ada"], lines  # her narrated reaction may stay
+        (prompt,) = _regeneration_prompts(stub)
+        assert "Do not repeat what Bobby just said" in prompt
+        report = await turn_report(engine, b.story_id)
         assert report["multi"]["copied"] == 1
 
 

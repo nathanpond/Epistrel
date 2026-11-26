@@ -365,7 +365,9 @@ async def test_shared_memory__one_row_per_beat(
     default). An ingested ``player_turn`` with a say and a do writes two holder-less episodic
     rows, one per observable beat, each citing the message's event, with no model call. A
     responded message writes the same two rows, and a regenerate (the response discarded)
-    keeps them: same ids, still active."""
+    keeps them: same ids, still active. #1050: a swap to the first response and back keeps
+    them active with the same ids; truncating past the message retires them and untruncating
+    restores them."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
 
@@ -408,3 +410,19 @@ async def test_shared_memory__one_row_per_beat(
         after = await _shared_rows(engine, story)
         assert [r.id for r in after] == [r.id for r in before]  # none written twice
         _assert_shared(after, event_id)
+
+        # -- #1050: a swap back and forth keeps them; a truncate past the message retires them
+        for _ in range(2):
+            assert await swap(engine, story) is not None
+            swapped = await _shared_rows(engine, story)
+            assert [r.id for r in swapped] == [r.id for r in before]
+            _assert_shared(swapped, event_id)
+        await _ingest(client, story, {"client_event_id": "n-1", "kind": "narration", "text": RAIN})
+        assert await truncate(engine, story, 0) is not None
+        retired = await _shared_rows(engine, story)
+        assert [r.id for r in retired] == [r.id for r in before]
+        assert "active" not in {r.membership for r in retired}, retired
+        assert await untruncate(engine, story) is not None
+        restored = await _shared_rows(engine, story)
+        assert [r.id for r in restored] == [r.id for r in before]
+        _assert_shared(restored, event_id)

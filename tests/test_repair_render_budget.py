@@ -15,7 +15,13 @@ from epistrel.api.routes.history import DegradationBody, TurnSummaryModel
 from epistrel.core.epistemic.stage import StagedBeat, TurnStage
 from epistrel.core.history import HistoryItem, TurnSummary, visible_details
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.repair.rungs import FALLBACK, REGENERATION, RepairClass
+from epistrel.core.repair.rungs import (
+    FALLBACK,
+    NARROWING,
+    REGENERATION,
+    SUBSTITUTION,
+    RepairClass,
+)
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.core.verify.permission import Denied, Reason
 from epistrel.core.verify.rules import VerdictKind
@@ -27,6 +33,7 @@ from epistrel.orchestrator.repair.ladder import (
     DUPLICATE_FALLBACK,
     REPAIR_DETERMINISTIC,
     REPAIR_DROPPED,
+    REPAIR_UNEXTRACTED,
     SAFE_FALLBACK,
     SPEAKER_HAS_LINE,
     Context,
@@ -231,6 +238,21 @@ def test_a_dropped_beat_reports_repair_dropped() -> None:
     assert settled.rung_name == "state_settled"
     think = _result(_beat(5, "think"), fallback=False, kept=False)
     assert think.rung_name == "dropped"
+
+
+@pytest.mark.parametrize(
+    ("rung", "name"),
+    [(NARROWING, "narrowing"), (SUBSTITUTION, "substitution"), (REGENERATION, "regeneration")],
+)
+def test_a_corrected_beat_names_its_rung(rung: int, name: str) -> None:
+    """#1054: a beat corrected at rung 1, 2 or 3 names it in its per-beat cause
+    (``narrowing``, ``substitution``, ``regeneration``): here a correction whose extraction ran
+    short (``repair_unextracted``, the step such a beat reports)."""
+    result = _result(
+        _beat(3), rung=rung, fallback=False, degradation=[(REPAIR_UNEXTRACTED, "budget")]
+    )
+    assert result.rung_name == name
+    assert [(d["step"], d["rung"]) for d in result.detail()] == [(REPAIR_UNEXTRACTED, name)]
 
 
 # -- the turn-level drop pass, across renders (#1027) ---------------------------------------------

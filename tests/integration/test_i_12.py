@@ -27,6 +27,12 @@ narrowing that leaves only a name is not accepted at rung 1.
 step. The intent's narrator line drops the outcome step's fallback (and its complement), and
 the outcome step's repairs reach respond's and the history's ``degradation_details`` (and
 the complement: the intent's entries, once).
+
+M12 round 8 adds: a rejected regeneration's metric and a think's repair entry read at two
+viewpoints (``test_i_12__m12_failed_regeneration``, #1051, #1053), the render counters with an
+unregenerated render (``..._render_budget_limit``, #1052), a player-echo and a simultaneous
+middle primary's copy (``..._copied_lines_player_echo``, ``..._simultaneous_middle``, #1048,
+#1049) and an escalated character's copy (``..._copied_lines_escalated``, #944).
 """
 
 from __future__ import annotations
@@ -822,7 +828,10 @@ async def test_i_12__m12_render_budget_limit(
 ) -> None:
     """#1014: the per-render budget never spends past the turn's call budget. With a cap that
     leaves room for one regeneration, the first primary's flagged beat regenerates and the
-    second's is ``repair_deterministic`` (``budget``); no call goes over the cap."""
+    second's is ``repair_deterministic`` (``budget``); no call goes over the cap. #1052: two
+    renders ran the ladder and one regenerated, so ``epistrel_repair_renders_total`` counts
+    one ``regenerated="true"`` and one ``"false"``, and ``turn_report.repair`` has ``renders``
+    above ``renders_regenerated`` and one regeneration for two repairs."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         cap = BUDGET_CAP
@@ -832,6 +841,7 @@ async def test_i_12__m12_render_budget_limit(
         ms.renders_for(stub, "Bo", ms.render(_old()))
         stub.script("regeneration", [_regenerated(SAY_REGENERATED)] * 2)
         skipped = _regenerations("skipped_budget")
+        regenerated, unregenerated = _renders(True), _renders(False)
         answer = await respond(
             client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"], ids["Bo"]])
         )
@@ -843,6 +853,15 @@ async def test_i_12__m12_render_budget_limit(
         assert [d["cause"] for d in details] == ["budget"], played["degradation_details"]
         report = await turn_report(engine, story)
         assert report["budget"]["used"] <= cap, report["budget"]
+        assert (_renders(True) - regenerated, _renders(False) - unregenerated) == (1, 1)
+        assert len(report["repairs"]) == 2, report["repairs"]
+        assert report["repair"] == {
+            "renders": 2,
+            "renders_regenerated": 1,
+            "regenerations": 1,
+            "fallbacks": 1,
+            "dropped": 0,
+        }
 
 
 KNOCK_TEXT = "Someone knocks at the door."
@@ -1071,6 +1090,59 @@ async def test_i_12__m12_per_beat_cause(
             assert entry in turn["degradation_details"], (viewpoint, turn)
 
 
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_failed_regeneration(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1051: Ada says and thinks the contradicted age. The say's regeneration repeats the
+    claim, so it is rejected and counts ``epistrel_repair_regenerations_total{outcome="failed"}``
+    (never ``accepted``); the say falls back. #1053: the think, past ``max_attempts``, is
+    dropped. Its repair entry is in the omniscient history read and absent from Wren's, who
+    cannot see Ada's thoughts; the say's fallback entry is in both (FR-REPAIR-5(c),
+    ``visible_details`` at the request's viewpoint)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, "Ada")
+        stub.reset()
+        ms.renders_for(stub, "Ada", ms.render(_old(), _old("think")))
+        stub.script("regeneration", [_regenerated(SEVENTY, claim("I", "age", "70"))])
+        failed, accepted = _regenerations("failed"), _regenerations("accepted")
+        answer = await respond(
+            client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"]])
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 1
+        assert (_regenerations("failed") - failed, _regenerations("accepted") - accepted) == (1, 0)
+        assert SEVENTY not in _texts(played), _texts(played)
+        said = next(b["beat"] for b in played["beats"] if b["kind"] == "beat_say")
+        steps = [("repair_deterministic", "max_attempts"), ("safe_fallback", "repair")]
+        report = await turn_report(engine, story)
+        stored = [d for d in report["degradation_details"] if "beat" in d]
+        assert [(d["beat"], d["kind"], d["rung"]) for d in stored] == [
+            (said, "say", "safe_fallback"),
+            (said, "say", "safe_fallback"),
+            (said + 1, "think", "dropped"),
+            (said + 1, "think", "dropped"),
+        ], stored
+        assert [(d["step"], d["cause"]) for d in stored] == steps * 2, stored
+        everything = [{k: v for k, v in d.items() if k != "kind"} for d in stored]
+        seen = [d for d in everything if d["beat"] == said]
+        # respond reads at the request's viewpoint (Wren's): the think's entries are not there.
+        assert _repair_details(played) == seen, played["degradation_details"]
+        for viewpoint, expected in (
+            ("omniscient", everything),
+            (f"character:{ids['Wren']}", seen),
+        ):
+            response = await client.get(
+                f"/stories/{story}/history", params={"viewpoint": viewpoint}, headers=READ
+            )
+            assert response.status_code == 200, response.text
+            (turn,) = [t for t in response.json()["turns"] if t["turn"] == played["turn"]]
+            found = [d for d in turn["degradation_details"] if "beat" in d]
+            assert found == expected, (viewpoint, found)
+
+
 # -- M12: copied lines across speakers (#1013) -----------------------------------------------
 
 MALIK_LINE = (
@@ -1233,6 +1305,39 @@ async def test_i_12__m12_copied_lines_complements(
         assert (await turn_report(engine, story))["multi"]["copied"] == 0
 
 
+PLAYER_LINE = "I can not believe we lost that one."
+"""Wren's own sentence (8 words), which two speakers repeat in #1048's echo."""
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_player_echo(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1048 (#1013's "a line repeating the player's input is out of scope"): Malik and Jared
+    each repeat Wren's sentence. Neither copies the other, since the sentence is the player's
+    (the played turn passes the player's ``say``/``do`` into the copy scope): both commit, no
+    ``regeneration`` call, ``turn_report.multi.copied`` is 0."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, "Malik", "Jared")
+        stub.reset()
+        malik = f"{PLAYER_LINE} Me neither."
+        jared = f"{PLAYER_LINE} We had them."
+        ms.renders_for(stub, "Malik", _says(malik))
+        ms.renders_for(stub, "Jared", _says(jared))
+        copied = _copied("regenerated")
+        answer = await respond(
+            client,
+            story,
+            body(ids["Wren"], PLAYER_LINE, render_character_ids=[ids["Malik"], ids["Jared"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        assert _lines(answer.json(), ids) == {"Malik": [malik], "Jared": [jared]}
+        assert not [c for c in stub.calls if c.purpose == "regeneration"]
+        assert _copied("regenerated") == copied
+        assert (await turn_report(engine, story))["multi"]["copied"] == 0
+
+
 ECHOED = "A long slow nod toward the door."
 """A 6-word sentence: a copy under #1013 when another speaker's later beat repeats it."""
 
@@ -1344,6 +1449,92 @@ async def test_i_12__m12_copied_lines_simultaneous(
         assert NO_COPY in prompt
         report = await turn_report(engine, story)
         assert report["multi"]["mode"] == "simultaneous"
+        assert report["multi"]["copied"] == 1
+
+
+@pytest.mark.part("M12", "FR-MULTI-8; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_simultaneous_middle(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1049 (FR-MULTI-8): in ``simultaneous`` mode with three primaries, the middle one
+    (Jared) copies the first. A non-last primary's copy is checked at its own repair, before
+    the last primary renders: Jared's copy is regenerated, Malik and Sam keep their lines,
+    ``turn_report.multi.copied`` is 1."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, *TRIBE)
+        stub.reset()
+        ms.renders_for(stub, "Malik", _says(MALIK_LINE))
+        ms.renders_for(stub, "Jared", _says(MALIK_LINE))
+        ms.renders_for(stub, "Sam", _says(SAM_OWN))
+        stub.script("regeneration", [_regenerated(JARED_OWN)])
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Wren"],
+                "Well that sucked.",
+                render_character_ids=[ids[n] for n in TRIBE],
+                interaction_mode="simultaneous",
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        assert _lines(answer.json(), ids) == {
+            "Malik": [MALIK_LINE],
+            "Jared": [JARED_OWN],
+            "Sam": [SAM_OWN],
+        }
+        (prompt,) = _regeneration_prompts(stub)
+        assert NO_COPY in prompt
+        report = await turn_report(engine, story)
+        assert report["multi"]["mode"] == "simultaneous"
+        assert report["multi"]["copied"] == 1
+
+
+VOTE_LINE = "Good idea. First vote's usually the most important one."
+"""#944's line: the render target's, which an escalated character repeated word for word."""
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_escalated(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#944 (FR-MULTI-11, FR-MULTI-10): with interjections off, only Bobby is a render target.
+    Ada, present and default-``reactive``, reacts with speech longer than an interjection, so she
+    escalates (respond's ``roles``: ``primary``, ``escalated``) and renders her own line,
+    which repeats Bobby's word for word. The copy is regenerated (``no_copy`` naming Bobby),
+    the turn commits two distinct lines, ``multi.copied`` is 1."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        b = await rs.bar(client, engine)
+        stub.reset()
+        long = rs.reaction(
+            b["Ada"], '"I told you this would happen, Bobby, every time."', kind="interjection"
+        )
+        ms.renders_for(
+            stub,
+            "Bobby",
+            rs.render(beat("say", VOTE_LINE, intent="sincere"), reactions=[long]),
+        )
+        ms.renders_for(stub, "Ada", rs.render(beat("say", VOTE_LINE, intent="sincere")))
+        stub.script("regeneration", [_regenerated(JARED_OWN)])
+        answer = await respond(
+            client,
+            b.story_id,
+            body(b["Cal"], "Let's vote first.", render_character_ids=[b["Bobby"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert rs.character_renders(stub) == ["Bobby", "Ada"]
+        assert played["roles"][b["Ada"]] == {"role": "primary", "source": "escalated"}
+        ids = {"Bobby": b["Bobby"], "Ada": b["Ada"]}
+        lines = _lines(played, ids)
+        assert lines["Bobby"] == [VOTE_LINE], lines
+        assert JARED_OWN in lines["Ada"], lines
+        assert VOTE_LINE not in lines["Ada"], lines  # her narrated reaction may stay
+        (prompt,) = _regeneration_prompts(stub)
+        assert "Do not repeat what Bobby just said" in prompt
+        report = await turn_report(engine, b.story_id)
         assert report["multi"]["copied"] == 1
 
 

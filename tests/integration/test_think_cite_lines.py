@@ -208,3 +208,41 @@ def test_cite_render_template_round_trips() -> None:
     """The parrot template keeps the render's JSON once formatted."""
     found = json.loads(_cite_render(None).format(canary="Bobby enrolled_at OSU"))
     assert found["beats"][0]["cites"] == ["Bobby enrolled_at OSU"]
+
+
+@pytest.mark.parametrize("kind", ["own", "other_primary"])
+async def test_a_cite_of_a_line_only_another_primary_was_shown_records_no_edge(
+    kind: str, stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1067 (#994 AC 5): in a two-primary sequential turn, Marcus's prompt shows Bobby's
+    enrollment and Bobby's does not. Bobby's ``think`` copying that line exactly records no
+    edge: a render cites only the lines its own prompt showed, never a line the turn's other
+    primary was shown. The complement (``own``) copies the line Bobby's prompt showed and
+    records its ``causes`` edge."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        w = await bobby_education(client, engine, witnesses=True)
+        await ms.per_character(engine, w.story_id)
+        try:
+            cite = {"own": OSU_IN_OHIO, "other_primary": ENROLLED}[kind]
+            stub.reset()
+            ms.renders_for(
+                stub, "Bobby", ms.render(beat("think", THINKS, cites=[cite]), beat("do", DECIDES))
+            )
+            ms.renders_for(stub, "Marcus", ms.render(beat("do", "Marcus nods.")))
+            es.narrator(stub, es.render(beat("narration", "The fire crackles.")))
+            turn = await played(
+                client,
+                w.story_id,
+                body(w.cal, ASK, render_character_ids=[w.bobby, w.marcus]),
+            )
+            (bobby,) = ms.render_prompts(stub, "Bobby")
+            (marcus,) = ms.render_prompts(stub, "Marcus")
+            assert ENROLLED in _canon_lines(marcus)
+            assert ENROLLED not in _canon_lines(bobby)
+            assert OSU_IN_OHIO in _canon_lines(bobby)
+            causes = await _causes(engine, w.story_id, turn["turn"])
+            expected = {"own": [("fact", w.osu_in_ohio.id)], "other_primary": []}[kind]
+            assert [(e.target_kind, e.target_id) for e in causes] == expected
+        finally:
+            await ms.forget(engine)

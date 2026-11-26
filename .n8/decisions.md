@@ -16542,3 +16542,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set (70 tests, including the revision guard) plus CI's sharded full suite, as in rounds 4–9.
   **Why:** A serial local full run takes about 6 h.
   **Issue:** #1062, #1063
+
+## /n8-exec M12 — 2026-11-26 (round 11: #1067, #1068, #1069)
+
+- **Decision:** Scope is verify round 8's two sev:high test gaps, #1067 and #1068, plus #1069 (sev:medium, a one-line guard change). #1064 (sev:low) and #1043 (owner decision) are not worked.
+  **Why:** Round 8's verify state named these three as next. #1064 is low and carried, and #1043 still waits on the owner.
+  **Issue:** #1067, #1068, #1069
+- **Decision (#1068):** One new unit test, `test_toward_clauses_each_decide`, in `tests/test_permission.py`. The issue suggested extending the two existing tests instead. The cases need an unmodeled person (`STRANGER`) and an unresolved id, which the shared `TOWARD_ENTITIES` lacks. A separate entity map and helper (`_clause`, with qualifiers) keep the existing tests' fixtures unchanged. Each case has Wren as the only other modeled character, so `len(others) != 1` never decides it. Positive controls (`gives_gift_to` as an auto predicate, the plain hand-over of the mug) show that each denied case differs from a permitted one only in the clause under test.
+  **Issue:** #1068
+- **Decision (#1067):** The test uses the bobby_education fixture with `witnesses=True` and per-character renders (Bobby and Marcus as primaries). On the stub, Marcus's prompt shows "Bobby enrolled_at OSU" and Bobby's does not (checked by a probe, then asserted in the test, so a retrieval change can't silently empty the test). The step-cite path's optional unit assertion is not added. The issue calls that path's mutant equivalent today, because its only caller passes one primary's own context.
+  **Issue:** #1067
+- **Decision (#1069):** `epistrel.orchestrator.structured.prompt` was added to `EXTRA_MODULES`. The snapshot gained 7 entries without a revision bump (#1003's additive allowance; the guard accepted it). No fingerprint moved, so `docs/evals/INDEX.md` is unchanged (`evals index --check` passes).
+  **Issue:** #1069
+- **Decision:** The gate is the targeted local set (101 passed, 1 env-gated skip) plus CI's sharded full suite, as in rounds 4–10.
+  **Why:** A serial local full run takes about 6 h.
+  **Issue:** #1067, #1068, #1069

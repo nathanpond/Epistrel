@@ -99,6 +99,7 @@ EXTRA_MODULES = (
     "epistrel.orchestrator.policies.seeds.policies",
     "epistrel.orchestrator.rewrite.support_check",
     "epistrel.orchestrator.lite.schemas",
+    "epistrel.orchestrator.structured.prompt",
     "epistrel.core.summary",
 )
 EXTRA_NAMES = (

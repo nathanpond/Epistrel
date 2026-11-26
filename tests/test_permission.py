@@ -292,6 +292,8 @@ def test_toward_the_player_stays_denied() -> None:
     ``think`` or reactive-fallback claim, and a director pass or reactive narration."""
     denied = Denied(Reason.PLAYER_CHARACTER)
     assert toward(WREN, "tired", None, MAREN, free=True) == denied
+    # #1062: Wren acting on an object in Maren's render is about Wren, not toward Maren.
+    assert toward(WREN, "looks_at", MUG, MAREN, free=True) == denied
     assert toward(WREN, "holds", MUG, MAREN) == denied  # no giver: Wren picks it up
     took = ns.claim(WREN, CORE_BY_NAME["holds"].id, MUG).model_copy(
         update={"qualifiers": {"from": MAREN}}
@@ -352,6 +354,8 @@ def test_toward_a_present_character_stays_denied() -> None:
     character is denied too."""
     secret = Denied(Reason.OTHER_CHARACTER_SECRET)
     assert toward(ETHAN, "nervous", None, MALIK, free=True) == secret
+    # #1062: Ethan acting on an object in Malik's render is about Ethan, not toward Malik.
+    assert toward(ETHAN, "leans_toward", TORCH, MALIK, free=True) == secret
     assert toward(ETHAN, "holds", TORCH, MALIK) == secret
     assert toward(MALIK, "sibling_of", ETHAN, MALIK) == secret
     assert toward(MALIK, "spoke_to", CARLOS, MALIK) == secret

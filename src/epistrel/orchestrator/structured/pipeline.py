@@ -2113,6 +2113,11 @@ async def _check_turn(
         # #168: the character render's declared steps, normalized in the speaker's view at the
         # render's first beat.
         steps: list[render_steps.Step] = []
+        # #1063 (#994): a record cite copying a shown line resolves to its record id.
+        shown = next(
+            (c.cite_lines for c in rendered.contexts if c.character_id == read.character.id),
+            {},
+        )
         for decl in rendered.steps:
             proposition: Proposition | None = None
             if decl.proposition is not None:
@@ -2135,7 +2140,7 @@ async def _check_turn(
                     index=decl.index,
                     kind=decl.kind,
                     step_cites=tuple(decl.step_cites()),
-                    record_cites=tuple(decl.record_cites()),
+                    record_cites=tuple(prompts.resolve_record_cites(decl.record_cites(), shown)),
                     proposition=proposition,
                     confidence=decl.confidence,
                     unnormalizable=decl.proposition is not None and proposition is None,

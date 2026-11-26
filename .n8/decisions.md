@@ -16527,3 +16527,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #1059
 - **Decision (#1059):** Tests have no part marker: `tests/integration/test_narrator_directed_kinds.py` (the repro: 200, the `say` dropped, the degradation listed, the narrator's prompt framed and Ada's plain; complement: a narrator answer of only a `say` is still 503 `invalid_structure`) and `tests/test_narrator_kinds.py` (the schema: refused before the correction, dropped after with hints remapped, nothing-left refused, a character's render unchanged). Their docstrings cite FR-DIRECT-2 and FR-MULTI-9. With the `src` changes stashed, the integration test fails with the issue's exact error (`beats.1.kind: not a kind this render may return` × 3, stage `narrator`).
   **Issue:** #1059
+
+## /n8-exec M12 — 2026-11-26 (round 10: #1062, #1063)
+
+- **Decision:** Scope is verify round 7's two sev:high bugs, #1062 and #1063. #1064 (sev:low) and #1043 (owner decision) are not worked.
+  **Why:** Round 7's verify state named these two as next. #1064 is low and carried, and #1043 still waits on the owner.
+  **Issue:** #1062, #1063
+- **Decision:** #1063 is implemented, not ruled out of scope: a `StepDecl` record cite that copies a shown line resolves to its record id (`prompt.resolve_record_cites`), and only to an antecedent kind (event, fact, belief, utterance). Every other cite passes through unchanged.
+  **Why:** #994's AC 1 names `StepDecl` record cites. The planner note ("raw cites stay untouched for the verifier") was about the think's raw cites. The change adds behaviour, can be reverted, invents no record and keeps every rejection that held before, so guessing wrong costs little. That makes it a logged call rather than a blocker, even though the last verify memo suggested asking the owner. If the owner would rather amend the AC, this is a one-line revert at the `_check_turn` call site.
+  **Issue:** #1063
+- **Decision:** An unresolvable step cite (a paraphrase, an ambiguous line, a retrieved-memory line) passes through as given rather than being dropped, unlike `resolve_cites` for a think.
+  **Why:** Dropping a step's only cite would change its rejection from `antecedent_invalid` to `self_attestation`. Dropping one of several cites could verify the step on the rest. Passing it through keeps today's rejection, which is the safe disposition.
+  **Issue:** #1063
+- **Decision:** The gate is the targeted local set (70 tests, including the revision guard) plus CI's sharded full suite, as in rounds 4–9.
+  **Why:** A serial local full run takes about 6 h.
+  **Issue:** #1062, #1063

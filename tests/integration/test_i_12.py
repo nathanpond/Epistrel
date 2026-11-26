@@ -1299,6 +1299,39 @@ async def test_i_12__m12_copied_lines_complements(
         assert (await turn_report(engine, story))["multi"]["copied"] == 0
 
 
+PLAYER_LINE = "I can not believe we lost that one."
+"""Wren's own sentence (8 words), which two speakers repeat in #1048's echo."""
+
+
+@pytest.mark.part("M12", "FR-MULTI-11; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_player_echo(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1048 (#1013's "a line repeating the player's input is out of scope"): Malik and Jared
+    each repeat Wren's sentence. Neither copies the other, since the sentence is the player's
+    (the played turn passes the player's ``say``/``do`` into the copy scope): both commit, no
+    ``regeneration`` call, ``turn_report.multi.copied`` is 0."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, "Malik", "Jared")
+        stub.reset()
+        malik = f"{PLAYER_LINE} Me neither."
+        jared = f"{PLAYER_LINE} We had them."
+        ms.renders_for(stub, "Malik", _says(malik))
+        ms.renders_for(stub, "Jared", _says(jared))
+        copied = _copied("regenerated")
+        answer = await respond(
+            client,
+            story,
+            body(ids["Wren"], PLAYER_LINE, render_character_ids=[ids["Malik"], ids["Jared"]]),
+        )
+        assert answer.status_code == 200, answer.text
+        assert _lines(answer.json(), ids) == {"Malik": [malik], "Jared": [jared]}
+        assert not [c for c in stub.calls if c.purpose == "regeneration"]
+        assert _copied("regenerated") == copied
+        assert (await turn_report(engine, story))["multi"]["copied"] == 0
+
+
 ECHOED = "A long slow nod toward the door."
 """A 6-word sentence: a copy under #1013 when another speaker's later beat repeats it."""
 
@@ -1406,6 +1439,45 @@ async def test_i_12__m12_copied_lines_simultaneous(
         )
         assert answer.status_code == 200, answer.text
         assert _lines(answer.json(), ids) == {"Malik": [MALIK_LINE], "Jared": [JARED_OWN]}
+        (prompt,) = _regeneration_prompts(stub)
+        assert NO_COPY in prompt
+        report = await turn_report(engine, story)
+        assert report["multi"]["mode"] == "simultaneous"
+        assert report["multi"]["copied"] == 1
+
+
+@pytest.mark.part("M12", "FR-MULTI-8; FR-REPAIR-5")
+async def test_i_12__m12_copied_lines_simultaneous_middle(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1049 (FR-MULTI-8): in ``simultaneous`` mode with three primaries, the middle one
+    (Jared) copies the first. A non-last primary's copy is checked at its own repair, before
+    the last primary renders: Jared's copy is regenerated, Malik and Sam keep their lines,
+    ``turn_report.multi.copied`` is 1."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, *TRIBE)
+        stub.reset()
+        ms.renders_for(stub, "Malik", _says(MALIK_LINE))
+        ms.renders_for(stub, "Jared", _says(MALIK_LINE))
+        ms.renders_for(stub, "Sam", _says(SAM_OWN))
+        stub.script("regeneration", [_regenerated(JARED_OWN)])
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Wren"],
+                "Well that sucked.",
+                render_character_ids=[ids[n] for n in TRIBE],
+                interaction_mode="simultaneous",
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        assert _lines(answer.json(), ids) == {
+            "Malik": [MALIK_LINE],
+            "Jared": [JARED_OWN],
+            "Sam": [SAM_OWN],
+        }
         (prompt,) = _regeneration_prompts(stub)
         assert NO_COPY in prompt
         report = await turn_report(engine, story)

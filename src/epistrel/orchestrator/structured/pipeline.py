@@ -2874,6 +2874,7 @@ async def repair_turn(
     before: Checked | None = None,
     copies: copy_check.Scope | None = None,
     copy_before: Checked | None = None,
+    candidate_findings: Callable[[TurnBeat], list[CheckedClaim]] | None = None,
 ) -> Checked:
     """FR-REPAIR-1..4 and FR-VERIFY-12 over the turn's verified beats (#151): every rendered
     beat with a claim that ``needs_repair`` goes to ``orchestrator.repair.ladder``, in beat
@@ -2895,7 +2896,9 @@ async def repair_turn(
     (``copies.find`` over ``copy_before``'s beats, the earlier renders', and ``checked``'s
     beats before it, as repaired so far), and so is every repair candidate; a copied beat goes
     to the ladder with its other violations (a deceptive or joking ``say`` too), or, with the
-    repair module off, is dropped (``ladder.copy_dropped``)."""
+    repair module off, is dropped (``ladder.copy_dropped``). #1035: ``candidate_findings`` (a
+    staged turn's outcome step: its sentences asserting an unsettled change) is checked again
+    over every repair candidate, so a regeneration repeating the claim is rejected."""
     if rendered.finish_reason == "fallback":
         return checked
     repairing = repair_on(configuration)
@@ -2980,6 +2983,8 @@ async def repair_turn(
         (made,) = found.beats
         # #1013: a candidate that copies another speaker's line is rejected like any failure.
         found.checked += copy_claims(made)
+        if candidate_findings is not None:
+            found.checked += candidate_findings(made)
         if book is not None and book.on:
             # #187: the candidate's effects, folded with the turn's other beats'; #188: an
             # effect a repair adds stays under the turn's caps too (rewritten down to them).
@@ -7549,15 +7554,18 @@ async def play(
             first_claim=len(ctx.checked.checked),
             introductions=ctx.checked.introductions,
         )
-        unsettled = state_effects.outcome_step_findings(
-            book, checked_out.beats, pending, exchange_settled=staged_turns.all_confirmed(answers)
-        )
-        if unsettled:
-            # FR-EXT-15: an outcome the game did not confirm, or a grant not committed, is
-            # repaired like an intent beat's (#209's external_outcome_unconfirmed).
-            checked_out.checked += state_effects.claims_of(
-                unsettled, checked_out.beats, f"{op.operation_id}:outcome"
+        settled = staged_turns.all_confirmed(answers)
+
+        def unconfirmed(beats_: Sequence[TurnBeat]) -> list[CheckedClaim]:
+            found = state_effects.outcome_step_findings(
+                book, beats_, pending, exchange_settled=settled
             )
+            return state_effects.claims_of(found, beats_, f"{op.operation_id}:outcome")
+
+        # FR-EXT-15: an outcome the game did not confirm, or a grant not committed, is
+        # repaired like an intent beat's (#209's external_outcome_unconfirmed); #1035: and a
+        # repair candidate repeating it is rejected.
+        checked_out.checked += unconfirmed(checked_out.beats)
         checked_out = await repair_turn(
             db,
             models,
@@ -7576,6 +7584,7 @@ async def play(
             book=book,
             # #1014: the intent's beats count for the drop rule.
             before=ctx.checked,
+            candidate_findings=lambda made: unconfirmed([made]),
         )
         checked_out = await validate_perception(db, story_id, read_, checked_out, settings)
         return rendered_out, checked_out

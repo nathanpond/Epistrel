@@ -334,6 +334,58 @@ async def test_s_effect_prose__sync(
         await ss.set_level(engine, story, None)
 
 
+async def test_s_effect_prose__sync_repeated(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#1035 (FR-EXT-15): the game refuses, the outcome step narrates "The purchase went
+    through.", and its regeneration repeats the claim. The repeat is checked again against the
+    unsettled change (``outcome_step_findings``), so it is rejected and the beat settles at the
+    deterministic rung (``state_settled``), as an intent beat's would: the reply never states
+    the outcome the game refused. Complement: a regeneration narrating the refusal is accepted
+    at rung 3."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name, confirmation="synchronous"))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name, default=300).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await override(client, story, {"budgets": {"model_calls": MODEL_CALLS}})
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+        for n, (regenerated, rung) in enumerate(((WENT, 4), (REFUSED, 3))):
+            stub.reset()
+            fake.script_writes("gold", "failed")
+            _outcome_step(stub, beat("narration", WENT))
+            ms.renders_for(stub, "Mira", _mira(cal, TAKES))
+            es.narrator(stub, es.render(beat("narration", FORGE)))
+            stub.script("regeneration", [json.dumps({"text": regenerated, "effects": []})])
+            answer = await respond(client, story, body(cal, None, do=f"buys sword {n}"))
+            assert answer.status_code == 200, answer.text
+            played = answer.json()
+            texts = [b["text"] for b in played["beats"]]
+            assert not any("went through" in t for t in texts), texts
+            assert "went through" not in played["message"]["text"]
+            report = await turn_report(engine, story)
+            assert [e["status"] for e in report["staged"]["effects"]] == ["failed"]
+            repairs = report["staged"]["outcome_step"]["repairs"]
+            assert [(r["tag"], r["rung"]) for r in repairs] == [
+                ("external_outcome_unconfirmed", rung)
+            ], repairs
+            details = [d for d in played["degradation_details"] if "beat" in d]
+            if regenerated == WENT:
+                assert {(d["beat"], d["rung"]) for d in details} == {
+                    (repairs[0]["beat"], "state_settled")
+                }, details
+            else:
+                assert details == [], details  # an accepted regeneration degrades nothing
+        await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
 REFUSED = "(the game refused it: it did not happen; reconcile the story with that)"
 CONFIRMED = "(the game confirmed it)"
 

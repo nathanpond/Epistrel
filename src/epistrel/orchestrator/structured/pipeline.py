@@ -445,6 +445,7 @@ from epistrel.orchestrator.structured.render import (
     AGE_UNREPAIRED,
     CLOCK_EFFECT_DROPPED,
     LATENT_HOLDER_REPAIRED,
+    NARRATOR_KIND_DROPPED,
     STRUCTURED,
     BeatDecl,
     IntroductionDecl,
@@ -1032,18 +1033,19 @@ async def _flagged(conn: AsyncConnection, story_id: str, turn: int) -> bool:
     return bool(found)
 
 
-def _steering(read: TurnRead) -> str:
+def _steering(read: TurnRead, *, narrator: bool = False) -> str:
     """The renders' ``resolution_steering`` line(s): the deferral bias (#154) and the knowledge
     steer after a could-have-known flag (#165). #241: a directed regeneration's "Author
     decision" replaces the deferral bias (FR-COMMIT-12: author authority overrides the
-    insignificance presumption)."""
+    insignificance presumption). #1059: the narrator's (``narrator``) frames the author direction
+    for it (``directives.NARRATOR_STEERING``)."""
     from epistrel.orchestrator.commit import directed
 
     decision = directed.DECISION.get()
     lines = [
         decision if decision else (prompts.RESOLUTION_STEERING if read.deferred else ""),
         prompts.KNOWLEDGE_STEERING if read.flagged else "",
-        author_directives.steering_line(read.steers),
+        author_directives.steering_line(read.steers, narrator=narrator),
     ]
     return " ".join(x for x in lines if x)
 
@@ -1253,6 +1255,9 @@ class Rendered:
     """#750: the renders' latents whose named holder was repaired to ``canon``."""
     clock_effects_dropped: int = 0
     """#996: the renders' world-clock changes dropped after their correction."""
+    narrator_kinds_dropped: int = 0
+    """#1059: the narrator's beats of a kind it may not return, dropped after their
+    correction."""
     narrator: bool = False
     model: str | None = None
     prompt_hash: str | None = None
@@ -2694,6 +2699,11 @@ async def _follow_up(
         checked.degradation.append((LATENT_HOLDER_REPAIRED, "latent"))  # #750
     if narr.clock_effects_dropped and (CLOCK_EFFECT_DROPPED, "state") not in checked.degradation:
         checked.degradation.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
+    if (
+        narr.narrator_kinds_dropped
+        and (NARRATOR_KIND_DROPPED, "narrator") not in checked.degradation
+    ):
+        checked.degradation.append((NARRATOR_KIND_DROPPED, "narrator"))  # #1059
     checked.staged = extra.staged
     checked.follow_up_beats = frozenset(b.beat for b in extra.beats)
     checked.follow_up_verifier = extra.verifier
@@ -4578,6 +4588,7 @@ def _merged_rendered(renders: Sequence[Rendered]) -> Rendered:
         denied_introductions=sum(r.denied_introductions for r in renders),
         latent_holder_repairs=sum(r.latent_holder_repairs for r in renders),
         clock_effects_dropped=sum(r.clock_effects_dropped for r in renders),
+        narrator_kinds_dropped=sum(r.narrator_kinds_dropped for r in renders),
         narrator=any(r.narrator for r in renders),
         model=renders[-1].model or first.model,
         prompt_hash=renders[-1].prompt_hash or first.prompt_hash,
@@ -5551,7 +5562,8 @@ async def play(
             clock_now=clocking.now_text(books[0].clock),
             # #197 (FR-CLOCK-18): after a possibly_due pause, the narrator alone is steered to
             # establish the current time (never a character's context).
-            resolution_steering=_with_time_steering(base.resolution_steering, schedules[0]),
+            # #1059: the author direction framed for the narrator.
+            resolution_steering=_with_time_steering(_steering(read, narrator=True), schedules[0]),
         )
         # #174 (FR-MULTI-6): the primaries' order, the request's or the director's.
         ordered = multi.Ordered(tuple(p.id for p in primaries), multi.REQUEST)
@@ -5798,6 +5810,7 @@ async def play(
                     denied_introductions=denied,
                     latent_holder_repairs=sum(r.latent_holder_repairs for r, _ in renders),
                     clock_effects_dropped=sum(r.clock_effects_dropped for r, _ in renders),
+                    narrator_kinds_dropped=sum(r.narrator_kinds_dropped for r, _ in renders),
                     narrator=narrate and first,
                     model=calls.calls[-1].model if calls.calls else None,
                     prompt_hash=prompt_hash(messages),
@@ -7532,6 +7545,7 @@ async def play(
             structure_retries=retries,
             latent_holder_repairs=narr.latent_holder_repairs,
             clock_effects_dropped=narr.clock_effects_dropped,
+            narrator_kinds_dropped=narr.narrator_kinds_dropped,
             narrator=True,
             model=calls.calls[-1].model if calls.calls else None,
             prompt_hash=prompt_hash(messages),
@@ -8100,6 +8114,8 @@ def _degradation(
             extra.append((LATENT_HOLDER_REPAIRED, "latent"))
         if rendered.clock_effects_dropped:
             extra.append((CLOCK_EFFECT_DROPPED, "state"))  # #996
+        if rendered.narrator_kinds_dropped:
+            extra.append((NARRATOR_KIND_DROPPED, "narrator"))  # #1059
     if checked is not None:
         extra += checked.degradation
     for step, cause in extra:

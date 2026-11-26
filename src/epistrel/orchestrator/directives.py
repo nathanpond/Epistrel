@@ -1093,15 +1093,26 @@ def lite_notes(
     return "\n\n".join(blocks)
 
 
-def steering_line(steers: Sequence[tuple[str, str]]) -> str:
-    """The renders' author direction line for queued steers."""
+NARRATOR_STEERING = (
+    "Narrate the world around this direction; a character's speech, action or thought that it"
+    " asks for is that character's own render, never a beat of yours."
+)
+"""#1059 (FR-DIRECT-2, FR-MULTI-9): how the narrator's render takes an author direction (one
+meant for a character is the character's to act out)."""
+
+
+def steering_line(steers: Sequence[tuple[str, str]], *, narrator: bool = False) -> str:
+    """The renders' author direction line for queued steers. #1059: the narrator's carries
+    ``NARRATOR_STEERING`` after it."""
     if not steers:
         return ""
-    return "Author direction for this reply: " + " ".join(text for _, text in steers)
+    line = "Author direction for this reply: " + " ".join(text for _, text in steers)
+    return f"{line} {NARRATOR_STEERING}" if narrator else line
 
 
 __all__ = [
     "LITE_DIRECTIVES",
+    "NARRATOR_STEERING",
     "DirectiveApplied",
     "DirectiveRequest",
     "DirectiveResult",

@@ -38,6 +38,7 @@
   "const:epistrel.orchestrator.directives.AUTHOR": "bf2c6185e1caf3c9b56f3c6ecef6135161015378f2079cafd12d28f1078fb560",
   "const:epistrel.orchestrator.directives.CORRECTIONS_MAX": "1a6562590ef19d1045d06c4055742d38288e9e6dcd71ccde5cee80f1d5a774eb",
   "const:epistrel.orchestrator.directives.LITE_DIRECTIVES": "c9ed6e8efcd933b5e23614920d468c6a68dc1c96a7a3bfa6fe2a08db785614e8",
+  "const:epistrel.orchestrator.directives.NARRATOR_STEERING": "76bab3713c8c846419556a6c887977d28a9dbf1cfa5350a38cbc30010bab96e0",
   "const:epistrel.orchestrator.directives.PARSE_CALLS": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
   "const:epistrel.orchestrator.directives.PARSE_DEADLINE_S": "184999fc4112ff83be6e918533470be97f00217c85101d9543ef8d3c81e1f181",
   "const:epistrel.orchestrator.directives.STEER_BUDGET_TOKENS": "0604cd3138feed202ef293e062da2f4720f77a05d25ee036a7a01c9cfcdd1f0a",
@@ -432,6 +433,9 @@
   "const:epistrel.orchestrator.structured.render.MAX_STEP_INDEX": "a68b412c4282555f15546cf6e1fc42893b7e07f271557ceb021821098dd66c1b",
   "const:epistrel.orchestrator.structured.render.NAME_MAX": "2abaca4911e68fa9bfbf3482ee797fd5b9045b841fdff7253557c5fe15de6477",
   "const:epistrel.orchestrator.structured.render.NARRATOR": "87027b9257736a6c3f55d1b3d230c5b6fb72fddbc2dab58ceb095fc3c366f260",
+  "const:epistrel.orchestrator.structured.render.NARRATOR_KIND": "573ee4c5ad242b3099e018380a4445eeb1a4f5bd4d30104d6da220c092f65182",
+  "const:epistrel.orchestrator.structured.render.NARRATOR_KIND_CORRECTION": "0ad917de984e66328f4ea576b7d02e251225e231298e22ccfbe43fbeca802351",
+  "const:epistrel.orchestrator.structured.render.NARRATOR_KIND_DROPPED": "2a3590ee448eb6646ab73d1b263ed110f5e96558c27aa4d558d72f4da07fafa5",
   "const:epistrel.orchestrator.structured.render.QUALIFIER_TEXT_MAX": "27badc983df1780b60c2b3fa9d3a19a00e46aac798451f0febdca52920faaddf",
   "const:epistrel.orchestrator.structured.render.REACTION_TEXT_MAX": "983bd614bb5afece5ab3b6023f71147cd7b6bc2314f9d27af7422541c6558389",
   "const:epistrel.orchestrator.structured.render.RENDER_TOKEN_FACTOR": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
@@ -539,5 +543,5 @@
   "source:epistrel.orchestrator.models.structured.with_headroom": "6fbfa1a301ed10cd2e8a4ed72e0df3b4f1103db4dfe18163cf79f735df80ebdd",
   "source:epistrel.orchestrator.structured.render.render_params": "6e673767c52e1c8812109c366c71463760c8487056ef4a744929cdf7f2369b64"
  },
- "revision": 6
+ "revision": 7
 }

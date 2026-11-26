@@ -65,7 +65,7 @@ from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
-MODEL_CALL_REVISION: Final[int] = 6
+MODEL_CALL_REVISION: Final[int] = 7
 """The engine's model-call revision, a fingerprint input (#818; ADR-200). 2: #735's structured
 headroom and api.anthropic.com's ``thinking`` extra (ADR-201). 3: #750's render validation
 (cast names resolved, a latent's named holder repaired, the cast in an unknown character's
@@ -84,7 +84,10 @@ consumer-written subject prompt (no ``image_prompt`` call on that path, the job'
 turn with several primaries regenerates a beat that repeats another speaker's sentence once,
 with the new ``no_copy`` constraint, ``ladder.COPY_CONSTRAINT``); also #978's untracked-mention
 pass (an extraction claim naming nothing the story holds takes ``pass``, so its beat sends no
-``regeneration`` call for it and the generic constraint is not sent for it). Bump it with any
+``regeneration`` call for it and the generic constraint is not sent for it). 7: #1059's
+narrator kinds (the narrator's render takes an author direction with ``NARRATOR_STEERING``
+after it, and a narrator beat of a kind it may not return is corrected once with
+``NARRATOR_KIND_CORRECTION``, then dropped). Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

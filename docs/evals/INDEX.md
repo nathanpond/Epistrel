@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Targets | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `2978d8cf6bfe` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — | — |
-| Standard | `3088dfacf0a3` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Full | `e7a7c49f1170` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
-| Max | `571cf6f4ac2d` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Lite | `cc3dd1d74870` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — | — |
+| Standard | `24699f74d938` | uncertified (preset changed since certification 01M7TQ7MTD5H2FHW81XS8FD6Y5) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Full | `4112b72e6b9a` | uncertified (preset changed since certification 01M7VBS4P98MFGJWYFAB1MR29C) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
+| Max | `d1d08c26e76a` | uncertified (preset changed since certification 01M7XSHMGEVE01ZDV8VM16HY2X) | — | — | — | — | — | — | `claude-haiku-5-5` | — | — | — |
 
 ## Image checks
 

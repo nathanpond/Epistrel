@@ -56,6 +56,14 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   ``clock_effects_dropped`` (the turn's ``clock_effect_dropped`` degradation). The
   ``regeneration`` answer (``orchestrator.repair.ladder.RegeneratedBeat``) is checked the same
   way;
+- #1059 (FR-MULTI-9): a beat of a kind the narrator's render may not return (a character's
+  ``say``, ``do`` or ``think``, as when it acts out an author direction meant for a character)
+  is refused with one dedicated correction (``NARRATOR_KIND_CORRECTION``, ``NARRATOR_KIND``),
+  sent once per call: a later attempt that still carries one has it dropped
+  (``drop_narrator_kinds``; the render's other beats stand, and its ``illustrate`` hints follow
+  them), counted as ``narrator_kinds_dropped`` (the turn's ``narrator_kind_dropped``
+  degradation). An answer with no other beat is still refused. A character's render keeps the
+  plain refusal;
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -350,6 +358,18 @@ CLOCK_CORRECTION = (
 CLOCK_EFFECT_DROPPED = "clock_effect_dropped"
 """#996 degradation: a render or regeneration still changed the world clock after its
 correction, and that effect was dropped (``drop_clock_effects``)."""
+NARRATOR_KIND = "narrator_kind"
+"""#1059: the error type of a narrator's beat of a kind its render may not return
+(``correct_once``)."""
+NARRATOR_KIND_CORRECTION = (
+    "The narrator's render returns only narration and latent beats; a character's say, do or"
+    " think is that character's own render."
+)
+"""#1059 (FR-MULTI-9): the correction a narrator's beat of another kind is sent (once per
+call)."""
+NARRATOR_KIND_DROPPED = "narrator_kind_dropped"
+"""#1059 degradation: a narrator's render still returned a beat of a kind it may not return
+after its correction, and that beat was dropped (``drop_narrator_kinds``)."""
 
 
 def changes_clock(kind: Any, state: Any, counterparty: Any, delta: Any) -> bool:
@@ -390,6 +410,35 @@ def drop_clock_effects(effects: Any, info: ValidationInfo) -> tuple[Any, int]:
         return effects, 0
     kept = [e for e in effects if not _raw_offence(e)]
     return kept, len(effects) - len(kept)
+
+
+def drop_narrator_kinds(
+    data: dict[str, Any], allowed: frozenset[str], info: ValidationInfo
+) -> tuple[dict[str, Any], int]:
+    """#1059: a narrator's raw answer without its beats of a kind ``allowed`` leaves out, once
+    their correction was sent in this call (``corrected``), and how many went; unchanged before
+    that, or when no beat would be left (the validators refuse them with
+    ``NARRATOR_KIND_CORRECTION``). The ``illustrate`` hints follow their beats' new indices (a
+    dropped beat's hint goes with it)."""
+    beats = data.get("beats")
+    if not isinstance(beats, list) or not corrected(info.context, NARRATOR_KIND):
+        return data, 0
+    keep = [n for n, b in enumerate(beats) if not isinstance(b, dict) or b.get("kind") in allowed]
+    if not keep or len(keep) == len(beats):
+        return data, 0
+    out = {**data, "beats": [beats[n] for n in keep]}
+    hints = data.get("illustrate")
+    if isinstance(hints, list):
+        moved = {old: new for new, old in enumerate(keep)}
+        out["illustrate"] = [
+            {**h, "beat_index": moved[h["beat_index"]]}
+            if isinstance(h, dict) and isinstance(h.get("beat_index"), int)
+            else h
+            for h in hints
+            if not (isinstance(h, dict) and isinstance(h.get("beat_index"), int))
+            or h["beat_index"] in moved
+        ]
+    return out, len(beats) - len(keep)
 
 
 def clock_refusal(errors: Sequence[str], effects: Sequence[EffectDecl]) -> ValueError:
@@ -1072,6 +1121,7 @@ class RenderedBeats(_Strict):
     character's render only)."""
     _latent_holder_repairs: int = PrivateAttr(default=0)
     _clock_drops: int = PrivateAttr(default=0)
+    _kind_drops: int = PrivateAttr(default=0)
 
     actor_id: ClassVar[str | None] = None
     """The rendering character (``None``: the narrator's render)."""
@@ -1109,8 +1159,11 @@ class RenderedBeats(_Strict):
         cls, data: Any, handler: ModelWrapValidatorHandler[Self], info: ValidationInfo
     ) -> Self:
         """#750: cast names to ids, and a latent's named holder repaired (module docstring).
-        #996: a world-clock change dropped once its correction was sent."""
-        repairs = drops = 0
+        #996: a world-clock change dropped once its correction was sent. #1059: a narrator's beat
+        of a kind it may not return dropped once its correction was sent."""
+        repairs = drops = kinds = 0
+        if cls.actor_id is None and isinstance(data, dict):
+            data, kinds = drop_narrator_kinds(data, cls.allowed, info)
         if isinstance(data, dict) and isinstance(data.get("beats"), list):
             keys = cast_keys(cls.cast_ids, cls.cast_names)
             beats: list[Any] = []
@@ -1127,12 +1180,19 @@ class RenderedBeats(_Strict):
         found = handler(data)
         found._latent_holder_repairs = repairs
         found._clock_drops = drops
+        found._kind_drops = kinds
         return found
 
     @property
     def clock_effects_dropped(self) -> int:
         """#996: the world-clock changes dropped after their correction."""
         return self._clock_drops
+
+    @property
+    def narrator_kinds_dropped(self) -> int:
+        """#1059: the narrator's beats of a kind it may not return, dropped after their
+        correction."""
+        return self._kind_drops
 
     @property
     def latent_holder_repairs(self) -> int:
@@ -1154,6 +1214,13 @@ class RenderedBeats(_Strict):
         for n, beat in enumerate(self.beats):
             where = f"beats.{n}"
             if beat.kind not in cls.allowed:
+                if narrator:
+                    # #1059: corrected once, then dropped (``drop_narrator_kinds``).
+                    raise correct_once(
+                        NARRATOR_KIND,
+                        f"{where}.kind: not a kind this render may return."
+                        f" {NARRATOR_KIND_CORRECTION}",
+                    )
                 raise ValueError(f"{where}.kind: not a kind this render may return")
             if not beat.text.strip():
                 raise ValueError(f"{where}.text: empty")
@@ -1619,6 +1686,9 @@ __all__ = [
     "INVALID_STRUCTURE",
     "LATENT_HOLDER_REPAIRED",
     "NARRATOR",
+    "NARRATOR_KIND",
+    "NARRATOR_KIND_CORRECTION",
+    "NARRATOR_KIND_DROPPED",
     "RENDER_TOKEN_FACTOR",
     "STRUCTURED",
     "AgeMatch",
@@ -1639,6 +1709,7 @@ __all__ = [
     "clock_offence",
     "clock_refusal",
     "drop_clock_effects",
+    "drop_narrator_kinds",
     "effect_errors",
     "hold_length",
     "length_chars",

@@ -336,6 +336,62 @@ def test_toward_the_player_stays_denied() -> None:
     )
 
 
+STRANGER = "01JD0000000000000000000T10"
+"""An unmodeled person: a ``person`` entity no character is."""
+UNRESOLVED = "01JD0000000000000000000T99"
+"""An argument id no entity resolves to."""
+CLAUSE_ENTITIES = {**TOWARD_ENTITIES, STRANGER: EntityInfo(STRANGER, "person")}
+
+
+def _clause(
+    subject: str,
+    predicate: str | Predicate,
+    obj: str,
+    asserter: str,
+    *,
+    qualifiers: dict[str, str] | None = None,
+    **facts: object,
+) -> pm.Permission:
+    """``subject predicate obj`` (with ``qualifiers``) in ``asserter``'s ``do`` beat, the turn's
+    present set ``CAMP_A``, the entities ``CLAUSE_ENTITIES`` (with the stranger)."""
+    chosen = CORE_BY_NAME[predicate] if isinstance(predicate, str) else predicate
+    found = ns.claim(subject, chosen.id, obj).model_copy(update={"qualifiers": qualifiers or {}})
+    given = PermissionFacts(
+        entities=CLAUSE_ENTITIES,
+        predicate=chosen,
+        **{"present": CAMP_A, "channel": "do", **facts},  # type: ignore[arg-type]
+    )
+    who = Asserter("character", asserter)
+    return pm.permission(found, who, pm.owner_of(found, given), given)
+
+
+def test_toward_clauses_each_decide() -> None:
+    """#1068 (#979): each of ``_toward``'s clauses decides a claim on its own. Every case
+    involves exactly one other modeled character (Wren), so ``len(others) != 1`` never decides
+    it. Each would be permitted were its clause dropped."""
+    denied = Denied(Reason.PLAYER_CHARACTER)
+    # Wren only as a qualifier, not the object: the object must be the other character.
+    assert _clause(MAREN, "spoke_to", STRANGER, MAREN, qualifiers={"about": WREN}) == denied
+    for relation in ("tells_secret_to", "present_at"):
+        free = _free(relation)
+        assert _clause(MAREN, free, STRANGER, MAREN, qualifiers={"about": WREN}) == denied
+    assert _clause(MAREN, _free("present_at"), INN, MAREN, qualifiers={"with": WREN}) == denied
+    # The subject must be the render's own character: an item, or an unmodeled person.
+    assert _clause(MUG, _free("slides_to"), WREN, MAREN) == denied
+    assert _clause(STRANGER, _free("nods_to"), WREN, MAREN) == denied
+    # A free relation must be an auto-registered predicate, not an author-layer one.
+    authored = _free("gives_gift_to").model_copy(update={"layer": Layer.AUTHOR})
+    assert _clause(MAREN, authored, WREN, MAREN) == denied
+    assert _toward_ok(_clause(MAREN, _free("gives_gift_to"), WREN, MAREN), Basis.ACTION_TEXTURE)
+    # #519's hand-over: the handed item must be no modeled character, and no other argument.
+    assert _clause(WREN, "holds", MAREN, MAREN, giver=MAREN) == denied
+    held = _clause(WREN, "holds", MUG, MAREN, qualifiers={"from": MAREN}, giver=MAREN)
+    assert held == denied
+    assert _toward_ok(_clause(WREN, "holds", MUG, MAREN, giver=MAREN), Basis.OWN)
+    # An object no entity resolves to is toward no one.
+    assert _clause(MAREN, "spoke_to", UNRESOLVED, MAREN, qualifiers={"about": WREN}) == denied
+
+
 def test_toward_a_present_character_is_permitted() -> None:
     """#979 (widened, owner 2026-11-23): Malik (rendering) acting toward Ethan, who is at the
     same place: he speaks to him, hands him the torch, leans toward and looks at him. Red

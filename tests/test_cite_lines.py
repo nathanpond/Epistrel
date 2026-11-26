@@ -20,6 +20,7 @@ from epistrel.orchestrator.structured.prompt import (
     cite_lines,
     normalize_cite,
     resolve_cites,
+    resolve_record_cites,
 )
 
 ACTOR = CastEntry(id="c-w", name="Wren", definition="", is_player=True)
@@ -136,3 +137,30 @@ def test_the_same_record_shown_twice_counts_once() -> None:
 
 def test_lines_given_without_ids_add_nothing() -> None:
     assert _lines(_context(canon=(HALL,), retrieved=(MEMORY,))) == {}
+
+
+# #1063 (#994 AC 1): a ``StepDecl``'s record cites.
+SHOWN = {
+    HALL: frozenset({"fact:F1"}),
+    MEMORY: frozenset({"event:E1"}),
+    SAID: frozenset({"memory:M1"}),
+    KITCHEN: frozenset({"fact:F2", "fact:F3"}),
+}
+
+
+def test_a_step_cite_copying_a_shown_line_resolves_to_its_record() -> None:
+    """A copied canon line names its fact, a working-memory line its event."""
+    assert resolve_record_cites([f"- {HALL}"], SHOWN) == ["F1"]
+    assert resolve_record_cites([MEMORY], SHOWN) == ["E1"]
+    assert resolve_record_cites([HALL, f'"{HALL}"'], SHOWN) == ["F1"]
+
+
+def test_a_step_cite_naming_no_single_antecedent_passes_through() -> None:
+    """A record id, a paraphrase, an ambiguous line and a line whose record is no antecedent
+    kind (a retrieved memory) pass through as given, so the verifier still probes (and
+    rejects) them: nothing is invented."""
+    assert resolve_record_cites(["01JRECORD"], SHOWN) == ["01JRECORD"]
+    assert resolve_record_cites([f"I recall {HALL}"], SHOWN) == [f"I recall {HALL}"]
+    assert resolve_record_cites([KITCHEN], SHOWN) == [KITCHEN]
+    assert resolve_record_cites([SAID], SHOWN) == [SAID]
+    assert resolve_record_cites([HALL], {}) == [HALL]

@@ -363,6 +363,30 @@ def resolve_cites(cites: Sequence[str], lines: Mapping[str, frozenset[str]]) -> 
     return list(dict.fromkeys(out))
 
 
+_RECORD_KINDS = {"event": "events", "fact": "facts", "belief": "beliefs", "utterance": "utterances"}
+"""#1063: the ``cite_lines`` record kinds a step's record cite may name (the antecedent tables,
+``core.antecedents.RECORD_TABLES``); a memory, episode or profile line names none of them."""
+
+
+def resolve_record_cites(cites: Sequence[str], lines: Mapping[str, frozenset[str]]) -> list[str]:
+    """#1063 (#994 AC 1): a ``StepDecl``'s record cites, given the render's ``cite_lines``. A
+    cite that copies a shown line resolves to that line's record id when it is exactly one and
+    of an antecedent kind (an event, a fact, a belief or an utterance), so the step verifier
+    probes the record. Any other cite passes through as given: a real record id keeps its
+    acceptance, and a copied line that names no single antecedent record is probed as text and
+    rejected (``antecedent_invalid``), as before: nothing is invented."""
+    out: list[str] = []
+    for cite in cites:
+        records = lines.get(normalize_cite(cite))
+        if records is not None and len(records) == 1:
+            kind, _, record = next(iter(records)).partition(":")
+            if kind in _RECORD_KINDS and record:
+                out.append(record)
+                continue
+        out.append(cite)
+    return list(dict.fromkeys(out))
+
+
 def narrator_inputs(
     sections: RenderSections,
     actor: CastEntry,
@@ -445,6 +469,7 @@ __all__ = [
     "narrator_inputs",
     "normalize_cite",
     "resolve_cites",
+    "resolve_record_cites",
     "tokens",
     "working_line",
 ]

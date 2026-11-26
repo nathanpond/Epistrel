@@ -38,6 +38,10 @@ pytestmark = pytest.mark.integration
 WORDS = "Meet me at the pier at dawn."
 
 
+LATCH_TIMEOUT_S = 30
+"""How long a held turn may take to reach its render (#1045)."""
+
+
 @pytest.fixture
 def stub_settings(pg_url: str) -> Settings:
     return auth_settings(pg_url, model_adapter="stub")
@@ -80,7 +84,9 @@ async def test_config_revalidation__perception(
             stub.script("generation", [whisper, whisper])
             latch = stub.hold("generation")
             task = asyncio.ensure_future(respond(client, story, body(ids["Wren"], "Well?")))
-            await asyncio.wait_for(latch.entered.wait(), 5)
+            # #1045: 5 s was too short near the end of a loaded CI shard (the fourth case timed
+            # out once); the bound only stops a hang, so it is generous.
+            await asyncio.wait_for(latch.entered.wait(), LATCH_TIMEOUT_S)
             await during()
             latch.release()
             response = await task

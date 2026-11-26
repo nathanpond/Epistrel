@@ -822,7 +822,10 @@ async def test_i_12__m12_render_budget_limit(
 ) -> None:
     """#1014: the per-render budget never spends past the turn's call budget. With a cap that
     leaves room for one regeneration, the first primary's flagged beat regenerates and the
-    second's is ``repair_deterministic`` (``budget``); no call goes over the cap."""
+    second's is ``repair_deterministic`` (``budget``); no call goes over the cap. #1052: two
+    renders ran the ladder and one regenerated, so ``epistrel_repair_renders_total`` counts
+    one ``regenerated="true"`` and one ``"false"``, and ``turn_report.repair`` has ``renders``
+    above ``renders_regenerated`` and one regeneration for two repairs."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         cap = BUDGET_CAP
@@ -832,6 +835,7 @@ async def test_i_12__m12_render_budget_limit(
         ms.renders_for(stub, "Bo", ms.render(_old()))
         stub.script("regeneration", [_regenerated(SAY_REGENERATED)] * 2)
         skipped = _regenerations("skipped_budget")
+        regenerated, unregenerated = _renders(True), _renders(False)
         answer = await respond(
             client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"], ids["Bo"]])
         )
@@ -843,6 +847,15 @@ async def test_i_12__m12_render_budget_limit(
         assert [d["cause"] for d in details] == ["budget"], played["degradation_details"]
         report = await turn_report(engine, story)
         assert report["budget"]["used"] <= cap, report["budget"]
+        assert (_renders(True) - regenerated, _renders(False) - unregenerated) == (1, 1)
+        assert len(report["repairs"]) == 2, report["repairs"]
+        assert report["repair"] == {
+            "renders": 2,
+            "renders_regenerated": 1,
+            "regenerations": 1,
+            "fallbacks": 1,
+            "dropped": 0,
+        }
 
 
 KNOCK_TEXT = "Someone knocks at the door."
@@ -1069,6 +1082,59 @@ async def test_i_12__m12_per_beat_cause(
             assert response.status_code == 200, response.text
             (turn,) = [t for t in response.json()["turns"] if t["turn"] == played["turn"]]
             assert entry in turn["degradation_details"], (viewpoint, turn)
+
+
+@pytest.mark.part("M12", "FR-REPAIR-5")
+async def test_i_12__m12_failed_regeneration(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#1051: Ada says and thinks the contradicted age. The say's regeneration repeats the
+    claim, so it is rejected and counts ``epistrel_repair_regenerations_total{outcome="failed"}``
+    (never ``accepted``); the say falls back. #1053: the think, past ``max_attempts``, is
+    dropped. Its repair entry is in the omniscient history read and absent from Wren's, who
+    cannot see Ada's thoughts; the say's fallback entry is in both (FR-REPAIR-5(c),
+    ``visible_details`` at the request's viewpoint)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _cast(client, engine, "Ada")
+        stub.reset()
+        ms.renders_for(stub, "Ada", ms.render(_old(), _old("think")))
+        stub.script("regeneration", [_regenerated(SEVENTY, claim("I", "age", "70"))])
+        failed, accepted = _regenerations("failed"), _regenerations("accepted")
+        answer = await respond(
+            client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Ada"]])
+        )
+        assert answer.status_code == 200, answer.text
+        played = answer.json()
+        assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 1
+        assert (_regenerations("failed") - failed, _regenerations("accepted") - accepted) == (1, 0)
+        assert SEVENTY not in _texts(played), _texts(played)
+        said = next(b["beat"] for b in played["beats"] if b["kind"] == "beat_say")
+        steps = [("repair_deterministic", "max_attempts"), ("safe_fallback", "repair")]
+        report = await turn_report(engine, story)
+        stored = [d for d in report["degradation_details"] if "beat" in d]
+        assert [(d["beat"], d["kind"], d["rung"]) for d in stored] == [
+            (said, "say", "safe_fallback"),
+            (said, "say", "safe_fallback"),
+            (said + 1, "think", "dropped"),
+            (said + 1, "think", "dropped"),
+        ], stored
+        assert [(d["step"], d["cause"]) for d in stored] == steps * 2, stored
+        everything = [{k: v for k, v in d.items() if k != "kind"} for d in stored]
+        seen = [d for d in everything if d["beat"] == said]
+        # respond reads at the request's viewpoint (Wren's): the think's entries are not there.
+        assert _repair_details(played) == seen, played["degradation_details"]
+        for viewpoint, expected in (
+            ("omniscient", everything),
+            (f"character:{ids['Wren']}", seen),
+        ):
+            response = await client.get(
+                f"/stories/{story}/history", params={"viewpoint": viewpoint}, headers=READ
+            )
+            assert response.status_code == 200, response.text
+            (turn,) = [t for t in response.json()["turns"] if t["turn"] == played["turn"]]
+            found = [d for d in turn["degradation_details"] if "beat" in d]
+            assert found == expected, (viewpoint, found)
 
 
 # -- M12: copied lines across speakers (#1013) -----------------------------------------------

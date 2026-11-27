@@ -10,7 +10,12 @@ except the ``id``, ``family`` and ``origin`` keys (labels, not text a model read
 - every shipped template, ``src/epistrel/orchestrator/models/templates/*.j2``, with its Jinja
   tags (``{# #}``, ``{% %}``, ``{{ }}``) stripped; and
 - the Python-held prompt strings: every string inside an upper-case module-level constant of
-  the model-call snapshot's guarded modules (``tests.model_call_support.guarded_modules()``).
+  the model-call snapshot's guarded modules (``tests.model_call_support.guarded_modules()``);
+  and
+- the string literals inside every function the snapshot hashes by source
+  (``tests.model_call_support.SOURCES``, #1084): each ``str`` constant in the function's
+  ``ast``, the literal parts of an f-string included and its docstring left out. The loop reads
+  ``SOURCES`` itself, so an entry added there is scanned without editing this file.
 
 Both sides are lower-cased, apostrophes dropped, other punctuation turned into spaces and
 whitespace collapsed. A case string matches when one of its 8-word shingles appears in a
@@ -27,11 +32,17 @@ editing this file.
 
 from __future__ import annotations
 
+import ast
 import importlib
+import inspect
 import json
 import re
+import sys
+import textwrap
 from collections.abc import Iterator, Mapping
 from typing import Any
+
+import pytest
 
 from epistrel.tools.generated import REPO_ROOT
 from tests import model_call_support
@@ -90,6 +101,26 @@ def case_shingles() -> dict[str, tuple[str, str]]:
     return found
 
 
+def source_strings(dotted: str) -> list[str]:
+    """#1084: the string constants of ``SOURCES`` entry ``dotted``'s source (f-string literal
+    parts included), in source order, without its docstring."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(model_call_support.resolve(dotted))))
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+    return [str(n.value) for n in sorted(found, key=lambda n: (n.lineno, n.col_offset))]
+
+
 def prompts() -> dict[str, str]:
     """Each shipped prompt's normalised text, by where it lives."""
     found: dict[str, str] = {}
@@ -105,6 +136,9 @@ def prompts() -> dict[str, str]:
                 continue
             for index, text in enumerate(_strings(getattr(loaded, name), skip_labels=False)):
                 found[f"{module}.{name}[{index}]"] = " ".join(normalise(text))
+    for dotted in model_call_support.SOURCES:
+        for index, text in enumerate(source_strings(dotted)):
+            found[f"source:{dotted}[{index}]"] = " ".join(normalise(text))
     return found
 
 
@@ -140,3 +174,36 @@ def test_both_sides_are_found() -> None:
     found = prompts()
     assert any(key.endswith("salience.j2") for key in found)
     assert any(not key.endswith(".j2") for key in found)
+    constraint = "source:epistrel.orchestrator.repair.ladder.RepairLadder._constraint"
+    assert any(key.startswith(constraint) for key in found)
+    assert {k.split("[")[0] for k in found if k.startswith("source:")} <= {
+        f"source:{d}" for d in model_call_support.SOURCES
+    }
+
+
+PLANTED = "Linda, do you know what Frank keeps locked in his desk drawer?"
+"""#1084's repro sentence, the text of labelled case ``asymmetry-family-0001``."""
+
+
+def test_a_quote_inside_a_source_function_is_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1084: an eval line inside a ``SOURCES`` function's f-string (``_constraint``'s) is
+    reported, naming the function and the case. The docstring is not read."""
+    dotted = "epistrel.orchestrator.repair.ladder.RepairLadder._constraint"
+    shipped = source_strings
+    documented = 0
+    for name in model_call_support.SOURCES:
+        docstring = model_call_support.resolve(name).__doc__
+        if docstring:
+            documented += 1
+            assert docstring not in shipped(name), name
+    assert documented
+
+    def planted(name: str) -> list[str]:
+        strings = shipped(name)
+        return [*strings, f"{PLANTED} Do not claim to remember "] if name == dotted else strings
+
+    monkeypatch.setattr(sys.modules[__name__], "source_strings", planted)
+    found = overlaps()
+    assert found, "the planted quote was not found"
+    assert all(f"source:{dotted}[" in f for f in found), found
+    assert any("case asymmetry-family-0001" in f for f in found), found

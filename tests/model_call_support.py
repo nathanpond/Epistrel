@@ -231,7 +231,7 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _resolve(dotted: str) -> Any:
+def resolve(dotted: str) -> Any:
     """A module attribute, or a class attribute (``module.Class.method``, #1064)."""
     parts = dotted.split(".")
     for split in range(len(parts) - 1, 0, -1):
@@ -257,7 +257,7 @@ def entries() -> dict[str, str]:
             if plain is not NotImplemented:
                 found[f"const:{module}.{name}"] = _digest(plain)
     for dotted in EXTRA_NAMES:
-        plain = _plain(_resolve(dotted))
+        plain = _plain(resolve(dotted))
         assert plain is not NotImplemented, dotted
         found[f"const:{dotted}"] = _digest(plain)
     from epistrel.orchestrator.models.registry import DELIVERED
@@ -273,7 +273,7 @@ def entries() -> dict[str, str]:
             }
         )
     for dotted in SOURCES:
-        found[f"source:{dotted}"] = _digest(inspect.getsource(_resolve(dotted)))
+        found[f"source:{dotted}"] = _digest(inspect.getsource(resolve(dotted)))
     return dict(sorted(found.items()))
 
 

@@ -24,6 +24,9 @@ the stub adapter. Maren is the actor and the render character (as a consumer's h
 - ``test_the_present_set_is_the_actors``: #1081 (#1019): Maren acts at the camp with Flynn
   while the player's character Wren is at the beach with Carlos; the present set is Flynn's,
   never Carlos's.
+- ``test_no_present_set_without_an_anchor``: #1085: in a placed story, ``present_at_turn`` of an
+  actor with no entity, or of turn 0 (before the first turn, 1), is placed with an empty
+  present set, never the whole cast.
 """
 
 from __future__ import annotations
@@ -36,6 +39,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.epistemic.scene import present_at_turn
+from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.resolution import context as resolution
 from epistrel.core.tables import stories
@@ -370,3 +375,19 @@ async def test_a_failed_do_falls_back_to_a_say(
     assert kinds == ["beat_say"], rendered
     assert "beat_do" not in kinds
     assert "changes the subject" in rendered[0][1]
+
+
+async def test_no_present_set_without_an_anchor(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await structured_story(client, "Wren", "Maren", "Flynn")
+        camp = await ps.place_entity(engine, story, "the camp")
+        for n in ("Wren", "Maren", "Flynn"):
+            await ps.put(engine, story, ids[n], camp)
+        async with engine.connect() as conn:
+            # Complement: anchored on Maren at turn 1, the camp (Maren included) is present.
+            placed, present = await present_at_turn(conn, story, ids["Maren"], 1)
+            assert placed and present == set(ids.values()), (present, ids)
+            assert await present_at_turn(conn, story, new_ulid(), 1) == (True, frozenset())
+            assert await present_at_turn(conn, story, ids["Maren"], 0) == (True, frozenset())

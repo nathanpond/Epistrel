@@ -20,6 +20,7 @@ from epistrel.core.canon.canonize import NewEntity
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.resolution.entities import NARRATOR, EntityEntry, EntityIndex, ResolutionContext
 from epistrel.core.resolution.time import TimeBasis
+from epistrel.core.resolution.types import Reason, ReasonCode, Uncertain
 from epistrel.core.verify.detect import DetectedClaim
 from epistrel.core.verify.introduce import Introductions, entity_name
 from epistrel.core.verify.normalize import (
@@ -431,3 +432,15 @@ def test_only_an_extraction_finding_of_its_own_passes() -> None:
     assert not passes(replace(own, merged=("detector",)))
     assert not passes(replace(own, category="protected_content"))
     assert not passes(replace(own, unnormalized=None))
+
+
+@pytest.mark.parametrize("code", [ReasonCode.UNKNOWN_NAME, ReasonCode.NO_ANTECEDENT])
+def test_an_untracked_reason_with_candidates_does_not_pass(code: ReasonCode) -> None:
+    """#1064 item 4: ``untracked_mention`` needs no candidates as well as an untracked reason.
+    A resolution that found nothing by name or antecedent but still lists candidates is not a
+    silent pass; the same resolution with none is."""
+    listed = Uncertain(Reason(code), candidates=("ent_a", "ent_b"))
+    found = Unnormalizable(VerdictReason.UNRESOLVED_ENTITY, code.value, resolution=listed)
+    assert not found.untracked_mention
+    bare = dataclasses.replace(found, resolution=Uncertain(Reason(code)))
+    assert bare.untracked_mention

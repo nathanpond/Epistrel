@@ -11,9 +11,9 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   text or request shape without importing it: #1069 added ``structured.prompt``'s steering;
   #1071 added ``structured.effects``' outcome lines, ``images.targets.subject``' ``SCENE`` and
   ``core.genesis.render``'s Lite headings and ``PREVAIL``). ``core.turns.staged.FORK_CLOSURE``
-  is not guarded: it is a beat's text, written to the story, not an instruction to a model. Input-truncation caps count. A literal is
-  hashed as written; a computed value at run time, except a computed ``dict``, ``list`` or
-  ``set``, which may be a registry other imports fill.
+  is not guarded: it is a beat's text, written to the story, not an instruction to a model.
+  Input-truncation caps count. A literal is hashed as written; a computed value at run time,
+  except a computed ``dict``, ``list`` or ``set``, which may be a registry other imports fill.
 - **Named constants elsewhere** (``EXTRA_NAMES``): core's token ceilings that a call sends,
   and core's effect-syntax clock line (#939) and external-value line (#1071).
 - **Schemas** (``schema:<purpose>``): each delivered purpose's input and response JSON Schema,

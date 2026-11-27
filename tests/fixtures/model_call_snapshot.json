@@ -356,6 +356,7 @@
   "const:epistrel.orchestrator.repair.ladder.SAFE_FALLBACK": "0b02294a8e1293b9810ed3290d65d3ced352915fabdee0ee3b364076a6a43674",
   "const:epistrel.orchestrator.repair.ladder.SPEAKER_HAS_LINE": "b961552c472ad8e65211aa79b5c8e5cbf67160b6b40eb05a8e3aed2e11df958b",
   "const:epistrel.orchestrator.repair.ladder.STATE_SETTLED": "d124ea130282585bac48bb3e11c0975125d042b1de89db6bf73ca8dac4c1c737",
+  "const:epistrel.orchestrator.repair.ladder.TOWARD_DENIALS": "79cef7fb092c1105bdbc172cd54205c80a0c699ebffd6191c0319ea925134399",
   "const:epistrel.orchestrator.repair.ladder.UNCHECKED": "15f94a2589c42863ecf402aa474e0bea8cd00905a75b043e1c4db864b4664ccd",
   "const:epistrel.orchestrator.rewrite.apply.EXCERPT": "a512db2741cd20693e4b16f19891e72b9ff12cead72761fc5e92d2aaf34740c1",
   "const:epistrel.orchestrator.rewrite.apply.FAIL_AFTER_PARTS": "fcbcf165908dd18a9e49f7ff27810176db8e9f63b4352213741664245224f8aa",
@@ -593,5 +594,5 @@
   "source:epistrel.orchestrator.structured.render.RenderedBeats._structure": "7fe37592fa027db6768dc497761bdf32498847e23b08909ef7dd0c07ff45ffd0",
   "source:epistrel.orchestrator.structured.render.render_params": "6e673767c52e1c8812109c366c71463760c8487056ef4a744929cdf7f2369b64"
  },
- "revision": 7
+ "revision": 8
 }

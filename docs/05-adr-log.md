@@ -2656,7 +2656,7 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 - Reading the scene as of turn N (beyond the head): `scene_view` refuses it, and the stored scene rows are written at commit.
 **Consequences:**
 - docs/03 FR-MULTI-9 and FR-VERIFY-11 gain *[amended by ADR-220]* markers; ADR-217 and ADR-218 gain Amended-by lines.
-- No prompt string, constraint template or guarded constant changes, so `MODEL_CALL_REVISION` stays 7. A read-set row of a turn-start scene read is keyed `scene:<turn>[:<actor>]:start`.
+- No prompt string or constraint template changes, but what a call sends does: an `unpermitted` constraint names another character, a fallback line is a `say`, and fewer `regeneration` calls follow a between-turn move. So `MODEL_CALL_REVISION` moves to 8, the guarded snapshot is re-taken (adding `ladder.TOWARD_DENIALS`) and `docs/evals/INDEX.md` is regenerated. A read-set row of a turn-start scene read is keyed `scene:<turn>[:<actor>]:start`.
 - Tests: `tests/integration/test_m12_1060.py` (the stub turns, each with its complement: the camp-placed ambiguity still repairs, an unmoved Flynn is still denied, a greeting toward an absent character is denied and its constraint names him) and `tests/test_permission.py` (greetings, several characters, and their complements).
 
 ---

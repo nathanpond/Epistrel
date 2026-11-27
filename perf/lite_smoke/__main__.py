@@ -314,6 +314,19 @@ def host_description() -> str:
     return f"{platform.system()} {platform.machine()}, {cpus} CPUs{memory}"
 
 
+def read_records(work: Path, locust_code: int) -> list[dict[str, Any]]:
+    """The run's ``records.jsonl``. When Locust wrote none, it never ran its users: exit naming
+    its code and the likeliest cause (#1064: the ``perf`` group, which holds Locust, is not
+    installed by a default ``uv sync``) rather than a bare FileNotFoundError."""
+    path = work / "records.jsonl"
+    if not path.is_file():
+        raise SystemExit(
+            f"locust exited {locust_code} and wrote no {path.name} under {work}: is the perf "
+            "group installed (`uv sync --group perf`)? See the locust output above."
+        )
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
 def run_locust(
     target: Target,
     work: Path,
@@ -480,11 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         after = scrape(target.base_url)
         log(f"locust exited {code}; draining the queues")
         drain(target)
-        records = [
-            json.loads(line)
-            for line in (work / "records.jsonl").read_text().splitlines()
-            if line.strip()
-        ]
+        records = read_records(work, code)
         reconciled = {
             s.story_id: reconcile(
                 target,

@@ -860,9 +860,12 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
     stayed ``intended``, never claimed or sent (correct, but not the case under test). The
     deduplicating crash after the claim (3) runs on that child too (#920): in ``all`` mode the
     worker could claim and send the row before the request's ``staged.after_claim`` fired, so
-    the provider had it before the crash (correct, but again not the case under test). The
-    other crash points stay on the ``all`` child: (2) needs its dispatcher, and (4) fires inside
-    the send on whichever path sent."""
+    the provider had it before the crash (correct, but again not the case under test). So does
+    the crash after the send (4) (#1074): there the worker could claim and send first, and its
+    crash left the turn at ``intent_committed``, before the request's claim stage (correct, but
+    not the case under test). With no worker the request path claims and sends, through the same
+    ``dispatcher.send``, so (4) still fires there. The other crash points stay on the ``all``
+    child: (2) needs its dispatcher."""
     with migrated_database(pg_url, f"epistrel_sec_{secrets.token_hex(4)}") as url:
         settings = auth_settings(url, model_adapter="stub")
         db = make_engine(settings)
@@ -885,8 +888,11 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
             await db.dispose()
 
 
-CLAIMED_CASES = tuple(case for case in DEDUPED_CASES if case[0] == "staged.after_claim")
-"""The deduplicating cases the request's own claim must win: run with no job worker (#920)."""
+CLAIMED_CASES = tuple(
+    case for case in DEDUPED_CASES if case[0] in ("staged.after_claim", "staged.after_send")
+)
+"""The deduplicating cases the request's own claim must win: run with no job worker (#920,
+#1074)."""
 DISPATCHED_CASES = tuple(case for case in DEDUPED_CASES if case not in CLAIMED_CASES)
 """The other deduplicating cases, run on the ``all``-mode child."""
 

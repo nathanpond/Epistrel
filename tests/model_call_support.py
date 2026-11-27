@@ -8,11 +8,14 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   tuples, lists, sets and mappings of them). The guarded modules are every module under
   ``epistrel.orchestrator`` that imports the Model Access Layer (``MODEL_ACCESS``), found from
   the source so a new caller joins by itself, plus ``EXTRA_MODULES`` (modules that hold prompt
-  text or request shape without importing it). Input-truncation caps count. A literal is
-  hashed as written; a computed value at run time, except a computed ``dict``, ``list`` or
-  ``set``, which may be a registry other imports fill.
+  text or request shape without importing it: #1069 added ``structured.prompt``'s steering;
+  #1071 added ``structured.effects``' outcome lines, ``images.targets.subject``' ``SCENE`` and
+  ``core.genesis.render``'s Lite headings and ``PREVAIL``). ``core.turns.staged.FORK_CLOSURE``
+  is not guarded: it is a beat's text, written to the story, not an instruction to a model.
+  Input-truncation caps count. A literal is hashed as written; a computed value at run time,
+  except a computed ``dict``, ``list`` or ``set``, which may be a registry other imports fill.
 - **Named constants elsewhere** (``EXTRA_NAMES``): core's token ceilings that a call sends,
-  and core's effect-syntax clock line (#939).
+  and core's effect-syntax clock line (#939) and external-value line (#1071).
 - **Schemas** (``schema:<purpose>``): each delivered purpose's input and response JSON Schema,
   its history field and its variant names. The response schema is sent on the wire, and the
   input schema shapes what the template renders.
@@ -21,13 +24,17 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   ``ModelParams`` (``SOURCES``; #1003): ``compose.compose.polish_params`` (the polish's token
   ceiling), ``lite.prompt.model_params`` (Lite generation's) and
   ``structured.render.render_params`` (a beat render's). A formula edit in one of them, such
-  as dropping ``LENGTH_FACTOR`` from ``polish_params``, changes its hash.
+  as dropping ``LENGTH_FACTOR`` from ``polish_params``, changes its hash. #1064 added the
+  prompt-assembly functions that join steering text (``directives.steering_line``,
+  ``structured.pipeline._steering``) and the beat validator whose correction text a retry
+  sends (``structured.render.RenderedBeats._structure``).
 
   Found by grepping ``def .*_params`` under ``src/epistrel``. Excluded, because they make no
   model call's params: ``models.config._params``, ``_image_params``, ``_wire_params`` and
   ``check_port_params`` (they parse and validate the deployment's model-config rows, which are
   data); ``models.capability.check_prompt_params`` (a capability probe, not a story call);
-  ``images.jobs``' ``params`` property (an image job's stored request, not ``ModelParams``);
+  ``images.jobs``' ``params`` property and ``images.targets.subject.job_params`` (an image
+  job's stored request, not ``ModelParams``);
   and ``core.retrieval``'s ``position_params`` and ``scope_params`` (SQL bind parameters).
 
   Not covered: params written inline at a call site rather than in a named function. Their
@@ -100,6 +107,9 @@ EXTRA_MODULES = (
     "epistrel.orchestrator.rewrite.support_check",
     "epistrel.orchestrator.lite.schemas",
     "epistrel.orchestrator.structured.prompt",
+    "epistrel.orchestrator.structured.effects",
+    "epistrel.orchestrator.images.targets.subject",
+    "epistrel.core.genesis.render",
     "epistrel.core.summary",
 )
 EXTRA_NAMES = (
@@ -107,6 +117,7 @@ EXTRA_NAMES = (
     "epistrel.core.settings_schema.MAX_LENGTH_TOKENS",
     "epistrel.core.settings_schema.DEFAULT_LITE_SUMMARY_MAX_TOKENS",
     "epistrel.core.states.effects.CLOCK_LINE",
+    "epistrel.core.states.effects.EXTERNAL_VALUE",
 )
 SOURCES = (
     "epistrel.orchestrator.models.provider_schema.is_anthropic",
@@ -122,6 +133,9 @@ SOURCES = (
     "epistrel.orchestrator.lite.prompt.model_params",
     "epistrel.orchestrator.structured.render.render_params",
     "epistrel.core.states.effects.syntax",
+    "epistrel.orchestrator.directives.steering_line",
+    "epistrel.orchestrator.structured.pipeline._steering",
+    "epistrel.orchestrator.structured.render.RenderedBeats._structure",
 )
 
 
@@ -215,8 +229,17 @@ def _digest(value: Any) -> str:
 
 
 def _resolve(dotted: str) -> Any:
-    module, _, name = dotted.rpartition(".")
-    return getattr(importlib.import_module(module), name)
+    """A module attribute, or a class attribute (``module.Class.method``, #1064)."""
+    parts = dotted.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        try:
+            found: Any = importlib.import_module(".".join(parts[:split]))
+        except ModuleNotFoundError:
+            continue
+        for name in parts[split:]:
+            found = getattr(found, name)
+        return found
+    raise ModuleNotFoundError(dotted)
 
 
 def entries() -> dict[str, str]:

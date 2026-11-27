@@ -16667,3 +16667,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–14. The 9 files that read a changed module gave 75 passed and 1 env-gated skip. Ruff, format, mypy strict and 8 import contracts are clean.
   **Why:** a serial local full run takes about 6 h.
   **Issue:** #1084, #1085
+- **Decision (Rule 3):** CI attempt 1 (run 46071259086) went red on `lint`. Two new asserts joined with `and` broke PT018. My local lint step had chained ruff, format, mypy and lint-imports in one `{ …; }` block and printed only the last exit code, so the ruff failure was hidden. Both asserts are now split. Each check was re-run separately: ruff, format, mypy and import contracts are clean. Every other job on attempt 1 passed (25 of 27). The CI budget is 85 min, which is 1.5 × PR #1083's longest check (57 min).
+  **Issue:** #1084, #1085

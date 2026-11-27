@@ -388,6 +388,7 @@ async def test_no_present_set_without_an_anchor(
         async with engine.connect() as conn:
             # Complement: anchored on Maren at turn 1, the camp (Maren included) is present.
             placed, present = await present_at_turn(conn, story, ids["Maren"], 1)
-            assert placed and present == set(ids.values()), (present, ids)
+            assert placed
+            assert present == set(ids.values()), (present, ids)
             assert await present_at_turn(conn, story, new_ulid(), 1) == (True, frozenset())
             assert await present_at_turn(conn, story, ids["Maren"], 0) == (True, frozenset())

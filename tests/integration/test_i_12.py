@@ -1591,7 +1591,8 @@ async def test_i_12__m12_name_only(
             ).json()
             texts = _texts(played)
             assert kept in texts, texts
-            assert "Wren." not in texts and "Birdie." not in texts
+            assert "Wren." not in texts
+            assert "Birdie." not in texts
             rejected = [e.payload for e in await _audit(engine, story, "render_rejected")]
             name_only = [
                 r for r in rejected if {"kind": "narrowing", "reason": "name_only"} in r.constraints

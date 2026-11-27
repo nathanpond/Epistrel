@@ -16655,3 +16655,17 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–13. Locally, the 16 test files that read a changed module, plus `tests/gates`: 789 passed, 1 env-gated skip. Every lint-job check, ruff, format, mypy strict (1,668 files) and 8 import contracts are clean.
   **Why:** a serial local full run takes about 6 h.
   **Issue:** #1077–#1082
+
+## /n8-exec M12 — 2026-11-27 (round 15: #1084, #1085)
+
+- **Decision:** The scope is verify round 11's sev:high test gap #1084, plus #1085 (sev:low and cheap). #1043 (the owner's decision), #1064 (items 5 and 6) and #1060's open questions are not worked. The branch is `milestone/m12-round15`. Both fixes are test-only, apart from one docstring sentence in `present_at_turn`.
+  **Issue:** #1084, #1085
+- **Decision (#1084):** `tests/test_prompt_eval_disjoint.py` `prompts()` also scans each `SOURCES` function's `str` constants, read with `ast` over `inspect.getsource`. That includes f-string literal parts, keyed `source:<dotted>[i]`. Each docstring is skipped because no model reads it. Each f-string part is its own string, not joined across placeholders, because a shingle that spans a placeholder is not a quote. `model_call_support._resolve` is now public `resolve` (it has two callers there). The issue's sed repro now fails, naming `RepairLadder._constraint[6]` and `asymmetry-family-0001`. A monkeypatched copy of that repro is a permanent test. No prompt text changed, so there is no bump.
+  **Issue:** #1084
+- **Decision (#1085):** `test_i_12__m12_name_only` gains a third case: Wren's entity alias "Birdie" (a direct `entity_aliases` row). Mutant M6b fails it, because "Birdie." is accepted at rung 1. I pinned `present_at_turn`'s `actor is None or turn - 1 < 0` branch with a direct call in `test_m12_1060.py` (an unknown actor at turn 1, and Maren at turn 0) rather than only documenting it. The `return True, frozenset(cast)` mutant on that line fails the test. Turn 0 cannot occur in play because the first turn is 1, and the docstring now says so.
+  **Issue:** #1085
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–14. The 9 files that read a changed module gave 75 passed and 1 env-gated skip. Ruff, format, mypy strict and 8 import contracts are clean.
+  **Why:** a serial local full run takes about 6 h.
+  **Issue:** #1084, #1085
+- **Decision (Rule 3):** CI attempt 1 (run 46071259086) went red on `lint`. Two new asserts joined with `and` broke PT018. My local lint step had chained ruff, format, mypy and lint-imports in one `{ …; }` block and printed only the last exit code, so the ruff failure was hidden. Both asserts are now split. Each check was re-run separately: ruff, format, mypy and import contracts are clean. Every other job on attempt 1 passed (25 of 27). The CI budget is 85 min, which is 1.5 × PR #1083's longest check (57 min).
+  **Issue:** #1084, #1085

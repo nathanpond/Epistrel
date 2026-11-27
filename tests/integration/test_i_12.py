@@ -1541,6 +1541,23 @@ async def test_i_12__m12_copied_lines_escalated(
 NAME_ONLY_SEVENTY = "Wren. I am 70 years old."
 """#1019: a say whose second sentence (canon: 64) narrowing drops, leaving only a name."""
 WORDED_SEVENTY = "Okay, Wren. I am 70 years old."
+ALIAS_SEVENTY = "Birdie. I am 70 years old."
+"""#1085: the same say, opened with Wren's entity alias "Birdie" (not Wren's character name),
+so only ``_name_words``' alias query makes the narrowed "Birdie." name-only."""
+
+
+async def _alias(engine: AsyncEngine, story: str, character_id: str, alias: str) -> None:
+    """Give ``character_id``'s entity the alias ``alias`` (an ``entity_aliases`` row)."""
+    async with engine.begin() as conn:
+        added = await conn.execute(
+            text(
+                "INSERT INTO entity_aliases (id, story_id, entity_id, alias, source) "
+                "SELECT :id, story_id, id, :alias, 'canonized' FROM entities "
+                "WHERE story_id = :s AND character_id = :c"
+            ),
+            {"id": new_ulid(), "alias": alias, "s": story, "c": character_id},
+        )
+        assert added.rowcount == 1
 
 
 @pytest.mark.part("M12", "FR-REPAIR-2")
@@ -1551,14 +1568,19 @@ async def test_i_12__m12_name_only(
     am 70 years old." (canon: 64) narrowed to "Wren." is not accepted at rung 1 (before #1019
     it committed): the next rung runs (substitution: "Wren. I am 64 years old.") and "Wren." is
     recorded as a rejected render with the ``name_only`` constraint. Complement: "Okay, Wren. I
-    am 70 years old." is accepted at rung 1 as "Okay, Wren."; neither regenerates."""
+    am 70 years old." is accepted at rung 1 as "Okay, Wren."; neither regenerates. #1085: an
+    entity alias counts as a name: "Birdie. I am 70 years old.", where Birdie is Wren's alias,
+    narrowed to "Birdie." is rejected the same way (``_name_words`` reads the aliases)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
         for said, kept in (
             (NAME_ONLY_SEVENTY, "Wren. I am 64 years old."),
             (WORDED_SEVENTY, "Okay, Wren."),
+            (ALIAS_SEVENTY, "Birdie. I am 64 years old."),
         ):
             story, ids = await _cast(client, engine, "Ada")
+            if said == ALIAS_SEVENTY:
+                await _alias(engine, story, ids["Wren"], "Birdie")
             stub.reset()
             ms.renders_for(stub, "Ada", ms.render(_old(text_=said)))
             stub.script("regeneration", [_regenerated(SAY_REGENERATED)])
@@ -1570,12 +1592,15 @@ async def test_i_12__m12_name_only(
             texts = _texts(played)
             assert kept in texts, texts
             assert "Wren." not in texts
+            assert "Birdie." not in texts
             rejected = [e.payload for e in await _audit(engine, story, "render_rejected")]
             name_only = [
                 r for r in rejected if {"kind": "narrowing", "reason": "name_only"} in r.constraints
             ]
             if said == NAME_ONLY_SEVENTY:
                 assert [(r.rung, r.text) for r in name_only] == [(1, "Wren.")]
+            elif said == ALIAS_SEVENTY:
+                assert [(r.rung, r.text) for r in name_only] == [(1, "Birdie.")]
             else:
                 assert name_only == []
             assert sum(1 for c in stub.calls if c.purpose == "regeneration") == 0

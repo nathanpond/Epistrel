@@ -600,7 +600,9 @@ async def present_at_turn(
     narrative turn ``turn`` (``present_for``), as it starts (the scene as of ``turn - 1``'s
     inter-turn slots at ``turn``'s start time, #1060: a placement written between the turns
     counts) with
-    ``actor_character_id`` acting; read through ``KeyedLookup`` (``read_set`` when given)."""
+    ``actor_character_id`` acting; read through ``KeyedLookup`` (``read_set`` when given).
+    With no anchor (an actor with no entity, or turn 0, before the first turn, 1) a placed
+    story's present set is empty, never the whole cast (#1085)."""
     from epistrel.core.errors import InvalidRequest
 
     by_entity, rows = await _cast(conn, story_id)

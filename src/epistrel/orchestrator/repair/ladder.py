@@ -223,11 +223,11 @@ log = logging.getLogger(__name__)
 
 SAY, THINK, DO, LATENT, NARRATION = "say", "think", "do", "latent", "narration"
 DETERMINISTIC_KINDS = frozenset({SAY, DO, NARRATION})
+"""The beat kinds rungs 1, 2 and 4's fallback line apply to; ``think`` and ``latent`` go
+straight to rung 3, then are dropped."""
 TOWARD_DENIALS = frozenset({"other_character_secret", "player_character"})
 """#1060: the denials that protect another character than the speaker, whose name an
 ``unpermitted`` constraint carries when the claim's subject is the speaker."""
-"""The beat kinds rungs 1, 2 and 4's fallback line apply to; ``think`` and ``latent`` go
-straight to rung 3, then are dropped."""
 NEIGHBORHOOD_DEPTH = 2
 REPAIR_DETERMINISTIC = "repair_deterministic"
 """Degradation: a beat needed a regeneration the turn could not reserve (``budget``) or had no

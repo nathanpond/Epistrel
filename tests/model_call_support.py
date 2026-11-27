@@ -27,7 +27,9 @@ the fingerprint already. This module hashes the rest, the Python-held parts:
   as dropping ``LENGTH_FACTOR`` from ``polish_params``, changes its hash. #1064 added the
   prompt-assembly functions that join steering text (``directives.steering_line``,
   ``structured.pipeline._steering``) and the beat validator whose correction text a retry
-  sends (``structured.render.RenderedBeats._structure``).
+  sends (``structured.render.RenderedBeats._structure``). #1082 added the repair ladder's
+  constraint builder (``repair.ladder.RepairLadder._constraint``), whose f-strings are the
+  constraint lines a ``regeneration`` call sends.
 
   Found by grepping ``def .*_params`` under ``src/epistrel``. Excluded, because they make no
   model call's params: ``models.config._params``, ``_image_params``, ``_wire_params`` and
@@ -136,6 +138,7 @@ SOURCES = (
     "epistrel.orchestrator.directives.steering_line",
     "epistrel.orchestrator.structured.pipeline._steering",
     "epistrel.orchestrator.structured.render.RenderedBeats._structure",
+    "epistrel.orchestrator.repair.ladder.RepairLadder._constraint",
 )
 
 

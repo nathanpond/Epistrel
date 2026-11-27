@@ -16590,3 +16590,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Images:** `ghcr.io/nathanpond/epistrel` tags `0.4.3`, `0.4`, `0` and `latest` all point to `sha256:8083792502dd575f4c202ba45349ae501666af803383bdd0ff3aafb199fcd159` (amd64 and arm64).
   - **GitHub release:** the workflow created it, marked Latest. A written summary went on top: the behaviour changes, the test-only hardening, uncertified under ADR-208, and the known issues.
 - **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.3
+
+## /n8-exec M12 — 2026-11-27 (round 12: #1071, #1064, #1074)
+
+- **Decision:** Scope is #1071 (sev:medium, from verify round 9), #1064 (sev:low) and #1074 (the S-EFFECT-CRASH flake filed at the v0.4.3 release). #1043 is not worked (the owner's decision). Branch `milestone/m12-round12`.
+  **Why:** these are the open M12 bugs an agent can act on. The owner ran `/n8-exec M12` after being told so.
+  **Issue:** #1071, #1064, #1074
+- **Decision (#1074):** The cause is the `staged.after_send` case, run on the `all`-mode child: the outbox worker can claim and send the row before the request's `claim_all` commits, so the crash leaves the turn at `intent_committed`, not `awaiting_outcome`. It is the same race #920 fixed for `after_claim`. The fix is test-only: `after_send` joins `CLAIMED_CASES` and runs on the `api`-mode child, where the request path sends through the same `dispatcher.send`, so the crash point still fires. A forced repro (a 2 s sleep in `staged.claim_all`, only in the child armed with `after_send`) fails at :823 before the fix and passes after (6 passed); unforced, 6 passed.
+  **Issue:** #1074
+- **Decision (#1071):** `images.targets.subject`, `structured.effects` and `core.genesis.render` join `EXTRA_MODULES`, and `core.states.effects.EXTERNAL_VALUE` joins `EXTRA_NAMES`. Whole modules rather than single names: the guard over-covers by design, and a new text constant in them then joins by itself. `core.turns.staged.FORK_CLOSURE` stays out: it is a beat's text written to the story, not an instruction to a model. It is documented, and a test asserts it stays out.
+  **Why:** the verifier's sweep and my own trace both show these reach a model call (image prompt, render outcome lines, Lite system prompt, states block).
+  **Issue:** #1071
+- **Decision (#1071, #1064 item 2):** The snapshot gains 43 entries with no `MODEL_CALL_REVISION` bump: additions only, nothing changed or removed, and no sent text changed (the documented #1003 rule). `evals index --check` stays current. Source edits to `SCENE`, `CONFIRMED_LINE` and `EXTERNAL_VALUE` each fail 2 guard tests; edits to `steering_line`, `_steering` and `RenderedBeats._structure` each fail 1.
+  **Issue:** #1071, #1064
+- **Decision (#1064 item 2):** `_resolve` now resolves a class attribute (`module.Class.method`), so `RenderedBeats._structure` (the validator whose correction text a retry sends) can be in `SOURCES`.
+  **Issue:** #1064
+- **Decision (#1064 item 4):** I kept `untracked_mention`'s `not found.candidates` check and added a test instead of removing it (the issue offered both). `untracked_weak` carries the same check, and a resolution can list candidates under a non-ambiguous code. Removing it would make the silent pass depend on the resolver never doing that. The test, with `UNKNOWN_NAME` and `NO_ANTECEDENT` carrying candidates, kills the `True` mutant (2 failed).
+  **Issue:** #1064
+- **Decision (#1064 item 1):** `perf.lite_smoke` reads records through `read_records`, which exits naming Locust's exit code and `uv sync --group perf` when no `records.jsonl` exists, instead of a FileNotFoundError. It is unit-tested (2 tests). I chose a clear failure over `importorskip`: a skip would hide a CI image missing the perf group.
+  **Issue:** #1064
+- **Decision (#1064 items 5 and 6):** Not done; #1064 stays open. Item 5 (drive the eval harness on a model clock-change case) needs a structured eval case with States and the clock on, scripted through the harness: larger than the rest of this round, for a sev:low gap. #996's own tests already show the turn answers 200, and the harness counts only exceptions as harness errors. Item 6 waits on #1043 (the owner's decision).
+  **Issue:** #1064
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–11. Locally: ruff, format, mypy strict (1666 files) and 8 import contracts clean; `tests/gates` and `test_workflows` 703 passed; S-EFFECT-CRASH 6 passed; the revision, disjointness and C-18 tests 14 passed, 1 env-gated skip; `test_introduce` 45 passed; `test_lite_smoke_records` 2 passed.
+  **Why:** a serial local full run takes about 6 h.
+  **Issue:** #1071, #1064, #1074

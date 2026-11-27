@@ -161,6 +161,61 @@ def test_a_shared_name_is_ambiguous_never_guessed() -> None:
     assert mention.entity_id == SMITH_SR
 
 
+DAY_1 = "01JR0000000000000000000011"
+DAY_3 = "01JR0000000000000000000013"
+BANNER = "01JR0000000000000000000014"
+HARBOR = "01JR0000000000000000000015"
+HARBOR_P = "01JR0000000000000000000016"
+
+
+def _at(entries: list[EntityEntry], text: str, location: str | None) -> list[Any]:
+    context = ResolutionContext(EntityIndex(entries), location=location)
+    return resolve_mentions(text, NARRATOR, context)
+
+
+def test_a_name_only_places_share_is_the_scene_place() -> None:
+    """#1080 (#1060): "the tribal council" names the day 1 and the day 3 council. Standing at
+    the day 3 one (``location``), it resolves there (rule ``scene_place``); with no scene place,
+    or one that is neither, it stays ambiguous."""
+    councils = [
+        EntityEntry(DAY_1, "place", "the day 1 tribal council", None),
+        EntityEntry(DAY_3, "place", "the day 3 tribal council", None),
+        EntityEntry(KITCHEN, "place", "the kitchen", None),
+    ]
+    text = "Maren is at the tribal council."
+    found = _at(councils, text, DAY_3)
+    assert found
+    assert all((m.entity_id, m.rule) == (DAY_3, "scene_place") for m in found), found
+    for elsewhere in (None, KITCHEN):
+        found = _at(councils, text, elsewhere)
+        assert found
+        assert all(m.entity_id is None for m in found), (elsewhere, found)
+
+
+def test_a_name_a_place_shares_with_a_thing_or_a_person_stays_ambiguous() -> None:
+    """#1080 complement: only places defer to the scene's place. An item, or a person, sharing
+    the scene place's name stays ``AMBIGUOUS`` (``resolved_id`` ``None``) even standing there."""
+    banner = [
+        EntityEntry(DAY_3, "place", "the day 3 tribal council", None),
+        EntityEntry(BANNER, "item", "the tribal council banner", None),
+    ]
+    person = [
+        EntityEntry(HARBOR_P, "place", "Harbor", None),
+        EntityEntry(HARBOR, "person", "Harbor", None, character_id=HARBOR),
+    ]
+    for entries, text, here in (
+        (banner, "Maren is at the tribal council.", DAY_3),
+        (person, "Maren waits for Harbor.", HARBOR_P),
+    ):
+        found = _at(entries, text, here)
+        assert found, text
+        for mention in found:
+            assert mention.entity_id is None, (text, mention)
+            uncertain = mention.uncertain()
+            assert uncertain is not None
+            assert uncertain.reason.code is ReasonCode.AMBIGUOUS
+
+
 def test_an_unknown_name_is_uncertain() -> None:
     found = resolve_mentions("Then Zed Quill waved at Tom.", NARRATOR, _context())
     assert [(m.entity_id, m.reason and m.reason.code) for m in found] == [

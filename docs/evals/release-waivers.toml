@@ -46,7 +46,7 @@ fingerprints report `uncertified`."""
 version = "0.4.3"
 presets = ["standard", "full", "max"]
 decided = "2026-11-26"
-source = "https://github.com/nathanpond/Epistrel/pull/PRNUM"
+source = "https://github.com/nathanpond/Epistrel/pull/1072"
 reason = """\
 An intermediate patch release of M12 fix rounds 8 to 11 (#1058, #1061, #1065, #1070), cut while \
 M12 is still open after /n8-verify round 9 passed at 42674f51. #1061 bumped MODEL_CALL_REVISION \

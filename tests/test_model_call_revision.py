@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ import pytest
 from epistrel.core.profiles.fingerprint import MODEL_CALL_REVISION, RuntimeFacts, fingerprint
 from epistrel.core.seeds.profiles import FULL_PRESET_ID
 from epistrel.evals.presets import PRESETS
+from epistrel.orchestrator import directives
 from epistrel.orchestrator.compose import compose
 from epistrel.orchestrator.compose.compose import MIN_POLISH_TOKENS, POLISH_CHARS_PER_TOKEN
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -109,3 +111,69 @@ def test_the_writer_takes_added_entries_without_a_bump(tmp_path: Path) -> None:
     path.write_text(json.dumps(document), "utf-8")
     with pytest.raises(SystemExit, match="bump it first"):
         support.write_snapshot(path)
+
+
+MODEL_FACING = (
+    "const:epistrel.orchestrator.images.targets.subject.SCENE",
+    "const:epistrel.orchestrator.structured.effects.CONFIRMED_LINE",
+    "const:epistrel.orchestrator.structured.effects.REFUSED_LINE",
+    "const:epistrel.orchestrator.structured.effects.PENDING_TURNS",
+    "const:epistrel.core.genesis.render.PREVAIL",
+    "const:epistrel.core.genesis.render.DIRECTOR_STANDING",
+    "const:epistrel.core.states.effects.EXTERNAL_VALUE",
+)
+"""#1071: text constants a model call sends that sat outside the guard."""
+ASSEMBLY = (
+    "epistrel.orchestrator.directives.steering_line",
+    "epistrel.orchestrator.structured.pipeline._steering",
+    "epistrel.orchestrator.structured.render.RenderedBeats._structure",
+)
+"""#1064 item 2: the functions that join steering text, and the beat validator whose correction
+a retry sends."""
+
+
+def test_model_facing_constants_are_guarded() -> None:
+    """#1071: each constant is in the guarded set and pinned by the snapshot, so a wording
+    change (``SCENE`` back to "single-subject portrait…") fails the guard until the revision
+    moves. ``FORK_CLOSURE`` is a beat's text, not prompt text, and stays out."""
+    current = support.entries()
+    pinned = support.read_snapshot()["entries"]
+    for key in MODEL_FACING:
+        assert key in current, key
+        assert pinned[key] == current[key], key
+    assert not any(k.endswith(".FORK_CLOSURE") for k in current)
+
+
+def test_a_changed_scene_hash_fails_the_guard(tmp_path: Path) -> None:
+    """#1071: a snapshot whose ``SCENE`` hash differs from the source's is refused, naming it."""
+    path = tmp_path / "snapshot.json"
+    support.write_snapshot(path)
+    document = support.read_snapshot(path)
+    key = MODEL_FACING[0]
+    document["entries"][key] = "0" * 64
+    path.write_text(json.dumps(document), "utf-8")
+    with pytest.raises(AssertionError, match="bump MODEL_CALL_REVISION") as caught:
+        support.check_snapshot(path)
+    assert key in str(caught.value)
+
+
+def _steering_line_swapped(steers: Sequence[tuple[str, str]], *, narrator: bool = False) -> str:
+    """``directives.steering_line`` with the narrator's order swapped (#1064's mutant)."""
+    if not steers:
+        return ""
+    line = "Author direction for this reply: " + " ".join(text for _, text in steers)
+    return f"{directives.NARRATOR_STEERING} {line}" if narrator else line
+
+
+def test_a_prompt_assembly_change_fails_the_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1064 item 2: the guard hashes the assembly functions' source, so reordering what the
+    narrator is sent, with no constant changed, fails it. Each resolves, a class attribute
+    included."""
+    assert set(ASSEMBLY) <= set(support.SOURCES)
+    current = support.entries()
+    for dotted in ASSEMBLY:
+        assert f"source:{dotted}" in current, dotted
+    monkeypatch.setattr(directives, "steering_line", _steering_line_swapped)
+    with pytest.raises(AssertionError, match="bump MODEL_CALL_REVISION") as caught:
+        support.check_snapshot()
+    assert f"source:{ASSEMBLY[0]}" in str(caught.value)

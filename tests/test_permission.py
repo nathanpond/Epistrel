@@ -472,3 +472,35 @@ def test_current() -> None:
     assert not pm._current(_at(Interval.of(0, start)), start)
     assert pm._current(_at(Instant.of(start, Granularity.MINUTE)), start)
     assert not pm._current(_at(Instant.of(start - 60, Granularity.MINUTE)), start)
+
+
+def test_a_greeting_toward_present_characters_is_permitted() -> None:
+    """#1060 (owner 2026-11-27, ADR-220): Malik greets, welcomes, addresses, introduces himself
+    to or thanks Ethan, who is present; and he welcomes Ethan with Maren (several present
+    characters, one claim). Red before the fix: every one was ``other_character_secret``."""
+    for relation in ("greets", "welcomes", "addresses", "introduces_himself_to", "thanks"):
+        assert _toward_ok(toward(MALIK, relation, ETHAN, MALIK, free=True), Basis.ACTION_TEXTURE)
+    several = _clause(MALIK, _free("welcomes"), ETHAN, MALIK, qualifiers={"with": MAREN})
+    assert _toward_ok(several, Basis.ACTION_TEXTURE)
+    to_the_player = _clause(MAREN, _free("greets"), WREN, MAREN, qualifiers={"and": BOBBY_T})
+    assert _toward_ok(to_the_player, Basis.ACTION_TEXTURE)
+
+
+def test_a_greeting_says_nothing_about_them() -> None:
+    """#1060 (ADR-220) complement: a greeting naming Carlos (at the other camp) is denied, alone
+    or beside a present character; so is one naming several that also names an item or a place,
+    one whose
+    subject is not the render's own character, and any other free relation naming several
+    characters. A core relation naming several still denies (#979)."""
+    secret = Denied(Reason.OTHER_CHARACTER_SECRET)
+    assert toward(MALIK, "greets", CARLOS, MALIK, free=True) == secret
+    assert _clause(MALIK, _free("welcomes"), ETHAN, MALIK, qualifiers={"with": CARLOS}) == secret
+    # Several characters: nothing but them (one other keeps #979's rule, items allowed).
+    item = {"and": MAREN, "for": TORCH}
+    assert _clause(MALIK, _free("thanks"), ETHAN, MALIK, qualifiers=item) == secret
+    place = {"and": MAREN, "to": INN}
+    assert _clause(MALIK, _free("welcomes"), ETHAN, MALIK, qualifiers=place) == secret
+    assert _clause(ETHAN, _free("greets"), MAREN, MALIK, qualifiers={"and": BOBBY_T}) == secret
+    assert _clause(MALIK, _free("nods_to"), ETHAN, MALIK, qualifiers={"and": MAREN}) == secret
+    assert _clause(MALIK, "spoke_to", ETHAN, MALIK, qualifiers={"and": MAREN}) == secret
+    assert toward(MALIK, "greets", ETHAN, MALIK, free=True, present=None) == secret

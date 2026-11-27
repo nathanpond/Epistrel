@@ -390,6 +390,10 @@ class ResolutionContext:
     """#484 (owner's option (a)): on the composition path, the characters whose beats the
     message composes. The narrator's "other character" excludes them, so a weak texture claim
     about a render's own character is surfaced as on that render's beats."""
+    location: str | None = None
+    """#1060: the scene's place as the turn starts (#137's scene; ``None``: none known). A name
+    several places share ("tribal council" for the day 1 and the day 3 council) resolves to it
+    when it is one of them: the place the speaker stands in, not an older namesake."""
     addressed: frozenset[str] = frozenset()
     """#483: the actor of the turn's input, whom the turn's replies answer. The input's beat is
     not in the context window while the turn is checked (the turn writes its beats at the
@@ -493,12 +497,22 @@ def _alias_pass(state: _State) -> None:
         canonical = any(source == "canonical" for source in named.values())
         kind = MentionKind.NAME if canonical or not explicit else MentionKind.ALIAS
         rule = "alias" if explicit else "implicit_token"
+        here = state.context.location
         if len(ids) == 1:
             mention = Mention(span, kind, ids[0], ids, ALIAS_CONFIDENCE, None, rule)
+        elif here is not None and here in ids and _all_places(state.context.index, ids):
+            # #1060: a name several places share is the scene's own place.
+            mention = Mention(span, kind, here, ids, ALIAS_CONFIDENCE, None, "scene_place")
         else:
             mention = Mention(span, kind, None, ids, 0.0, Reason(ReasonCode.AMBIGUOUS, rule), rule)
         _add(state, i, i + length - 1, mention)
         i += length
+
+
+def _all_places(index: EntityIndex, ids: Sequence[str]) -> bool:
+    """#1060: whether every candidate is a place (``kind`` ``place``): only a place name defers
+    to the scene's place; a person or an item named alike stays ambiguous."""
+    return all((e := index.get(i)) is not None and e.kind == "place" for i in ids)
 
 
 def _compatible(entry: Any, pronoun_class: str) -> bool:

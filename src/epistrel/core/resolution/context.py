@@ -91,7 +91,7 @@ async def load_time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
     return await world_clock.time_basis(conn, story_id)
 
 
-SceneShare = tuple[frozenset[str] | None, tuple[Relation, ...]]
+SceneShare = tuple[frozenset[str] | None, tuple[Relation, ...], str | None]
 SharedContext = dict[tuple[str, int], SceneShare]
 """What every speaker's context at one turn shares (#452): ``(story_id, as_of)`` to the
 scene's entities present and the people's relationships, read once for a turn's speakers."""
@@ -148,27 +148,36 @@ async def load_context(
         - 1
     )
     present: frozenset[str] | None = None
+    location: str | None = None
     relations: list[Relation] = []
     if head >= 0:
         as_of = min(max(turn, 0), head)
+        # #1060: a text of the turn being played reads the scene as that turn starts (a
+        # placement written between the turns counts).
+        starting = turn > head
         if text is None:
             known = None if shared is None else shared.get((story_id, as_of))
             if known is None:
-                known = await _scene_share(lookup, story_id, as_of, index)
+                known = await _scene_share(lookup, story_id, as_of, index, starting=starting)
                 if shared is not None:
                     shared[(story_id, as_of)] = known
-            present, relations = known[0], list(known[1])
+            present, relations, location = known[0], list(known[1]), known[2]
         else:
             try:
-                scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
+                scene = await lookup.scene(
+                    story_id, as_of=as_of, viewpoint=OMNISCIENT, starting=starting
+                )
             except InvalidRequest:
                 scene = None
             if scene is not None and scene.present:
                 present = frozenset(e.entity_id for e in scene.present)
+            if scene is not None and scene.location is not None:
+                location = scene.location.entity_id
     context = ResolutionContext(
         index=index,
         beats=beats,
         present=present,
+        location=location,
         player_id=player_id,
         relations=relations,
         identities=identities,
@@ -230,17 +239,21 @@ async def _scoped_relations(
 
 
 async def _scene_share(
-    lookup: KeyedLookup, story_id: str, as_of: int, index: EntityIndex
+    lookup: KeyedLookup, story_id: str, as_of: int, index: EntityIndex, *, starting: bool = False
 ) -> SceneShare:
-    """The scene's entities present and the relationships of the story's people as of
-    ``as_of`` (omniscient), in the order the people are indexed."""
+    """The scene's entities present, the relationships of the story's people as of ``as_of``
+    (omniscient), in the order the people are indexed, and the scene's place (#1060).
+    ``starting``: the scene as the next turn starts (``KeyedLookup.scene``'s)."""
     present: frozenset[str] | None = None
+    location: str | None = None
     try:
-        scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT)
+        scene = await lookup.scene(story_id, as_of=as_of, viewpoint=OMNISCIENT, starting=starting)
     except InvalidRequest:
         scene = None
     if scene is not None and scene.present:
         present = frozenset(e.entity_id for e in scene.present)
+    if scene is not None and scene.location is not None:
+        location = scene.location.entity_id
     people = [e.id for e in index.entries.values() if e.kind == "person"]
     found = (
         await lookup.relationships(story_id, people, as_of=as_of, viewpoint=OMNISCIENT)
@@ -260,7 +273,7 @@ async def _scene_share(
             if key not in seen:
                 seen.add(key)
                 relations.append(Relation(subject, rel.predicate, obj))
-    return present, tuple(relations)
+    return present, tuple(relations), location
 
 
 async def subject_timeline(

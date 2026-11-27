@@ -312,7 +312,8 @@ async def load_env(
     scene_entity: str | None = None
     placement: dict[str, str] = {}
     try:
-        scene = await lookup.scene(story_id, as_of=max(turn - 1, 0))
+        # #1060: as the turn starts, so a placement written between the turns counts.
+        scene = await lookup.scene(story_id, as_of=max(turn - 1, 0), starting=turn > 0)
     except InvalidRequest:  # no scene projection yet: no scene known
         scene = None
     if scene is not None and scene.location is not None:

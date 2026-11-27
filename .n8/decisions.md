@@ -16614,3 +16614,26 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–11. Locally: ruff, format, mypy strict (1666 files) and 8 import contracts clean; `tests/gates` and `test_workflows` 703 passed; S-EFFECT-CRASH 6 passed; the revision, disjointness and C-18 tests 14 passed, 1 env-gated skip; `test_introduce` 45 passed; `test_lite_smoke_records` 2 passed.
   **Why:** a serial local full run takes about 6 h.
   **Issue:** #1071, #1064, #1074
+
+## /n8-exec M12 — 2026-11-27 (round 13: #1060)
+
+- **Decision:** #1060 was triaged into M12 at the owner's word ("add it to M12 and work it next"). It had been open with no milestone, so earlier verify and exec rounds, which list M12's issues, never saw it. SocialGambit's check (SG#509) confirmed that the host is placed at the council, so the `located_at` rejection was on Epistrel's side.
+  **Issue:** #1060
+- **Decision:** A read-only investigator traced the four symptoms and reproduced three, plus a variant of the fourth, on the stub. The owner decided four questions (2026-11-27): read the scene "at turn start"; greetings "Add verbs + allow several"; exempting an input echo "Not now"; and directives as support, which they asked to have explained with an example (explained: it would make a directive's content canon, against FR-DIRECT-2, and #1060's directive carried no fact). The directive question is still open with the owner, so no change was made to it.
+  **Issue:** #1060
+- **Decision (scene at turn start):** `scene_view(starting=True)` reads through turn N−1's inter-turn slots at turn N's start time, as `load_scene_state` already does for perception. `present_at_turn`, `extraction.load_env` and `resolution.load_context` (a text of the turn being played: `turn > head`) use it. The prompt's `## Scene` card is unchanged; that keeps the change to what the owner named (the scene, the present set and the verifier's view). The read-set row gains a `:start` suffix, so a turn-start read and an end-of-turn read version separately.
+  **Issue:** #1060
+- **Decision (shared place name, no owner decision needed):** a name that several entities match, all of them places, resolves to the scene's place when it is one of them (`ResolutionContext.location`, rule `scene_place`). People and items named alike stay ambiguous. The investigator found it the likeliest real trigger of the "could not support" echo: SocialGambit mints one council place per day.
+  **Issue:** #1060
+- **Decision (greetings):** `GREETING_VERBS` (greet, welcome, address, introduce, thank) join `OBSERVABLE_ACTION_VERBS`. A greeting may name several present characters only when every argument is a modeled, present character. With one other character, #979's rule is unchanged, so items in qualifiers are still allowed there. Each clause of `_greeting` is pinned: 4 mutants each fail 1.
+  **Issue:** #1060
+- **Decision (constraint names):** an `unpermitted` constraint whose subject is the speaker names the claim's object, but only for `other_character_secret` and `player_character` denials. The first version swapped on every denial and broke `test_s_novelty_permission__repaired`: a locked-canon denial of Bobby's own fact has to keep naming Bobby. That was caught by the targeted run and narrowed.
+  **Issue:** #1060
+- **Decision (fallback kind):** rung 4 commits a failing `do` beat's fallback as a `say`, matching the render's own fallback. ADR-220 records all of it. ADR-217 and ADR-218 gain Amended-by lines, and FR-MULTI-9 and FR-VERIFY-11 gain markers. `MODEL_CALL_REVISION` was first left at 7, because the guard passed before the constraint fix was narrowed. CI on PR #1076 then failed the guard on the new `ladder.TOWARD_DENIALS` entry. Adding an entry alone needs no bump, but this round does change what a `regeneration` call sends (a different name in an `unpermitted` constraint, a `say` fallback in history), so I bumped it to 8, re-took the snapshot and regenerated `docs/evals/INDEX.md` in the same PR. The presets were already uncertified (ADR-208), so no certification record is lost.
+  **Issue:** #1060
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite.
+  - `tests/integration/test_m12_1060.py`: 11 tests, all passing. Nine fail on unfixed main: every positive case, plus the constraint-name checks in the Carlos cases. The complements pass on both.
+  - The 30 test files touching the changed modules: 444 passed and 1 failed, the novelty case above, which was fixed and re-run with 22 passed.
+  - `tests/gates`: 703 passed. Ruff, format, mypy strict (1,667 files) and 8 import contracts are clean.
+  **Why:** a serial local full run takes about 6 h.
+  **Issue:** #1060

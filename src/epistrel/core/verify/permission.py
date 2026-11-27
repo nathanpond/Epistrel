@@ -70,7 +70,8 @@ claim qualifies when all of these hold:
   present-time (``PermissionFacts.current``: its valid time does not end before the turn starts;
   a past action is history);
 - it names exactly one modeled character besides the render's own (qualifiers count, as
-  everywhere: a third named character denies), and that character is the player's or one in the
+  everywhere: a third named character denies; #1060's greeting, below, is the one exception),
+  and that character is the player's or one in the
   turn's present set (``PermissionFacts.present``: #1019's ``core.epistemic.scene.present_for``,
   anchored on the turn actor's place, plus the turn actor when it is the player's character; the
   render's own character must be in it too, so an off-scene primary acts toward no one). With no
@@ -85,6 +86,12 @@ claim qualifies when all of these hold:
   ``OWN_POSITION_RELATIONS`` or whose first token, lemmatized (``action_verb``: a suffix table and
   an irregulars map, no NLP dependency), is in ``OBSERVABLE_ACTION_VERBS`` ("slides_cup_to",
   "gives_nod_to", "turns_toward", "serves_drink_to", "leans_toward"), basis ``action_texture``.
+
+**A greeting** (#1060, the owner's decision of 2026-11-27, ADR-220) may name several present
+characters: a free relation whose lemma is in ``GREETING_VERBS`` (greet, welcome, address,
+introduce, thank), with the render's own character as subject and one of them as object, every
+argument a modeled character who is present (``welcomes(Jasper, Maya, with: Flynn)``), is
+``action_texture``. A qualifier naming anything that is not one of those characters denies.
 
 ``action_texture`` is texture that is never canonized (``Verifier.canon_requests`` skips it), and
 no permitted claim of this rule is the speaker's own backstory (``Permitted.toward``, which
@@ -315,6 +322,11 @@ OBSERVABLE_ACTION_VERBS: frozenset[str] = frozenset(
         "call",
         "reply",
         "answer",
+        "greet",
+        "welcome",
+        "address",
+        "introduce",
+        "thank",
     }
 )
 """#979 (owner, round three): the lemmatized first tokens of a free relation that is the
@@ -339,6 +351,11 @@ IRREGULAR_VERBS: Mapping[str, str] = {
     "leant": "lean",
 }
 """#979: the irregular forms ``action_verb`` maps to an ``OBSERVABLE_ACTION_VERBS`` lemma."""
+
+GREETING_VERBS: frozenset[str] = frozenset({"greet", "welcome", "address", "introduce", "thank"})
+"""#1060 (owner, 2026-11-27; ADR-220): the ``OBSERVABLE_ACTION_VERBS`` lemmas of a greeting, the
+one free relation that may name several present characters at once ("Jasper welcomes Maya and
+Flynn")."""
 
 TOWARD_CHANNELS: frozenset[str] = frozenset({"do", "say"})
 """#979: the beat channels the toward-another-character exception applies on (never ``think``)."""
@@ -699,6 +716,8 @@ def _toward(
         return None
     if facts.channel is not None and facts.channel not in TOWARD_CHANNELS:
         return None
+    if len(others) > 1:
+        return _greeting(claim, own, facts, others, name)
     if len(others) != 1:
         return None
     (other,) = others
@@ -731,6 +750,41 @@ def _toward(
     if free and (name in OWN_POSITION_RELATIONS or action_verb(str(name)) is not None):
         return Basis.ACTION_TEXTURE
     return None
+
+
+def _greeting(
+    claim: Proposition,
+    own: str,
+    facts: PermissionFacts,
+    others: Sequence[EntityInfo],
+    name: str | None,
+) -> Basis | None:
+    """#1060 (ADR-220): a greeting toward several present characters. A free relation whose
+    lemma is in ``GREETING_VERBS``, with the render's own character as subject, whose every
+    argument is a modeled character (its own or one of ``others``, each present) and whose object
+    is one of them, is ``action_texture``. Nothing is said about them: a qualifier naming an item,
+    a place or a value denies, as do an absent or unmodeled character."""
+    predicate = facts.predicate
+    if predicate is None or predicate.layer is not Layer.AUTO or name is None:
+        return None
+    if action_verb(str(name)) not in GREETING_VERBS:
+        return None
+    if facts.present is not None and own not in facts.present:
+        return None
+    if not all(_counts_present(o.character_id, facts, player=o.is_player) for o in others):
+        return None
+    subject = facts.entities.get(claim.subject_id)
+    target = None if claim.object_id is None else facts.entities.get(claim.object_id)
+    ids = {own, *(o.character_id for o in others)}
+    if subject is None or subject.character_id != own or target is None:
+        return None
+    if target.character_id not in ids - {own}:
+        return None
+    for argument in _argument_ids(claim):
+        found = facts.entities.get(argument)
+        if found is None or found.character_id not in ids:
+            return None
+    return Basis.ACTION_TEXTURE
 
 
 def _current(claim: Proposition, turn_start: int) -> bool:

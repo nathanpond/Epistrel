@@ -27,15 +27,16 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177, 218, 219 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177, 218, 219, 220 |
 | FR-REPAIR | §10 | 207, 210, 217 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
+| FR-DIRECT | §12 | 220 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201, 212 |
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
 | FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
-| FR-MULTI | §16 | 043, 054, 126, 216, 217 |
+| FR-MULTI | §16 | 043, 054, 126, 216, 217, 220 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
@@ -281,9 +282,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 214 | A consumer may write a subject image's whole prompt, under the same guardrails | Amended | 215 |
 | 215 | A subject image may take earlier subject images of its subject as reference images | Current | — |
 | 216 | A line copied from another speaker in the same turn is regenerated once, else dropped | Current | — |
-| 217 | Only characters at the turn actor's place react, and a name alone is not a line | Current | — |
-| 218 | A character may act toward the player's character or a character present with it | Current | — |
+| 217 | Only characters at the turn actor's place react, and a name alone is not a line | Amended | 220 |
+| 218 | A character may act toward the player's character or a character present with it | Amended | 220 |
 | 219 | An extraction claim whose mention names nothing the story holds passes silently | Current | — |
+| 220 | An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback | Current | — |
 
 ---
 
@@ -2578,6 +2580,7 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-217 — Only characters at the turn actor's place react, and a name alone is not a line
 **Status:** Accepted. Amends FR-MULTI-9 (who may be narrated reacting) and FR-REPAIR-2 (what a narrowing must keep); refines ADR-043 (2), reactive narration's bounds.
+**Amended by:** ADR-220 — "as the turn starts" includes what was written between the turns (a placement, a clock advance).
 **Context:** #1019, the other half of #1013's real-use report (a three-character `respond` turn under Full, 2026-11-23): two beats were attributed to a character of the other tribe, at another place: "Nathan Pond." and "Carlos Rivera changes the subject.". A character render cannot emit another character's beat; the one way in is a narrated reaction (FR-MULTI-9), and `roles.resolve` took the **whole cast** as present whenever the player's scene listed no one. The reproduction (`test_s_reactive__off_scene`) confirmed that path: with the player unplaced while the others were placed, and perception off (no reactor perception check), a reaction declared for the off-scene character committed. The reaction was then flagged and went through the ladder: narrowing left only the player's name, and a later beat got the fallback line.
 **Decision:** The owner's decisions at the triage of #1019 (2026-11-23, round three), applied by #1019 (no new FR ID; FR-MULTI-9 and FR-REPAIR-2 amended).
 - **The present set** (`core.epistemic.scene.present_for`, read by `present_at_turn` into `TurnRead.present_character_ids`, fixed at the turn's start): the characters placed at the **turn actor's** place, its placement row else a `present_at` fact on it, read through `KeyedLookup.scene` with the actor as its anchor (`scene:<turn>:<actor entity>`). The whole cast counts as present only in a story where no character has a placement (`core.projections.structured.story_placed`: a placement row or a `present_at` fact, the player's and a benched character's included). An actor with no place in a placed story has no one else present. A sequestered benched character is never present; a `present`-benched one is. #979's toward-another-character permission reuses the helper.
@@ -2597,10 +2600,11 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-218 — A character may act toward the player's character or a character present with it
 **Status:** Accepted. Amends FR-VERIFY-11 (the exceptions to who may introduce a claim naming another character) and ADR-032 (4), the novelty permissions; extends #519's hand-over exception, which it subsumes.
+**Amended by:** ADR-220 — a greeting may name several present characters (the "exactly one modeled character" clause), and the present set is read as the turn starts, after anything written between the turns.
 **Context:** #979, found by #939's E-06 run on hosted `claude-haiku-5-5` (Full, 3 seeds, `docs/evals/full-bca1e50d0af4-2026-11-21.md`): 62 of 600 case-seeds (10.3%) ended in the safe fallback with a `player_character` denial. Maren pours a mug of cider and slides it toward Wren (the player's character); the claim names Wren, so FR-VERIFY-11 denied it as "the player character's actions", the repair could not keep the action without naming him, and the beat fell back. In the trace these beats reach the permission check as free relations the extraction backstop names (`slides_cup_to`, `gives_nod_to`, `turns_toward`, `present_with`, `serves_drink_to`), auto-registered with the weakest semantics, not as core predicates. #1014's real-use report showed the same for two AI characters at one place ("Malik leans toward Ethan", denied `other_character_secret`).
 **Decision:** The owner's option (a) on #979 (2026-11-23), widened to present characters (round two: own position; round three: free relations by a verb allowlist), applied by #979 (`core.verify.permission`, "The toward-another-character exception"). A `character` render's claim is permitted when all of these hold:
 - it is affirmed, present-time (its valid time does not end before the turn starts), on a `do` or `say` beat (never `think`), and not the reactive fallback (a reactive render's claim re-run as the narrator's own render);
-- it names exactly one modeled character besides the render's own (qualifiers count), which is the player's character or a character in the turn's present set (ADR-217's `present_for`, anchored on the turn actor's place, plus the turn actor when it is the player's character); the rendering character must be in that set too, so an off-scene primary acts toward no one. Without a present set (a caller that passes none), only the player's character qualifies;
+- it names exactly one modeled character besides the render's own (qualifiers count) *[amended by ADR-220: a greeting may name several present characters]*, which is the player's character or a character in the turn's present set (ADR-217's `present_for`, anchored on the turn actor's place, plus the turn actor when it is the player's character); the rendering character must be in that set too, so an off-scene primary acts toward no one. Without a present set (a caller that passes none), only the player's character qualifies;
 - its shape is one of: `holds` of the other character, of an item no modeled character is, whose detected transfer names the render's character as giver (#519, now for a present character too), and `spoke_to` the other character — both basis `own`, canonized as before; `present_at` of the render's character with the other character as object (its own position); or a free relation (`Layer.AUTO`) with the render's character as subject and the other character as object, named `present_with`, `beside`, `next_to`, `near` or `with`, or whose first name token, lemmatized by a suffix table (`-ing`, `-ed`, `-es`, `-s`, with `+e` and an undone doubled consonant) and an irregulars map, is in `OBSERVABLE_ACTION_VERBS` (slide, give, hand, pass, pour, serve, offer, nod, wave, smile, look, glance, turn, lean, step, sit, stand, walk, gesture, point, touch, hug, speak, talk, say, tell, ask, whisper, call, reply, answer) — basis `action_texture`.
 
 `action_texture` is a new permission basis: texture that `Verifier.canon_requests` never canonizes. A permitted claim of this rule is never the speaker's own backstory (`Permitted.toward`, read by `speech.own_backstory`). The check sits where #519's did: after locked canon, a State change and the resolution exemption, and after the present-bench exception (#832), which is still decided first; protected content still denies. The turn's present set and the claim's channel are recorded with each permission answer, so the rebase re-check reproduces it.
@@ -2636,6 +2640,24 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 - A turn with such a claim sends fewer `regeneration` calls; `MODEL_CALL_REVISION` is already 6 on this milestone branch, so its docstring names #978 and the guarded snapshot is re-taken. No prompt string or constraint text changes.
 - The live share of E-06 case-seeds ending in the safe fallback with the generic constraint (20.8% at `00ae51d`) is measured by #978's sampled E-06 run.
 - Tests: `tests/integration/test_unresolved_texture.py` (the stub turns: passes with no regeneration, complements still repair, no generic constraint beside a repaired claim); `tests/test_introduce.py` (`untracked_mention`, `passes`, `tracked_relation`); `tests/integration/test_introduced_entities.py` (the extraction cases that surfaced or repaired before).
+
+### ADR-220 — An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback
+**Status:** Accepted. Amends FR-MULTI-9 and ADR-217 (when the present set is read), FR-VERIFY-11 and ADR-218 (a greeting may name several present characters), and FR-REPAIR-5's safe fallback (its beat kind).
+**Context:** #1060, found by a consumer (SocialGambit#509) on v0.4.2 with `claude-haiku-5-5` (Full). A host character, driven as the actor with a scripted `say` and `do`, had its beats rejected until the turn ended in its safe fallback, intermittently. Traced on the stub adapter, four engine defects explain it. (1) The turn's present set (`core.epistemic.scene.present_at_turn`) and the verifier's scene and entity resolution read the scene as of the previous turn's end, before its inter-turn slots and at its story time, so a placement the consumer writes between turns (its scene move, after a clock tick) is not seen: the actor's action toward a present tribemate is denied `other_character_secret`, and a present reactor is dropped `not_present`. (2) A place name two places share ("tribal council" for the day 1 and the day 3 council) resolved as ambiguous, so `located_at` the actor's own place took the generic "could not support" constraint. (3) A greeting ("greets", "welcomes") was not an observable action under ADR-218, and one naming several present characters failed its one-character clause; the constraint also named the speaker ("Do not introduce facts about Jasper"), which the rewrite cannot act on. (4) The ladder's rung 4 kept a failing `do` beat's kind, so the safe fallback line was delivered as a `do`.
+**Decision:** The owner's decisions on #1060 (2026-11-27), applied by #1060:
+- **The scene as the turn starts** ("Read at turn start"): `scene_view(starting=True)` (`KeyedLookup.scene`'s) reads the scene through turn N−1's inter-turn slots, valid at turn N's start time, as `load_scene_state` already did for perception routing. The present set (`present_at_turn`), the extraction environment's scene and placements (`load_env`) and the turn's entity resolution context (`load_context`, for a text of the turn being played) read it so. The prompt's `## Scene` card is unchanged.
+- **A shared place name** (no owner decision needed): when a name matches several places and the scene's place is one of them, it resolves to the scene's place (`ResolutionContext.location`, rule `scene_place`). Any other ambiguity is unchanged.
+- **Greetings** ("Add verbs + allow several"): `greet`, `welcome`, `address`, `introduce` and `thank` join `OBSERVABLE_ACTION_VERBS`. A free relation whose lemma is one of those (`GREETING_VERBS`), with the render's own character as subject, one of the others as object and every argument a modeled character who is present, is `action_texture` however many present characters it names. A qualifier naming an item, a place or an absent character denies. Every other rule keeps ADR-218's one-character clause.
+- **The constraint names whose facts they are** (no decision): an `unpermitted` constraint whose subject is the speaker names the claim's object instead.
+- **A spoken fallback** (no decision): rung 4 commits a failing `do` beat's fallback line as a `say`, as the render's own fallback (`structured.pipeline`) already does. A narration beat keeps the narrator's fallback.
+**Alternatives considered:**
+- Exempting a beat that restates the actor's own `player_input` from repair (FR-VERIFY-8/11): the owner chose "Not now", to see whether these fixes stop the rejections in real use first.
+- Counting a pending author directive's text as support: declined, since it would turn an instruction into canon against FR-DIRECT-2, and the directive in #1060 carried no fact. An author fact is the sanctioned way to make something true first.
+- Reading the scene as of turn N (beyond the head): `scene_view` refuses it, and the stored scene rows are written at commit.
+**Consequences:**
+- docs/03 FR-MULTI-9 and FR-VERIFY-11 gain *[amended by ADR-220]* markers; ADR-217 and ADR-218 gain Amended-by lines.
+- No prompt string, constraint template or guarded constant changes, so `MODEL_CALL_REVISION` stays 7. A read-set row of a turn-start scene read is keyed `scene:<turn>[:<actor>]:start`.
+- Tests: `tests/integration/test_m12_1060.py` (the stub turns, each with its complement: the camp-placed ambiguity still repairs, an unmoved Flynn is still denied, a greeting toward an absent character is denied and its constraint names him) and `tests/test_permission.py` (greetings, several characters, and their complements).
 
 ---
 

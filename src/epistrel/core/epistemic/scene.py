@@ -597,7 +597,9 @@ async def present_at_turn(
     read_set: StructuredReadSet | None = None,
 ) -> tuple[bool, frozenset[str]]:
     """#1019: whether the story has any placement (``story_placed``) and the present set of
-    narrative turn ``turn`` (``present_for``), as it starts (the scene as of ``turn - 1``) with
+    narrative turn ``turn`` (``present_for``), as it starts (the scene as of ``turn - 1``'s
+    inter-turn slots at ``turn``'s start time, #1060: a placement written between the turns
+    counts) with
     ``actor_character_id`` acting; read through ``KeyedLookup`` (``read_set`` when given)."""
     from epistrel.core.errors import InvalidRequest
 
@@ -612,7 +614,7 @@ async def present_at_turn(
         return True, frozenset()
     lookup = KeyedLookup(conn, read_set if read_set is not None else StructuredReadSet())
     try:
-        found = await lookup.scene(story_id, as_of=turn - 1, actor=actor)
+        found = await lookup.scene(story_id, as_of=turn - 1, actor=actor, starting=True)
     except InvalidRequest:
         return True, frozenset()
     return True, present_for(found, actor, characters=by_entity, cast=cast, placed=True)

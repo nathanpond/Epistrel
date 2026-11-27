@@ -1084,17 +1084,29 @@ async def scene_view(
     as_of: int | None = None,
     viewpoint: str | None = None,
     actor: str | None = None,
+    starting: bool = False,
 ) -> SceneView:
     """The scene as of turn ``as_of`` (default the head) for ``viewpoint`` (default the story's
     default output viewpoint; 422 ``viewpoint_unresolved`` when none resolves). The omniscient
     read answers the stored row; a character's presence is recomputed from the rows its
     visibility admits. 422 beyond the head. #1019: ``actor`` (an entity id) anchors the scene
     on that entity's place instead of the player character's (its placement, else its
-    ``present_at``), always recomputed (the stored rows are the player's)."""
+    ``present_at``), always recomputed (the stored rows are the player's). #1060: ``starting``
+    reads it as the next turn starts: through turn ``as_of``'s inter-turn slots (an author's
+    placement or a clock advance written between the turns) and valid at that turn's start
+    time, as ``core.epistemic.scene.load_scene_state`` reads it; always recomputed."""
     ctx, turn = await _read_context(conn, story_id, as_of, viewpoint)
     variant = await _variant_at(conn, story_id, turn)
+    position = turn_position(turn)
+    now = ctx.now
+    if starting:
+        from epistrel.core import world_clock  # here: the clock reads States, which import this
+        from epistrel.core.membership import Position as NarrativePosition
+
+        position = turn_position(turn + 1)
+        now = await world_clock.story_time_at(conn, story_id, NarrativePosition(turn + 1))
     found: Scene | None = None
-    if ctx.viewpoint == OMNISCIENT and variant is not None and actor is None:
+    if ctx.viewpoint == OMNISCIENT and variant is not None and actor is None and not starting:
         stored = (
             await conn.execute(
                 select(scene_state).where(
@@ -1118,8 +1130,8 @@ async def scene_view(
             places,
             presences,
             actor if actor is not None else await _actor(conn, story_id),
-            turn_position(turn),
-            ctx.now,
+            position,
+            now,
             _visible(ctx.viewpoint),
             by_presence=actor is not None,
         )

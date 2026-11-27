@@ -169,7 +169,7 @@ from epistrel.core.states.effects import (
 )
 from epistrel.core.tables import entities
 from epistrel.core.tables.propositions import closed_sets
-from epistrel.core.turns.beats import BEAT_TEXT_MAX, TurnBeat
+from epistrel.core.turns.beats import BEAT_TEXT_MAX, BeatKind, TurnBeat
 from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
@@ -223,6 +223,9 @@ log = logging.getLogger(__name__)
 
 SAY, THINK, DO, LATENT, NARRATION = "say", "think", "do", "latent", "narration"
 DETERMINISTIC_KINDS = frozenset({SAY, DO, NARRATION})
+TOWARD_DENIALS = frozenset({"other_character_secret", "player_character"})
+"""#1060: the denials that protect another character than the speaker, whose name an
+``unpermitted`` constraint carries when the claim's subject is the speaker."""
 """The beat kinds rungs 1, 2 and 4's fallback line apply to; ``think`` and ``latent`` go
 straight to rung 3, then are dropped."""
 NEIGHBORHOOD_DEPTH = 2
@@ -850,7 +853,8 @@ class RepairLadder:
             names = await _names(conn, self.story_id, props)
             for minted, name in self.introduced().items():
                 names.setdefault(minted, name)  # #1024
-            made = [await self._constraint(v, registry, names) for v in violations]
+            speaker = None if beat.character_id is None else self.cast_names.get(beat.character_id)
+            made = [await self._constraint(v, registry, names, speaker) for v in violations]
             # #1013: one ``no_copy`` line per source speaker, however many sentences it copied.
             copies = list(dict.fromkeys(c for c in made if c.kind == "no_copy"))
             constraints = tuple(
@@ -879,7 +883,11 @@ class RepairLadder:
         return viewpoint_of(beat.character_id)
 
     async def _constraint(
-        self, v: CheckedClaim, registry: Registry, names: Mapping[str, str]
+        self,
+        v: CheckedClaim,
+        registry: Registry,
+        names: Mapping[str, str],
+        speaker: str | None = None,
     ) -> Constraint:
         claim = v.claim.proposition
         cites = tuple(v.result.evidence_ids()) if v.result is not None else ()
@@ -928,6 +936,11 @@ class RepairLadder:
             denied = v.result.denied
             reason = "" if denied is None else f" ({denied.reason.value.replace('_', ' ')})"
             subject = names.get(claim.subject_id, claim.subject_id)
+            toward = denied is not None and denied.reason.value in TOWARD_DENIALS
+            if toward and speaker is not None and subject == speaker and claim.object_id:
+                # #1060: the speaker's own action toward another character: name whose facts
+                # they are (a locked-canon denial of the speaker's own fact still names it).
+                subject = names.get(claim.object_id, claim.object_id)
             return Constraint(
                 "do_not_assert",
                 f"Do not introduce facts about {subject}: it is not this speaker's to tell"
@@ -1148,8 +1161,13 @@ class RepairLadder:
             if settled is not None:
                 return result(FALLBACK, settled)
         line = await self._fallback_line(narrator=beat.narrator or beat.kind == NARRATION)
+        # #1060: a character's fallback line is spoken, as the render's own fallback is
+        # (``structured.pipeline``): a failing ``do`` beat falls back to a ``say``.
+        kind: BeatKind = "say" if beat.kind == DO else beat.kind
         return result(
-            FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()), fallback=True
+            FALLBACK,
+            replace(beat, kind=kind, text=line, claims=(), mentions=(), effects=()),
+            fallback=True,
         )
 
     def _reserve(self, budget: TurnBudget, stating: Sequence[Finding]) -> bool:

@@ -491,7 +491,8 @@ def test_a_greeting_says_nothing_about_them() -> None:
     or beside a present character; so is one naming several that also names an item or a place,
     one whose
     subject is not the render's own character, and any other free relation naming several
-    characters. A core relation naming several still denies (#979)."""
+    characters. A core relation naming several still denies (#979). #1078: so do an author-layer
+    greeting, an off-scene speaker's and a reflexive one."""
     secret = Denied(Reason.OTHER_CHARACTER_SECRET)
     assert toward(MALIK, "greets", CARLOS, MALIK, free=True) == secret
     assert _clause(MALIK, _free("welcomes"), ETHAN, MALIK, qualifiers={"with": CARLOS}) == secret
@@ -504,3 +505,19 @@ def test_a_greeting_says_nothing_about_them() -> None:
     assert _clause(MALIK, _free("nods_to"), ETHAN, MALIK, qualifiers={"and": MAREN}) == secret
     assert _clause(MALIK, "spoke_to", ETHAN, MALIK, qualifiers={"and": MAREN}) == secret
     assert toward(MALIK, "greets", ETHAN, MALIK, free=True, present=None) == secret
+    # #1078: each of ``_greeting``'s remaining clauses decides on its own. An author-layer
+    # relation is not texture, even named like a greeting.
+    authored = Predicate(
+        id="01JP0000000000000000000A01",
+        story_id="01JS00000000000000000000EX",
+        name="welcomes",
+        layer=Layer.AUTHOR,
+    )
+    assert _clause(MALIK, authored, ETHAN, MALIK, qualifiers={"with": MAREN}) == secret
+    # A speaker who is not in the scene greets no one in it.
+    away = frozenset({WREN, MAREN, BOBBY_T, ETHAN})
+    welcome = _free("welcomes")
+    assert _clause(MALIK, welcome, ETHAN, MALIK, qualifiers={"with": MAREN}, present=away) == secret
+    # The object is one of the others, never the speaker himself.
+    reflexive = {"to": ETHAN, "and": MAREN}
+    assert _clause(MALIK, _free("introduces"), MALIK, MALIK, qualifiers=reflexive) == secret

@@ -16637,3 +16637,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - `tests/gates`: 703 passed. Ruff, format, mypy strict (1,667 files) and 8 import contracts are clean.
   **Why:** a serial local full run takes about 6 h.
   **Issue:** #1060
+
+## /n8-exec M12 — 2026-11-27 (round 14: #1077–#1082)
+
+- **Decision:** Scope is verify round 10's five sev:high test gaps (#1077–#1081) and #1082 (sev:low, in the same files). #1043 (the owner's decision), #1064 (items 5 and 6) and #1060's open questions are not worked. Branch `milestone/m12-round14`. Every fix is test-only except #1082's docstring move, which has no runtime effect.
+  **Issue:** #1077, #1078, #1079, #1080, #1081, #1082
+- **Decision (#1077):** `test_a_move_between_turns_is_seen` now also asserts the present set on both turns, with Carlos added: he walks in from the beach, and Flynn stays out when he does not move. It also asserts `load_context`'s place after the move. The past-turn read (turn ≤ head still sees the camp) is asserted with the clock on only. With the clock off, both placements are open-ended, so a read as of the last turn already includes the move: only the clock tells the end of one turn from the start of the next. I left that behaviour alone (it predates #1060, and no AC asks for it). S1, S4a and S4b fail 2, 3 and 2 tests. `test_a_place_shared_name_after_a_move` pins the played turn's resolution through `respond`.
+  **Issue:** #1077
+- **Decision (#1077, #1081):** One commit carries both, because both tests are in `tests/integration/test_m12_1060.py` and share its fixtures. The `actor=actor` mutant fails `test_the_present_set_is_the_actors`.
+  **Issue:** #1077, #1081
+- **Decision (#1079):** a new unit file `tests/test_repair_constraint.py` calls `_constraint` on a bare `RepairLadder` (`object.__new__`, as `test_copied_lines` does). Besides the issue's case, it pins the renaming (Maren→Flynn names Flynn) and its narrowing (locked canon still names Maren), so all three outcomes of the branch are fixed.
+  **Issue:** #1079
+- **Decision (#1082):** `RepairLadder._constraint` joins `SOURCES`. The snapshot gains one entry with no bump: an addition, and no sent text changed (#1003's rule). `evals index --check` stays current, and the "Never introduce" edit now fails the guard. Item 3 (optional) is not done because its premise does not hold: the guard's docstring has no "not prompt text" list naming `OBSERVABLE_ACTION_VERBS`, and `core.verify.permission` is not a guarded module, so `GREETING_VERBS` is already outside the guard.
+  **Issue:** #1082
+- **Decision:** Plan comments went up after the tests were written rather than before, in the same session and before any commit. That is a process slip; the comments state the plan as it was carried out.
+  **Issue:** #1077–#1082
+- **Decision:** The gate is the targeted local set plus CI's sharded full suite, as in rounds 4–13. Locally, the 16 test files that read a changed module, plus `tests/gates`: 789 passed, 1 env-gated skip. Every lint-job check, ruff, format, mypy strict (1,668 files) and 8 import contracts are clean.
+  **Why:** a serial local full run takes about 6 h.
+  **Issue:** #1077–#1082

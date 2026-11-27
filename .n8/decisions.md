@@ -16557,3 +16557,36 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** The gate is the targeted local set (101 passed, 1 env-gated skip) plus CI's sharded full suite, as in rounds 4–10.
   **Why:** A serial local full run takes about 6 h.
   **Issue:** #1067, #1068, #1069
+
+## /n8-release v0.4.2 — 2026-11-25
+
+*(Carried over from PR #1057, which was never merged; added here after rounds 10–11 were logged.)*
+
+- **Version:** v0.4.2, a patch bump from v0.4.1. The owner asked for it: "do #1046, leave the others in M12 but don't work them yet. I want to cut an intermediate release", then `/n8-release 0.4.2 from 6a12e5f4`. PR #1056 bumped `pyproject.toml` and `uv.lock` and added the waiver entry below.
+- **Decision:** released with the skill's preconditions unmet, on the owner's instruction. M12 is open and not verified-closed (it stays open until the owner says). Open `confirmed` bugs in M12 at release: #1048, #1051, #1052 (`sev:high`, all missing tests), #1047, #1049, #1050, #1053 (`sev:medium`), #1054 (`sev:low`). #1046's fix (PR #1055) has its own tests and mutants but no independent `/n8-verify` pass. These were named to the owner before they ran `/n8-release`.
+  **Why:** the owner wants the real-use fixes in consumers' hands before the remaining test gaps are closed.
+- **Decision:** 0.4.2 ships uncertified, like 0.4.0 and 0.4.1. The C-18 gate failed locally at 0.4.2 with no waiver. Asked how to pass it, the owner chose "Waive for 0.4.2" over a paid three-preset recertification. `docs/evals/release-waivers.toml` carries the entry (ADR-208).
+- **Commit:** the annotated tag `v0.4.2` is on `6e46972c` (#1056), which is `6a12e5f4` (#1055) plus the bump and the waiver only. PR CI was 27 of 27 green on both.
+- **Milestones included:** none newly closed. It carries M12's work so far (#1025, #1028, #1030, #1032, #1036, #1044, #1055). `MODEL_CALL_REVISION` is 6 (it was 5 at v0.4.1).
+- **What the tag triggered:** `release.yml` [run 45719492914](https://github.com/nathanpond/Epistrel/actions/runs/45719492914), green on attempt 1 in 64 minutes.
+  - **validate:** passed, the C-18 check skipping under the waiver.
+  - **Full CI:** passed, all jobs.
+  - **C-10 smoke:** passed.
+  - **Multi-arch publish:** passed. `ghcr.io/nathanpond/epistrel` tags `0.4.2`, `0.4`, `0` and `latest` all point to `sha256:b629718ae6791cd551b794a8b9550f11672f8fb4b907dd976ff5c5e758e2ea91` (amd64 and arm64).
+  - **GitHub release:** the workflow created it, marked Latest. A written summary went on top: what changed for consumers, uncertified under ADR-208, and the known issues.
+- **Wiki:** Home's status updated (wiki commit a8bdcf4).
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.2
+
+## /n8-release v0.4.3 — 2026-11-27
+
+- **Version:** v0.4.3, a patch bump from v0.4.2. The owner ran `/n8-release 0.4.3` after `/n8-verify M12` round 9 passed at `42674f51` (the blocking-bug check printed 0). PR #1072 bumped `pyproject.toml` and `uv.lock` and added the waiver entry.
+- **Decision:** released with M12 still open and not verified-closed, on the owner's standing instruction (memory: M12 stays open until the owner says). Open bugs in M12 at release, none blocking: #1043 (`sev:medium`, the owner's decision), #1071 (`sev:medium`, `confirmed`, filed by round 9) and #1064 (`sev:low`, `confirmed`).
+  **Why:** the owner cuts 0.4.x releases while M12's fix rounds continue.
+- **Decision:** 0.4.3 ships uncertified, like 0.4.0–0.4.2. `MODEL_CALL_REVISION` is 7 (#1061 bumped it from 6), so every preset fingerprint moved. Asked how to pass the C-18 gate, the owner chose "Waive for 0.4.3 (Recommended)" over a paid three-preset recertification. `docs/evals/release-waivers.toml` carries the entry (ADR-208).
+- **Decision:** I merged #1072 myself through `gh`. The owner corrected my claim that they had to: "why can't you merge it? You merge everything".
+- **Commit:** the annotated tag `v0.4.3` is on `31bc01598461a1e3017074a008f92e83277b5bc7` (#1072), which is `42674f51` (#1070) plus the bump and the waiver only. PR #1072's checks were 27 of 27 green, and "Push on main" was green on the squash.
+- **Milestones included:** none newly closed. It carries M12 rounds 8–11 (#1058, #1061, #1065, #1070).
+- **What the tag triggered:** `release.yml` [run 45946365658](https://github.com/nathanpond/Epistrel/actions/runs/45946365658), green on attempt 1 in about 100 minutes (05:32–07:11 UTC), with no failed jobs.
+  - **Images:** `ghcr.io/nathanpond/epistrel` tags `0.4.3`, `0.4`, `0` and `latest` all point to `sha256:8083792502dd575f4c202ba45349ae501666af803383bdd0ff3aafb199fcd159` (amd64 and arm64).
+  - **GitHub release:** the workflow created it, marked Latest. A written summary went on top: the behaviour changes, the test-only hardening, uncertified under ADR-208, and the known issues.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.4.3

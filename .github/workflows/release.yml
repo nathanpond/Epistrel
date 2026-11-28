@@ -1,9 +1,10 @@
-# Pushing vX.Y.Z (or vX.Y.Z-rc.N) runs the gate, publishes semver image tags and creates the GitHub
-# release. `latest`, `X.Y` and `X` move only when the new version is the highest in their line; a
-# pre-release gets only its own tag. Nothing is published unless the tagged commit's image passes
-# the deployment smoke (C-10, #77). A re-run for a tag that is already released (#96) builds and
-# moves nothing: the `rerun` job re-reads the digest and re-asserts the release's flags, and never
-# undoes a rollback. See RELEASING.md → Cutting a release.
+# Pushing vX.Y.Z (or vX.Y.Z-rc.N) runs the gate, or reuses the tagged commit's passed edge-run
+# gate (ADR-221), then publishes semver image tags and creates the GitHub release. `latest`, `X.Y`
+# and `X` move only when the new version is the highest in their line; a pre-release gets only its
+# own tag. Nothing is published unless the tagged commit's image passes the deployment smoke (C-10,
+# #77). A re-run for a tag that is already released (#96) builds and moves nothing: the `rerun` job
+# re-reads the digest and re-asserts the release's flags, and never undoes a rollback. See
+# RELEASING.md → Cutting a release.
 name: Release
 
 on:
@@ -65,8 +66,39 @@ jobs:
       - id: validate
         run: uv run python -m tools.release validate --tag "$GITHUB_REF_NAME" --released-file released.json | tee -a "$GITHUB_OUTPUT"
 
+  prior:
+    # ADR-221: every push to main runs publish-edge.yml, whose `ci` calls ci.yml on exactly the
+    # pushed commit, and a tag must point at a commit on main. So the tagged commit's merge gate
+    # has usually already run (or is running). This job waits for that run's `ci / gate` and says
+    # `reuse=true` only when it passed; anything else (no push run, a failed or cancelled gate, an
+    # API error, the wait running out) says `reuse=false` and `ci` below runs the gate here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse: ${{ steps.prior.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - id: prior
+        name: The tagged commit's edge gate (ADR-221)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-project python -m tools.release prior-gate --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --budget-minutes 120 | tee -a "$GITHUB_OUTPUT" | tee -a "$GITHUB_STEP_SUMMARY"
+
   ci:
-    needs: validate
+    # The merge gate, run here only when `prior` found no passed edge gate for this commit.
+    needs: [validate, prior]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.prior.outputs.reuse != 'true' }}
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ github.sha }}
@@ -74,8 +106,10 @@ jobs:
   smoke:
     # C-10 (#77, NFR-OPS-1,2): the tagged commit's image (amd64, loaded as `epistrel:dev`) must
     # pass the deployment smoke — compose plus tests/smoke/fake_openai.py as the one model
-    # endpoint — before any tag is published. Same job as publish-edge.yml's.
-    needs: [validate, ci]
+    # endpoint — before any tag is published. Same job as publish-edge.yml's. It runs once the
+    # gate has passed, here (`ci`) or in the commit's edge run (`prior`, ADR-221).
+    needs: [validate, prior, ci]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && needs.prior.outputs.reuse == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -123,7 +157,7 @@ jobs:
   publish:
     needs: [validate, ci, smoke]
     # A re-run of a released tag goes to `rerun` instead: no rebuild, so the recorded digest stays.
-    if: needs.validate.outputs.already_released != 'true'
+    if: ${{ !cancelled() && needs.smoke.result == 'success' && needs.validate.outputs.already_released != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -216,12 +250,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   rerun:
-    # #96: a re-run for an existing release (ci and smoke still ran) builds, pushes and re-tags
+    # #96: a re-run for an existing release (the gate and smoke still passed) builds, pushes and re-tags
     # nothing. The notes' Image line is rewritten with the digest the X.Y.Z tag already resolves to,
     # an rc re-asserts --prerelease, and the highest stable re-asserts --latest. A stable release a
     # rollback demoted (now a prerelease) keeps its flags: re-promotion (rollback.yml) is the way back.
     needs: [validate, ci, smoke]
-    if: needs.validate.outputs.already_released == 'true'
+    if: ${{ !cancelled() && needs.smoke.result == 'success' && needs.validate.outputs.already_released == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

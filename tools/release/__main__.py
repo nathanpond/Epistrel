@@ -3,6 +3,9 @@
 - `python -m tools.release validate --tag vX.Y.Z [--pyproject P] [--released-file F]`
 - `python -m tools.release retag --released-file F --good X.Y.Z` (#96): prints `tags=latest 0.1 0`,
   the floating tags a bare re-promotion of X.Y.Z re-points.
+- `python -m tools.release prior-gate --repo O/R --sha SHA [--budget-minutes M]` (ADR-221): prints
+  `reuse=true|false` and `reason=…`: whether the commit's publish-edge.yml push run passed
+  `ci / gate`, waiting up to M minutes for it. Always exits 0; `false` means "run ci.yml".
 
 `F` is the JSON from `gh release list --json tagName,isDraft,isPrerelease`. Prints
 GITHUB_OUTPUT-style `key=value` lines; exit 1 with `error: …` when the tag must not ship or the
@@ -16,6 +19,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from tools.release.prior_gate import prior_gate
 from tools.release.validate import (
     ReleaseError,
     read_project_version,
@@ -40,7 +44,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     r.add_argument("--released-file", type=Path, required=True, help=RELEASED_HELP)
     r.add_argument("--good", required=True, help="bare X.Y.Z")
+    p = sub.add_parser(
+        "prior-gate", help="did the tagged commit's publish-edge run pass ci / gate? (ADR-221)"
+    )
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--sha", required=True, help="the tagged commit")
+    p.add_argument("--budget-minutes", type=float, default=120.0)
+    p.add_argument("--poll-seconds", type=float, default=60.0)
     args = parser.parse_args(argv)
+    if args.command == "prior-gate":
+        decision = prior_gate(args.repo, args.sha, args.budget_minutes * 60, args.poll_seconds)
+        print("\n".join(decision.lines()))
+        return 0
     try:
         released, demoted = (
             read_released(args.released_file.read_text(encoding="utf-8"))

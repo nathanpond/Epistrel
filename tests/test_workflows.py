@@ -292,12 +292,17 @@ def test_rollback_re_promotion_marks_latest_only_when_latest_moved(
 
 
 def test_release_rerun_builds_and_moves_nothing() -> None:
-    """#96 AC: a re-run of a released tag still runs ci and smoke, skips publish, and its `rerun`
-    job has no build, push or re-tag step."""
+    """#96 AC: a re-run of a released tag still passes the gate (here or reused, ADR-221) and
+    smoke, skips publish, and its `rerun` job has no build, push or re-tag step."""
     wf = _workflow("release.yml")
-    assert wf["jobs"]["publish"]["if"] == "needs.validate.outputs.already_released != 'true'"
+    smoke_passed = "!cancelled() && needs.smoke.result == 'success'"
+    assert wf["jobs"]["publish"]["if"] == (
+        "${{ " + smoke_passed + " && needs.validate.outputs.already_released != 'true' }}"
+    )
     rerun = wf["jobs"]["rerun"]
-    assert rerun["if"] == "needs.validate.outputs.already_released == 'true'"
+    assert rerun["if"] == (
+        "${{ " + smoke_passed + " && needs.validate.outputs.already_released == 'true' }}"
+    )
     assert rerun["needs"] == ["validate", "ci", "smoke"]
     assert rerun["permissions"] == {"contents": "write", "packages": "read"}
     uses = [str(s.get("uses", "")) for s in rerun["steps"]]
@@ -309,6 +314,33 @@ def test_release_rerun_builds_and_moves_nothing() -> None:
     )
     listed = _step(wf, "validate", "Released tags so far")["run"]
     assert "--json tagName,isDraft,isPrerelease" in listed
+
+
+def test_release_reuses_only_a_passed_edge_gate() -> None:
+    """ADR-221: `ci` runs unless `prior` found the tagged commit's edge gate passed, `smoke` runs
+    only after a gate passed (here, or reused), and `prior` asks tools.release with read access to
+    Actions. Complement: a failed or missing `prior` (empty output) runs `ci`, and a skipped `ci`
+    without `reuse == 'true'` does not start `smoke`."""
+    wf = _workflow("release.yml")
+    jobs = wf["jobs"]
+    assert jobs["prior"]["permissions"] == {"contents": "read", "actions": "read"}
+    assert "needs" not in jobs["prior"]
+    asked = _step(wf, "prior", "The tagged commit's edge gate (ADR-221)")["run"]
+    assert 'prior-gate --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA"' in asked
+    assert '| tee -a "$GITHUB_OUTPUT"' in asked
+    assert jobs["prior"]["outputs"] == {"reuse": "${{ steps.prior.outputs.reuse }}"}
+    assert jobs["ci"]["uses"] == "./.github/workflows/ci.yml"
+    assert jobs["ci"]["needs"] == ["validate", "prior"]
+    assert "needs.prior.outputs.reuse != 'true'" in jobs["ci"]["if"]
+    assert "needs.validate.result == 'success'" in jobs["ci"]["if"]
+    assert jobs["smoke"]["needs"] == ["validate", "prior", "ci"]
+    assert (
+        "needs.ci.result == 'success' || (needs.ci.result == 'skipped' && "
+        "needs.prior.outputs.reuse == 'true')" in jobs["smoke"]["if"]
+    )
+    for job in ("publish", "rerun"):
+        assert "smoke" in jobs[job]["needs"]
+        assert "needs.smoke.result == 'success'" in jobs[job]["if"]
 
 
 RELEASE_BODY = "## What's changed\n- a fix\n\nImage: `ghcr.io/o/r:0.1.1@sha256:rebuilt`"
@@ -882,14 +914,17 @@ def test_ci_shard_node_split_is_checked() -> None:
 
 def test_ci_shard_partition_check_sees_a_gap() -> None:
     """The partition check is not vacuous: without the catch-all shard, modules go missing; the
-    two integration halves are disjoint and together cover tests/integration."""
+    integration shards (a-h, the I-tests and j-z, ADR-221) are disjoint, none is empty, and
+    together they cover tests/integration."""
     by_name = {s["name"]: _shard_files(s["paths"]) for s in _shards()}
     integration = _test_files_under(REPO_ROOT / "tests" / "integration")
-    halves = [files for name, files in by_name.items() if name.startswith("integration-")]
-    assert len(halves) == 2
-    assert all(halves)
-    assert halves[0].isdisjoint(halves[1])
-    assert halves[0] | halves[1] == integration
+    parts = {name: files for name, files in by_name.items() if name.startswith("integration-")}
+    assert sorted(parts) == ["integration-a-h", "integration-i", "integration-j-z"]
+    assert all(parts.values())
+    assert sum(len(files) for files in parts.values()) == len(set().union(*parts.values()))
+    assert set().union(*parts.values()) == integration
+    assert {f.name[:7] for f in parts["integration-i"]} == {"test_i_"}
+    assert not any(f.name.startswith("test_i_") for f in parts["integration-j-z"])
     others = set().union(*(files for name, files in by_name.items() if name != "rest"))
     assert by_name["rest"]
     assert by_name["rest"].isdisjoint(others)

@@ -16669,3 +16669,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #1084, #1085
 - **Decision (Rule 3):** CI attempt 1 (run 46071259086) went red on `lint`. Two new asserts joined with `and` broke PT018. My local lint step had chained ruff, format, mypy and lint-imports in one `{ …; }` block and printed only the last exit code, so the ruff failure was hidden. Both asserts are now split. Each check was re-run separately: ruff, format, mypy and import contracts are clean. Every other job on attempt 1 passed (25 of 27). The CI budget is 85 min, which is 1.5 × PR #1083's longest check (57 min).
   **Issue:** #1084, #1085
+
+## Ad-hoc — 2026-11-27 (release reuses the edge gate; I-tests shard; ADR-221)
+
+- **Change:** `release.yml` gains a `prior` job (`python -m tools.release prior-gate`). It waits up to 120 minutes for the tagged commit's `publish-edge.yml` push run's `ci / gate`. When that gate passed, the release skips its own `ci.yml` run. Any other outcome runs it as before. `validate` (C-18 certification gate), `smoke` (C-10) and `publish` are unchanged. `ci.yml`'s `integration-i-z` shard is split into `integration-i` (`test_i_*`) and `integration-j-z`.
+  **Why:** The owner, after v0.4.4's release took about 90 minutes (2026-11-27): "do the first two together". The release re-ran a gate that had already passed on exactly that commit, and the 53–56 minute i-z shard was the gate's critical path.
+  **Affects:** M13 Audit's CI and release review (the release's gate evidence is now the edge run that `prior` names), anything that assumes a tag run starts `ci.yml` (`/n8-release`'s "watch what the tag set in motion" step and its CI-duration budget), and any plan that names the `integration-i-z` shard.

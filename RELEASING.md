@@ -7,7 +7,7 @@ Images live at `ghcr.io/nathanpond/epistrel`. Two channels:
 | `edge`, `sha-<7>` | whatever is on `main` right now; **unstable**, for Console integration and testing | every merge to `main` (`publish-edge.yml`) |
 | `X.Y.Z`, `X.Y`, `X`, `latest` | a published release | a `vX.Y.Z` tag (`release.yml`) |
 
-Every publish runs the same gate as a pull request (`ci.yml`) first, then the deployment smoke
+Every publish passes the same gate as a pull request (`ci.yml`) first, then the deployment smoke
 (C-10): a `smoke` job builds the amd64 image, starts it with `docker-compose.yml` and
 `tests/smoke/compose.override.yml`, and runs `pytest -m smoke` against it with
 `tests/smoke/fake_openai.py` as the one model endpoint. Nothing is published from a commit that did
@@ -48,9 +48,19 @@ Versions are `0.x` until the engine is feature-complete; `-rc.N` is the only pre
    bypass actor, RepositoryRole 5) bypass it: to test it, a Write-role collaborator attempts to
    create, update and delete a `v*` tag, and the ruleset rejects each attempt.
 3. `release.yml` validates the tag (must match `pyproject.toml`'s version, must be on `main`, an rc of
-   an already-released stable version is refused), runs the gate, pushes the image and creates the
+   an already-released stable version is refused), passes the gate, pushes the image and creates the
    GitHub release with notes generated from merged PR titles (categories in `.github/release.yml`),
    ending with the image reference and digest.
+
+   The gate is usually not run twice (ADR-221). The merge that the tag points at already ran
+   `ci.yml` on exactly that commit, in its `publish-edge.yml` push run. The `prior` job waits up to
+   120 minutes for that run's `ci / gate` job. If the job passed, `ci` is skipped and the job
+   summary names the run that was reused. In every other case `ci` runs here as before: no edge
+   push run for the commit, a gate that failed or was cancelled, an API error, or the wait running
+   out. A dispatched edge rollback never counts, because it gates a different ref than its
+   `head_sha`. To force a fresh gate, re-run the edge run's failed jobs or push a new commit.
+   Tagging straight after the merge is fine: the release waits for the edge gate instead of
+   competing with it for runners.
 
 What results:
 

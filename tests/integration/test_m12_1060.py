@@ -108,8 +108,12 @@ async def test_a_shared_place_name_is_the_scene_place(
         located = claim("Maren", "located_at", "the tribal council")
         stub.script("generation", [render(beat("do", DO, propositions=[located]))])
         stub.script("regeneration", [json.dumps({"text": DO})] * 4)
+        # The input's ``do`` is not the beat's, so the beat is no echo of it (#1060's
+        # input-echo exemption would pass the ambiguous claim).
         r = await respond(
-            client, story, body(ids["Maren"], SAY, do=DO, render_character_ids=[ids["Maren"]])
+            client,
+            story,
+            body(ids["Maren"], SAY, do="Maren looks up.", render_character_ids=[ids["Maren"]]),
         )
         assert r.status_code == 200, r.text
         report = await turn_report(engine, story)
@@ -206,7 +210,9 @@ async def test_a_move_between_turns_is_seen(
         )
         stub.script("regeneration", [json.dumps({"text": DO})] * 4)
         r = await respond(
-            client, story, body(ids["Maren"], SAY, do=DO, render_character_ids=[ids["Maren"]])
+            client,
+            story,
+            body(ids["Maren"], SAY, do="Maren looks up.", render_character_ids=[ids["Maren"]]),
         )
         assert r.status_code == 200, r.text
         report = await turn_report(engine, story)
@@ -285,7 +291,9 @@ async def test_a_place_shared_name_after_a_move(
         stub.script("generation", [render(beat("do", DO, propositions=[located]))])
         stub.script("regeneration", [json.dumps({"text": DO})] * 4)
         r = await respond(
-            client, story, body(ids["Maren"], SAY, do=DO, render_character_ids=[ids["Maren"]])
+            client,
+            story,
+            body(ids["Maren"], SAY, do="Maren looks up.", render_character_ids=[ids["Maren"]]),
         )
         assert r.status_code == 200, r.text
         report = await turn_report(engine, story)
@@ -366,8 +374,12 @@ async def test_a_failed_do_falls_back_to_a_say(
         bad = claims_answer(_extracted("stands by the fire", "the_stable", "holds", "straw"))
         stub.script("extraction_backstop", [bad] * 6)
         stub.script("regeneration", [json.dumps({"text": DO})] * 6)
+        # The input's ``do`` is not the beat's: an echo of it would pass (#1060, the
+        # input-echo exemption: ``test_m12_1060_licensed``).
         r = await respond(
-            client, story, body(ids["Maren"], SAY, do=DO, render_character_ids=[ids["Maren"]])
+            client,
+            story,
+            body(ids["Maren"], SAY, do="Maren looks up.", render_character_ids=[ids["Maren"]]),
         )
         assert r.status_code == 200, r.text
     rendered = [(b["kind"], b["text"]) for b in r.json()["beats"] if b["beat"] >= 2]

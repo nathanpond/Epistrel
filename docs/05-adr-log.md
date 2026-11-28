@@ -27,10 +27,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167, 192, 193 |
 | FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177, 218, 219, 220 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177, 218, 219, 220, 222 |
 | FR-REPAIR | §10 | 207, 210, 217 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
-| FR-DIRECT | §12 | 220 |
+| FR-DIRECT | §12 | 220, 222 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185, 201, 212 |
 | FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
@@ -285,8 +285,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 217 | Only characters at the turn actor's place react, and a name alone is not a line | Amended | 220 |
 | 218 | A character may act toward the player's character or a character present with it | Amended | 220 |
 | 219 | An extraction claim whose mention names nothing the story holds passes silently | Current | — |
-| 220 | An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback | Current | — |
+| 220 | An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback | Partly superseded | 222 |
 | 221 | A release reuses the tagged commit's passed edge gate, and the I-tests run in a shard of their own | Current | — |
+| 222 | The actor's echo of its own input, and what a pending directive licenses (`directive_support`) | Current | — |
 
 ---
 
@@ -2644,6 +2645,7 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 
 ### ADR-220 — An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback
 **Status:** Accepted. Amends FR-MULTI-9 and ADR-217 (when the present set is read), FR-VERIFY-11 and ADR-218 (a greeting may name several present characters), and FR-REPAIR-5's safe fallback (its beat kind).
+**Amended by:** ADR-222 — the two alternatives the owner deferred or declined here (an echo of the actor's own input, and a directive as support) are now decided.
 **Context:** #1060, found by a consumer (SocialGambit#509) on v0.4.2 with `claude-haiku-5-5` (Full). A host character, driven as the actor with a scripted `say` and `do`, had its beats rejected until the turn ended in its safe fallback, intermittently. Traced on the stub adapter, four engine defects explain it. (1) The turn's present set (`core.epistemic.scene.present_at_turn`) and the verifier's scene and entity resolution read the scene as of the previous turn's end, before its inter-turn slots and at its story time, so a placement the consumer writes between turns (its scene move, after a clock tick) is not seen: the actor's action toward a present tribemate is denied `other_character_secret`, and a present reactor is dropped `not_present`. (2) A place name two places share ("tribal council" for the day 1 and the day 3 council) resolved as ambiguous, so `located_at` the actor's own place took the generic "could not support" constraint. (3) A greeting ("greets", "welcomes") was not an observable action under ADR-218, and one naming several present characters failed its one-character clause; the constraint also named the speaker ("Do not introduce facts about Jasper"), which the rewrite cannot act on. (4) The ladder's rung 4 kept a failing `do` beat's kind, so the safe fallback line was delivered as a `do`.
 **Decision:** The owner's decisions on #1060 (2026-11-27), applied by #1060:
 - **The scene as the turn starts** ("Read at turn start"): `scene_view(starting=True)` (`KeyedLookup.scene`'s) reads the scene through turn N−1's inter-turn slots, valid at turn N's start time, as `load_scene_state` already did for perception routing. The present set (`present_at_turn`), the extraction environment's scene and placements (`load_env`) and the turn's entity resolution context (`load_context`, for a text of the turn being played) read it so. The prompt's `## Scene` card is unchanged.
@@ -2652,8 +2654,8 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 - **The constraint names whose facts they are** (no decision): an `unpermitted` constraint whose subject is the speaker names the claim's object instead.
 - **A spoken fallback** (no decision): rung 4 commits a failing `do` beat's fallback line as a `say`, as the render's own fallback (`structured.pipeline`) already does. A narration beat keeps the narrator's fallback.
 **Alternatives considered:**
-- Exempting a beat that restates the actor's own `player_input` from repair (FR-VERIFY-8/11): the owner chose "Not now", to see whether these fixes stop the rejections in real use first.
-- Counting a pending author directive's text as support: declined, since it would turn an instruction into canon against FR-DIRECT-2, and the directive in #1060 carried no fact. An author fact is the sanctioned way to make something true first.
+- Exempting a beat that restates the actor's own `player_input` from repair (FR-VERIFY-8/11): the owner chose "Not now", to see whether these fixes stop the rejections in real use first. *[superseded by ADR-222: an uncertain echo of the actor's own input passes]*
+- Counting a pending author directive's text as support: declined, since it would turn an instruction into canon against FR-DIRECT-2, and the directive in #1060 carried no fact. An author fact is the sanctioned way to make something true first. *[superseded by ADR-222: under `directive_support`, a directive licenses an uncertain claim it bears on, without making it canon]*
 - Reading the scene as of turn N (beyond the head): `scene_view` refuses it, and the stored scene rows are written at commit.
 **Consequences:**
 - docs/03 FR-MULTI-9 and FR-VERIFY-11 gain *[amended by ADR-220]* markers; ADR-217 and ADR-218 gain Amended-by lines.
@@ -2676,6 +2678,23 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 - The gate's critical path drops from about 56 minutes to about 40 minutes (the eval jobs), which also shortens every pull request.
 - `release.yml`'s `ci`, `smoke`, `publish` and `rerun` jobs carry explicit `!cancelled()` conditions, because a skipped `ci` would otherwise skip everything after it. `RELEASING.md` documents the reuse.
 - Tests: `tests/release/test_prior_gate.py` (a passed gate is reused; a failed, cancelled, skipped or missing gate, a dispatch run, another commit's run, an API error and a wait that runs out each run `ci`) and `tests/test_workflows.py` (the job wiring and the shard partition).
+
+### ADR-222 — The actor's echo of its own input, and what a pending directive licenses (`directive_support`)
+**Status:** Accepted. Amends FR-VERIFY-8 (two more uncertain claims that pass), FR-DIRECT-2 (what an ephemeral steer licenses in verification) and ADR-220 (its two deferred alternatives).
+**Context:** #1060's deferred half. After ADR-220 shipped in v0.4.4, two of SocialGambit#509's rejections remained unexplained by an engine defect. The host's rendered `say` "It's time to vote." restated its own scripted input `say`. The claim the extraction layer found in it could not normalize, so it took the profile's safe disposition (`repair`) and the generic "could not support" constraint, and the beat could end in the safe fallback. The host's narration-like `do` ("Jasper settles onto the log beside the fire…") acted out a pending ephemeral directive, but canon held nothing that supported it.
+**Decision:** The owner's decisions (2026-11-28):
+- **The input echo** ("do it now"): a claim of the turn actor's rendered beat (beat 2 on, the actor's own, not narrated) whose words appear, in order and contiguously, inside this turn's own `player_input` `say` or `do` (`orchestrator.verify.licensed.echoes`) takes the `pass` disposition when it ends `uncertain`. The input beat itself is never repaired, so the claim that only restates it is not either. Another character repeating the actor's words is checked as before.
+- **What a directive licenses** ("Make it configurable … `support` or `selfonly`. Default is support"): a new story setting, `directive_support` (`support` | `selfonly`, default `support`, prospective, set with `PATCH /stories/{id}/settings`). In a turn that carries a pending ephemeral directive (FR-DIRECT-2's steer), a claim of the actor's rendered beat that shares a content word with the directive's text (`licensed.directed`: words of four letters or more, not common words, crudely stemmed) takes `pass` when it ends `uncertain`. Under `selfonly`, only such a claim about the actor itself passes (its subject is the actor: the normalized subject, else the sketch's resolved subject, else a subject text made only of the actor's name words).
+- **What still repairs:** only an `uncertain` result is licensed (`Verifier.verify(disposition=…)`, and `unnormalizable`'s existing `disposition`). A contradicted claim, a denied one (`unpermitted`), a hallucination (#166), a State finding, a copied line and a leaked thought are repaired under both values, as is every claim of a turn with no directive. An uncertain claim never canonizes, so the directive's content does not become canon, and FR-DIRECT-2's "ephemeral steers shall not persist as durable facts" holds.
+**Alternatives considered:**
+- Turning the directive into propositions (a model parse) and staging them as same-turn support: it would cost a model call per directive and come close to canonizing an instruction, which FR-DIRECT-2 forbids. Word overlap is cheap and only lets an uncertain claim stand.
+- Licensing every uncertain claim of a directed turn, whatever its words: too broad. A directive about the tone would excuse an unrelated invented fact.
+- Exempting an echo from every check: the consumer's words can still contradict canon or tell another character's secret, and those checks stay.
+**Consequences:**
+- docs/03 FR-VERIFY-8 and FR-DIRECT-2 gain *[amended by ADR-222]* markers. ADR-220 gains an Amended-by line, and its two alternatives are marked superseded.
+- A licensed claim's beat sends no `regeneration` call for it and no generic constraint, so `MODEL_CALL_REVISION` moves to 9 (like #978's pass at 6). The guarded snapshot is re-taken, and `docs/evals/INDEX.md` and `docs/openapi.json` (the setting and the settings description) are regenerated.
+- A consumer that wants the strict reading sets `directive_support: selfonly`. Neither value changes Lite or a story with verification off.
+- Tests: `tests/integration/test_m12_1060_licensed.py` covers, on the stub, a say and a do echo, each with the complement of the same beat after a different input; another character's echo; and the directive under both values, with the complements of no directive, a directive whose words do not bear on the claim, and a claim about something else under `selfonly`. It also checks the setting's default, its two values and a 422 for anything else. `tests/test_licensed.py` covers the text rules and their complements.
 
 ---
 

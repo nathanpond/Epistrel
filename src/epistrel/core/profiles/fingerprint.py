@@ -65,7 +65,7 @@ from epistrel.core.settings_schema import flatten
 
 FINGERPRINT_PREFIX = "sha256:"
 FINGERPRINT_PATTERN = r"^sha256:[0-9a-f]{64}$"
-MODEL_CALL_REVISION: Final[int] = 8
+MODEL_CALL_REVISION: Final[int] = 9
 """The engine's model-call revision, a fingerprint input (#818; ADR-200). 2: #735's structured
 headroom and api.anthropic.com's ``thinking`` extra (ADR-201). 3: #750's render validation
 (cast names resolved, a latent's named holder repaired, the cast in an unknown character's
@@ -90,7 +90,10 @@ after it, and a narrator beat of a kind it may not return is corrected once with
 ``NARRATOR_KIND_CORRECTION``, then dropped). 8: #1060's actor beats (an ``unpermitted``
 constraint toward another character names that character, not the speaker; a failing ``do``
 beat's fallback is a ``say``; the verifier and the present set read the scene as the turn
-starts, so fewer ``regeneration`` calls are sent for a between-turn move). Bump it with any
+starts, so fewer ``regeneration`` calls are sent for a between-turn move). 9: #1060's licensed
+claims (ADR-222: an uncertain claim of the actor's beat that echoes its own input, or that a
+pending directive bears on under ``directive_support``, takes ``pass``, so its beat sends no
+``regeneration`` call for it). Bump it with any
 change to what a model call sends that no prompt template hash or quality-relevant setting
 captures; ``tests/test_model_call_revision.py`` fails until it moves."""
 TEMPLATES_KEY = "prompt_templates"

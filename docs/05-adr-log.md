@@ -286,6 +286,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 218 | A character may act toward the player's character or a character present with it | Amended | 220 |
 | 219 | An extraction claim whose mention names nothing the story holds passes silently | Current | — |
 | 220 | An actor's own beats at the place it stands: the scene as the turn starts, shared place names, greetings, and a spoken fallback | Current | — |
+| 221 | A release reuses the tagged commit's passed edge gate, and the I-tests run in a shard of their own | Current | — |
 
 ---
 
@@ -2658,6 +2659,23 @@ Weak and registered relations are treated alike. `pass` is decided before ADR-16
 - docs/03 FR-MULTI-9 and FR-VERIFY-11 gain *[amended by ADR-220]* markers; ADR-217 and ADR-218 gain Amended-by lines.
 - No prompt string or constraint template changes, but what a call sends does: an `unpermitted` constraint names another character, a fallback line is a `say`, and fewer `regeneration` calls follow a between-turn move. So `MODEL_CALL_REVISION` moves to 8, the guarded snapshot is re-taken (adding `ladder.TOWARD_DENIALS`) and `docs/evals/INDEX.md` is regenerated. A read-set row of a turn-start scene read is keyed `scene:<turn>[:<actor>]:start`.
 - Tests: `tests/integration/test_m12_1060.py` (the stub turns, each with its complement: the camp-placed ambiguity still repairs, an unmoved Flynn is still denied, a greeting toward an absent character is denied and its constraint names him) and `tests/test_permission.py` (greetings, several characters, and their complements).
+
+
+### ADR-221 — A release reuses the tagged commit's passed edge gate, and the I-tests run in a shard of their own
+**Status:** Accepted.
+**Context:** v0.4.3's `release.yml` run took 91 minutes, and about 87 of them went to `ci.yml`. That gate had already run on exactly the tagged commit, because every push to `main` runs `publish-edge.yml`, whose `ci` job calls `ci.yml` with the pushed SHA, and a release tag must point at a commit on `main`. Both runs also competed for the repository's runners whenever a tag was pushed straight after its merge, which delayed the release jobs by up to 55 minutes. The gate's critical path was its longest shard, `integration-i-z`, at 53–56 minutes; the next longest jobs took about 39 minutes.
+**Decision:** The owner asked for both changes (2026-11-27, "do the first two together"):
+- **Reuse the edge gate.** A new `prior` job in `release.yml` (`python -m tools.release prior-gate`, `tools/release/prior_gate.py`) waits up to 120 minutes for the `ci / gate` job of the tagged commit's `publish-edge.yml` **push** run. When that job concluded `success`, the release's `ci` job is skipped and `smoke` runs. Every other outcome runs `ci.yml` in the release as before: no push run at that SHA, a gate that failed, was cancelled or was skipped, an API error, or the wait running out. `validate` (including the C-18 certification gate), `smoke` (C-10) and `publish` are unchanged and still run in every release.
+- **Split `integration-i-z`.** It becomes `integration-i` (`tests/integration/test_i_*`, about 28 minutes of tests in run 46078394455) and `integration-j-z` (the other i–z files, about 27 minutes). `tests/test_workflows.py` checks that the three integration shards partition `tests/integration`.
+**Alternatives considered:**
+- Accepting a passed pull-request run: a PR run tests the merge ref, whose tree can differ from the squash commit on `main`, so it was not used.
+- Counting a dispatched edge run: its `head_sha` is `main`'s tip while it gates its `ref` input, so it says nothing about the tagged commit.
+- Tagging only after the edge run finishes, without any workflow change: this removes the competition for runners but still runs the gate twice.
+**Consequences:**
+- A tag pushed after its merge's edge run has passed releases in about the time `validate`, `smoke` and `publish` take, roughly 10–15 minutes. A tag pushed straight after the merge waits for the edge gate. The evidence for a release is the edge run that `prior` names in its job summary, not a run started by the tag.
+- The gate's critical path drops from about 56 minutes to about 40 minutes (the eval jobs), which also shortens every pull request.
+- `release.yml`'s `ci`, `smoke`, `publish` and `rerun` jobs carry explicit `!cancelled()` conditions, because a skipped `ci` would otherwise skip everything after it. `RELEASING.md` documents the reuse.
+- Tests: `tests/release/test_prior_gate.py` (a passed gate is reused; a failed, cancelled, skipped or missing gate, a dispatch run, another commit's run, an API error and a wait that runs out each run `ci`) and `tests/test_workflows.py` (the job wiring and the shard partition).
 
 ---
 

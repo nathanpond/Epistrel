@@ -1,5 +1,6 @@
 # The merge gate. Runs on every pull request and is reused (workflow_call) by the publish and
-# release workflows, so what guards a merge is exactly what guards a release.
+# release workflows, so what guards a merge is exactly what guards a release. A release reuses the
+# result of the tagged commit's edge-publish run when that run's gate passed (ADR-221).
 name: CI
 
 on:
@@ -164,8 +165,12 @@ jobs:
             paths: tests/conformance --ignore=tests/conformance/test_c_01.py
           - name: integration-a-h
             paths: tests/integration --ignore-glob=tests/integration/test_[!a-h]*
-          - name: integration-i-z
-            paths: tests/integration --ignore-glob=tests/integration/test_[a-h]*
+          # ADR-221: i-z took 53-56 minutes, the longest job in the gate, so the I-tests
+          # (test_i_*, about 28 min of tests) run apart from the other i-z files (about 27 min).
+          - name: integration-i
+            paths: tests/integration --ignore-glob=tests/integration/test_[!i]* --ignore-glob=tests/integration/test_i[!_]*
+          - name: integration-j-z
+            paths: tests/integration --ignore-glob=tests/integration/test_[a-h]* --ignore-glob=tests/integration/test_i_*
           - name: property-chaos
             paths: tests/property tests/chaos
           - name: perf-scale

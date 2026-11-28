@@ -59,7 +59,7 @@ report `uncertified`."""
 version = "0.4.4"
 presets = ["standard", "full", "max"]
 decided = "2026-11-27"
-source = "https://github.com/nathanpond/Epistrel/pull/PRNUM"
+source = "https://github.com/nathanpond/Epistrel/pull/1087"
 reason = """\
 An intermediate patch release of M12 fix rounds 12 to 15 (#1075, #1076, #1083, #1086), cut while \
 M12 is still open after /n8-verify round 12 passed at 64142c3e. #1076 bumped MODEL_CALL_REVISION \

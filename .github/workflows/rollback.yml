@@ -89,7 +89,7 @@ jobs:
         if: inputs.bad_version == ''
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v10.3.3  # exact: setup-uv publishes no floating major tag past v7
+      - uses: astral-sh/setup-uv@v10.4.0  # exact: setup-uv publishes no floating major tag past v7
         if: inputs.bad_version == ''
         with:
           version: ${{ env.UV_VERSION }}

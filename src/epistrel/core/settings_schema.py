@@ -252,6 +252,12 @@ CoAuthorKnowledge = Literal["confirm", "free"]
 held to what that character could know: a presupposition it had no path to is accepted under
 both, with an ``implausible_knowledge`` notice under ``confirm``."""
 DEFAULT_CO_AUTHOR_KNOWLEDGE: CoAuthorKnowledge = "confirm"
+DirectiveSupport = Literal["support", "selfonly"]
+"""FR-DIRECT-2 (#1060, the owner's decision 2026-11-28): what a pending ephemeral directive
+licenses in verification. ``support``: an actor's uncertain claim that the directive's words
+bear on passes; ``selfonly``: only such a claim about the actor itself
+(``orchestrator.verify.licensed``)."""
+DEFAULT_DIRECTIVE_SUPPORT: DirectiveSupport = "support"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 IllustrationMode = Literal["on_request", "auto"]
 """FR-IMG-6 (#265): whether a story's images are made only when the consumer asks
@@ -498,6 +504,16 @@ class StorySettings(BaseModel):
     under ``own_character``, under Lite, or without per-character partitions. Genesis copies the
     scenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices
     depend on it."""
+
+    directive_support: DirectiveSupport = DEFAULT_DIRECTIVE_SUPPORT
+    """What a pending ephemeral directive (FR-DIRECT-2) licenses in a structured turn's
+    verification (#1060; the owner's decision 2026-11-28, default ``support``): under
+    ``support`` a claim of the actor's rendered beat that shares a content word with a directive
+    the turn carries passes when it is only uncertain (nothing in canon supports or contradicts
+    it); under ``selfonly`` only such a claim about the actor itself (its own action or
+    position) does. A contradicted, denied or hallucinated claim is repaired under both, and the
+    directive's content never becomes canon. Read as the turn starts (prospective). No effect
+    under Lite or with verification off."""
 
     illustration_mode: Annotated[IllustrationMode, PROSPECTIVE] = DEFAULT_ILLUSTRATION_MODE
     """Automatic illustration (FR-IMG-6; #265): ``on_request`` (the default) makes a story image

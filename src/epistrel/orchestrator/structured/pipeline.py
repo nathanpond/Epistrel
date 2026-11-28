@@ -279,7 +279,9 @@ from epistrel.core.retrieval.pipeline import (
 )
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
+    DEFAULT_DIRECTIVE_SUPPORT,
     OMNISCIENT,
+    DirectiveSupport,
     ResolvedGeneration,
     VerifySettings,
     resolve_generation,
@@ -467,6 +469,7 @@ from epistrel.orchestrator.structured.render import (
     NARRATOR as NARRATOR_VARIANT,
 )
 from epistrel.orchestrator.verify import extraction, yields
+from epistrel.orchestrator.verify import licensed as licensed_claims
 from epistrel.orchestrator.verify.extraction import (
     CheckedClaim,
     ClaimDetector,
@@ -998,6 +1001,13 @@ class TurnRead:
     scene line and ``## Scene``) keep the player's scene."""
     name_words: frozenset[str] = frozenset()
     """#1019: the words of the whole cast's names and aliases (the ladder's ``name_only``)."""
+    input_lines: tuple[str, ...] = ()
+    """#1060: the turn's own ``player_input`` ``say`` and ``do`` (the actor's): a claim of the
+    actor's rendered beat restating them is not repaired for want of support
+    (``orchestrator.verify.licensed.echoes``); a repair's re-check reads them here too."""
+    directive_support: DirectiveSupport = DEFAULT_DIRECTIVE_SUPPORT
+    """#1060: the story's ``directive_support`` as the turn starts: what ``steers`` license in
+    verification (``orchestrator.verify.licensed.directed``)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -1232,6 +1242,8 @@ async def read_turn(
         placed=placed,
         present_character_ids=tuple(sorted(present_set)),
         name_words=await _name_words(conn, story_id),
+        input_lines=tuple(t for t in (say, do) if t),
+        directive_support=story.settings.directive_support,
     )
 
 
@@ -2303,6 +2315,7 @@ async def _check_turn(
             found = reactive_asserter(claim)
             return found or extraction.asserter_for(claim, read.player_id)
 
+        licensed = _licensed(read, rendered)
         stepper = _stepper(
             conn,
             story_id,
@@ -2335,6 +2348,7 @@ async def _check_turn(
                 cites_of=cites_of,
                 asserter_of=asserter_of,
                 change_of=change_of,
+                licensed=licensed,
             )
             # The same-turn overlay: what this beat may establish, later beats see.
             for request in verifier.canon_requests()[before:]:
@@ -2847,6 +2861,45 @@ def repair_on(configuration: StoryProfile) -> bool:
     (``repair.max_attempts`` of 1 or more; ``Structured (M4)`` sets 1, the schema's default 0
     leaves a contradicted beat standing, labelled, as #150 did)."""
     return module_on(configuration.settings, REPAIR_MODULE)
+
+
+def _licensed(read: TurnRead, rendered: Rendered) -> Callable[[DetectedClaim], bool]:
+    """#1060: whether a claim of ``rendered`` is the actor's own and either restates the turn's
+    input (``licensed.echoes``) or bears on a directive the turn carries (``licensed.directed``,
+    under the story's ``directive_support``). Only a rendered beat's claim (beat 2 on), never
+    the input's, a narrated one (#180) or another character's."""
+    texts = {
+        b.beat: b.text
+        for b in rendered.beats
+        if b.beat > 1 and not b.narrator and not authority_rules.is_narrated(b)
+    }
+    steers = [text for _, text in read.steers]
+    actor = read.actor
+    actor_words = set(licensed_claims.words(actor.name))
+
+    def about_actor(claim: DetectedClaim) -> bool:
+        if claim.proposition is not None:
+            return str(claim.proposition.subject_id) == actor.id
+        sketch = claim.sketch
+        if sketch is None:
+            return False
+        if sketch.subject_id is not None:
+            return sketch.subject_id == actor.id
+        said = set(licensed_claims.words(sketch.subject_text))
+        return bool(said) and said <= actor_words
+
+    def licensed(claim: DetectedClaim) -> bool:
+        text = texts.get(claim.beat or -1)
+        if text is None or claim.speaker != actor.id:
+            return False
+        span = text[claim.span[1] : claim.span[2]]
+        if licensed_claims.echoes(span, read.input_lines):
+            return True
+        return bool(steers) and licensed_claims.directed(
+            span, steers, mode=read.directive_support, about_actor=about_actor(claim)
+        )
+
+    return licensed
 
 
 def _hallucinated(checked: Checked, beat: TurnBeat) -> bool:

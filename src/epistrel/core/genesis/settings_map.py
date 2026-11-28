@@ -46,6 +46,7 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "turn_concurrency": None,
     "player_authority": None,
     "co_author_knowledge": None,
+    "directive_support": None,
     "default_output_viewpoint": None,
     "ambiguous_retcon_timing": None,
     "backfill_conflict_policy": None,

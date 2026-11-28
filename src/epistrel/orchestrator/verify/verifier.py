@@ -146,6 +146,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -241,6 +242,11 @@ ProfileDisposition = Literal["repair", "surface"]
 """A profile's ``verification.safe_disposition``."""
 SafeDisposition = Literal["repair", "surface", "pass"]
 """A result's disposition: ``pass`` (#978) is the extraction layer's own, never a profile's."""
+_UNCERTAIN_DISPOSITION: ContextVar[SafeDisposition | None] = ContextVar(
+    "uncertain_disposition", default=None
+)
+"""#1060: the disposition of the uncertain results of the ``Verifier.verify`` call in progress
+(a context variable, so concurrent verifications never see each other's)."""
 Source = Literal["deterministic", "entailment"]
 ObjectiveRelation = Literal["true", "false", "unresolved"]
 
@@ -1726,6 +1732,49 @@ class Verifier:
         giver: str | None = None,
         change: bool = False,
         schedule_change: bool = False,
+        disposition: SafeDisposition | None = None,
+    ) -> VerifyResult | None:
+        """``_verify`` (below); ``disposition`` (#1060): the disposition an *uncertain* result
+        takes in place of the profile's ``safe_disposition`` (``pass`` for a claim
+        ``orchestrator.verify.licensed`` licenses). Every other verdict is unchanged."""
+        token = _UNCERTAIN_DISPOSITION.set(disposition)
+        try:
+            return await self._verify(
+                claim,
+                viewpoint,
+                position,
+                holder=holder,
+                ref=ref,
+                asserter=asserter,
+                protected=protected,
+                resolves=resolves,
+                believer=believer,
+                intent=intent,
+                cites=cites,
+                giver=giver,
+                change=change,
+                schedule_change=schedule_change,
+            )
+        finally:
+            _UNCERTAIN_DISPOSITION.reset(token)
+
+    async def _verify(
+        self,
+        claim: Proposition,
+        viewpoint: str = OMNISCIENT,
+        position: tuple[int, int] | None = None,
+        *,
+        holder: Holder = CANON,
+        ref: ClaimRef | None = None,
+        asserter: Asserter | None = None,
+        protected: bool = False,
+        resolves: str | None = None,
+        believer: str | None = None,
+        intent: str | None = None,
+        cites: Sequence[str] = (),
+        giver: str | None = None,
+        change: bool = False,
+        schedule_change: bool = False,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
@@ -2444,7 +2493,7 @@ class Verifier:
         degradation: tuple[str, ...] = (),
         disposition: SafeDisposition | None = None,
     ) -> VerifyResult:
-        disposition = disposition or self.config.safe_disposition
+        disposition = disposition or _UNCERTAIN_DISPOSITION.get() or self.config.safe_disposition
         if disposition == "surface":
             degradation = (*degradation, UNCERTAIN_SURFACED)
         result = VerifyResult(
